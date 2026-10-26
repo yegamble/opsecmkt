@@ -1,0 +1,28 @@
+{{/* A-652b (owner decision 2026-10-25, "Refund + hold"): a banned account's open Monero escrow orders as vendor, and the
+form refunding its unpaid and unshipped ones to the buyers (admin_ban_orders.go). Called with the page data; renders
+only on a banned account's page. */}}
+{{define "admin-ban-orders"}}{{with .BanOrders}}<section class="panel" id="ban-orders" aria-labelledby="ban-orders-heading">
+<h2 id="ban-orders-heading">Orders of this banned account</h2>{{with $.NoticeIn "ban-orders"}}
+<div class="alert" role="status">{{.}}</div>{{end}}
+<p class="help">Its Monero escrow orders as vendor that are open or whose escrow may still hold coins, oldest first{{if .More}}; the first 100 are shown{{end}}. Shipped, delivered and disputed orders are not refunded here: the buyer confirms receipt or opens a dispute, and an administrator decides disputes. An order links to its page when you can read it (a dispute, a flagged payment or an escrow alert).</p>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="ban-orders-list"><table><caption id="ban-orders-list">Open orders and escrows holding coins</caption><thead><tr><th scope="col">Order</th><th scope="col">State</th><th scope="col">Escrow</th><th scope="col">Amount</th></tr></thead><tbody>
+{{range .Rows}}<tr><td>{{if .Link}}<a class="text-link mono" href="/order?id={{.ID}}">{{.Short}}</a>{{else}}<span class="mono">{{.Short}}</span>{{end}}</td><td>{{.Status}}{{if .Yours}} (you are the buyer){{end}}</td><td>{{.Escrow}}</td><td>{{.Amount}}</td></tr>
+{{else}}<tr><td colspan="4">No open order, and no escrow of this account that still holds coins.</td></tr>{{end}}
+</tbody></table></div>
+<h3>Refund open orders to the buyers</h3>
+{{if .Count}}<div class="table-wrap" tabindex="0" role="region" aria-labelledby="ban-orders-take"><table><caption id="ban-orders-take">What the refund takes now</caption><thead><tr><th scope="col">Orders</th><th scope="col">Number</th><th scope="col">Counted in their escrows</th></tr></thead><tbody>
+{{range .Classes}}<tr><th scope="row">{{.Label}}</th><td>{{.Count}}</td><td>{{.Sum}}</td></tr>
+{{end}}</tbody></table></div>{{end}}
+{{if .Mine}}<p class="help">You are the buyer of {{.Mine}} of these orders: another administrator refunds {{if eq .Mine 1}}it{{else}}them{{end}}, as a party never decides its own order.</p>{{end}}
+{{if .Later}}<p class="help">{{.Later}} more wait for another submission: one refunds at most 100 orders.</p>{{end}}
+{{if .Paused}}<p class="help">{{.Paused}}</p>
+{{else if .Count}}<form class="stack" method="post" action="/admin/ban-orders">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="form_nonce" value="{{formNonce "/admin/ban-orders"}}">
+{{template "admin-user-target" .Handle}}
+<input type="hidden" name="digest" value="{{.Digest}}">
+<p class="help">This cancels the {{.Count}} order(s) above that await payment or are paid and not shipped. Each one holding coins gets one refund, of everything counted in its escrow less the network fee, to the refund address its buyer gave at checkout; nobody else is paid. The market builds and sends the refunds on its next pass, and this cannot be undone. A deposit that arrives after an order is cancelled goes back to the same address. If anything in these orders changes before you submit, nothing is changed and you review them again.</p>
+{{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
+<button type="submit">Cancel and refund {{.Count}} order(s)</button>
+</form>{{else if not .Mine}}<p>No unpaid or unshipped order is left to refund.</p>{{end}}
+</section>{{end}}{{end}}

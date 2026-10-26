@@ -26,8 +26,9 @@ import (
 //     only goes to resolved.
 //  4. After a restore from backup (scripts/restore.sh, or UPGRADING.md section 6, sets escrow_release_recheck) the next
 //     pass moves every passed deadline of a shipped order to now + 72 hours and tells the buyer
-//     (recheckReleaseDeadlines). It is the only code that writes release_recheck: reset, then set in the statement that
-//     moves release_at, as migration 079's trigger allows, so a second restore rechecks as the first did.
+//     (recheckReleaseDeadlines). It is the only code that writes release_recheck, with the Monero recheck and a vendor's
+//     ban (escrow_xmr_deadline.go): reset, then set in the statement that moves release_at, as migration 079's trigger
+//     allows, so a second restore rechecks as the first did (the ban then puts the flag back as it was).
 //
 // The deadline is shown in UTC, to the minute, on the order page (with the time left when the page loaded), on /orders
 // under 72 hours (deadlineBanners) and in every shipped, reminder, release and dispute notice.

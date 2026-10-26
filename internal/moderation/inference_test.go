@@ -264,7 +264,7 @@ func scriptedRuntime(t *testing.T, tokens int, replies ...map[string]any) (*Loca
 
 func normalizedOrdinary(t *testing.T) NormalizedInput {
 	t.Helper()
-	n, err := Normalize(ordinaryInput())
+	n, err := Normalize(reviewInput())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func evaluateWith(t *testing.T, model Model) Decision {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.Enabled = true
-	d, err := (Engine{Config: cfg, Model: model}).Evaluate(t.Context(), ordinaryInput())
+	d, err := (Engine{Config: cfg, Model: model}).Evaluate(t.Context(), reviewInput())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,9 +363,9 @@ func TestOversizedPromptNeverReachesAutoApply(t *testing.T) {
 		}
 	}
 
-	// A 4096-rune CJK listing is several thousand tokens; a runtime counting at
+	// A 4096-rune CJK text is several thousand tokens; a runtime counting at
 	// least one token per rune shows the real prompt is refused before inference.
-	input := ordinaryInput()
+	input := modelledInput()
 	input.Fields[1].Value = strings.Repeat("価格表付き手作りノート", MaxFieldRunes/11)
 	var completions atomic.Int64
 	_, perRune := localModelFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -384,7 +384,7 @@ func TestOversizedPromptNeverReachesAutoApply(t *testing.T) {
 	cfg.Enabled = true
 	d, err := (Engine{Config: cfg, Model: perRune}).Evaluate(t.Context(), input)
 	if err != nil || d.Disposition == AutoApply || !slices.Contains(d.ReasonCodes, "MODEL_FAILURE") || completions.Load() != 0 {
-		t.Fatalf("CJK listing beyond the context reached inference: %+v, %v", d, err)
+		t.Fatalf("CJK text beyond the context reached inference: %+v, %v", d, err)
 	}
 
 	_, absent := localModelFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -436,8 +436,8 @@ var sixtyFourHex = regexp.MustCompile(`[0-9a-fA-F]{64}`)
 
 func TestPromptsCarryNoHashesAndAliasesRoundTrip(t *testing.T) {
 	hexOf := func(seed string) string { h := sha256.Sum256([]byte(seed)); return hex.EncodeToString(h[:]) }
-	input := ordinaryInput()
-	input.ItemID = "listing:" + hexOf("item")
+	input := modelledInput()
+	input.ItemID = "review:" + hexOf("item")
 	input.Actor.ID = hexOf("actor")
 	input.Context.EvidenceIDs = []string{input.ItemID, "content:" + hexOf("content")}
 	input.Context.KnownTextHashes = []string{hexOf("t1"), hexOf("t2")}

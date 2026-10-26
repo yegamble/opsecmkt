@@ -39,6 +39,7 @@ func privacyReviewAssertNoMarkers(t *testing.T, e *testEnv, markers ...string) {
 		{"moderation_backfill", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_backfill r`},
 		{"moderation_actor_allocations", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_actor_allocations r`},
 		{"moderation_marker_releases", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_marker_releases r`},
+		{"moderation_deferred", `SELECT coalesce(jsonb_agg(to_jsonb(r))::text,'[]') FROM moderation_deferred r`},
 	} {
 		raw := agStr(e, table.query)
 		for _, marker := range markers {
@@ -144,7 +145,8 @@ func TestModerationPrivacyV2AllFiveCanonicalStorageAndStale(t *testing.T) {
 					t.Fatalf("pass n=%d: %v", n, err)
 				}
 				wantCalls := 1
-				if changed {
+				// Listings and uploads never reach a model (A-651).
+				if changed || kind == "listing" || kind == "upload" {
 					wantCalls = 0
 				}
 				if m.calls != wantCalls {

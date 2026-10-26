@@ -133,11 +133,12 @@ func TestAdminHidesAndRestoresReview(t *testing.T) {
 		mustContain(t, page, doxx, "Hidden by an administrator", "<strong>5.0</strong> / 5 · 1 review<", "1 hidden review is not shown to others or counted.")
 		reviewForm(t, page, "restore", badID)
 	}
-	// The parties still see it on the order, labelled; the buyer cannot publish a second one.
+	// The parties still see it on the order, labelled with the neutral sentence a banned buyer's review gets too
+	// (A-649); the buyer cannot publish a second one.
 	for _, s := range []string{buyer, vendor} {
 		body := e.body("GET", "/order?id="+bad, s, nil, 200)
-		mustContain(t, body, doxx, "Hidden from the listing and vendor pages by an administrator.")
-		mustNotContain(t, body, "Publish review")
+		mustContain(t, body, doxx, reviewNotShown)
+		mustNotContain(t, body, "Publish review", "Hidden by an administrator")
 	}
 
 	// Restoring from the vendor page returns there; it is audited and notified the same way.

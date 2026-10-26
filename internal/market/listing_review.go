@@ -19,7 +19,9 @@ import (
 //     shipping regions, fulfillment type, price, dispatch window, or a digital listing's switch between vendor and
 //     automatic delivery) or adds a photo, is saved "pending". Stock, digital units and automatic delivery content
 //     (which staff never see) do not re-hold it, nor does an administrator's edit. An administrator's own listings and the listings of a
-//     vendor an administrator marked users.listing_auto_approve (/admin/vendor-auto-approve) are never held.
+//     vendor an administrator marked users.listing_auto_approve (/admin/vendor-auto-approve) are never held. A ban
+//     clears that flag and lifting it does not set it again (admin_ban.go, A-650); no other code writes it
+//     (TestAutoApproveOnlyWriters). The account page may turn it on by confirming a HIGH_REPUTATION label (A-653).
 //   - A listing that is not approved is on no buyer or guest path (catalog, search, categories, vendor page, product page, checkout
 //     page, draft and payment request: load.go, actions_orders.go, orders_hooks.go) and its photos are not on the
 //     public image route (image_routes.go). Its vendor sees it marked "Awaiting review"; moderators and administrators
@@ -258,7 +260,9 @@ func listingReviewModeAction(c *actionCtx) (actionResult, error) {
 // vendorAutoApproveAction lets a vendor's listings publish without review, or makes them wait again, looked up by
 // handle (as vendorVerifyAction). Turning it on needs an active vendor; turning it off works on any account. Both
 // accounts are audited and the vendor is notified. It changes no listing: approved listings stay approved and
-// pending ones still wait for staff.
+// pending ones still wait for staff. The account page's reputation panel may turn it on with confirm_reputation and the
+// digest of the figures it showed (A-653): the label is recomputed under the account's row lock, and anything but
+// HIGH_REPUTATION, or figures that changed since, is refused; the administrator's audit row names the label.
 func vendorAutoApproveAction(c *actionCtx) (actionResult, error) {
 	choice := c.Form.Get("action")
 	on := choice == "on"
@@ -268,6 +272,11 @@ func vendorAutoApproveAction(c *actionCtx) (actionResult, error) {
 	handle := strings.TrimSpace(c.Form.Get("handle"))
 	if handle == "" {
 		return actionResult{}, fail(400, "Enter a vendor handle")
+	}
+	// A-653: the account page may also confirm the vendor's reputation label; the digest names the figures it showed.
+	confirmRep, digest := c.Form.Has("confirm_reputation"), c.Form.Get("reputation_digest")
+	if confirmRep && (!on || digest == "") {
+		return actionResult{}, fail(400, "A reputation confirmation only turns on publishing without review, from the vendor's account page. Nothing was changed.")
 	}
 	notFound := fail(404, "No account has the handle \""+handle+"\". Check the spelling: handles are case-sensitive.")
 	var target string
@@ -300,10 +309,24 @@ func vendorAutoApproveAction(c *actionCtx) (actionResult, error) {
 		case !on && !auto:
 			return actionResult{}, fail(409, handle+"'s listings already wait for review; nothing was changed.")
 		}
+		confirmed := ""
+		if confirmRep { // recomputed under the account's row lock, from the rows as they are now
+			rep, err := vendorReputation(ctx, tx, target)
+			if err != nil {
+				return actionResult{}, err
+			}
+			if rep.Label != repHigh {
+				return actionResult{}, fail(409, handle+"'s reputation label is "+rep.Label+", not "+repHigh+". Nothing was changed.")
+			}
+			if rep.Digest != digest {
+				return actionResult{}, fail(409, handle+"'s reputation figures changed since the page was shown: review them again. Nothing was changed.")
+			}
+			confirmed = "; reputation confirmed as " + rep.Label // the label only; the vendor's own audit row and notice never name it
+		}
 		if _, err = tx.ExecContext(ctx, "UPDATE users SET listing_auto_approve=$2 WHERE id=$1", target, on); err != nil {
 			return actionResult{}, err
 		}
-		vendorAudit, actor := "Listings publish without review: set by administrator "+admin.Handle, "Let "+handle+" publish listings without review"
+		vendorAudit, actor := "Listings publish without review: set by administrator "+admin.Handle, "Let "+handle+" publish listings without review"+confirmed
 		body := "An administrator lets your new and edited listings publish at once, without waiting for staff review."
 		if !on {
 			vendorAudit, actor = "Listings wait for review again: set by administrator "+admin.Handle, "Made "+handle+"'s listings wait for review"

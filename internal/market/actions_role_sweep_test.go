@@ -42,6 +42,7 @@ const (
 
 var sweepScopes = map[string][2]string{
 	"/admin/moderation/offline": {scopePublic, "private-ingress offline signature authorizes only one review annotation"},
+	"/admin/moderation/budget":  {scopeStaff, "private administrator raises the moderation budget only"},
 	"/admin/moderation/review":  {scopeStaff, "private administrator confirms proposal metadata only"},
 	"/challenge":                {scopePublic, "second step of sign-in, before a session exists"},
 	"/challenge/pgp":            {scopePublic, "PGP code step of sign-in, before a session exists"},
@@ -83,6 +84,7 @@ var sweepScopes = map[string][2]string{
 
 	"/admin":                        {scopeStaff, ""},
 	"/admin/ban":                    {scopeStaff, "TestBanAccount covers its refusals (self, administrators, unknown handles, missing reasons)"},
+	"/admin/ban-orders":             {scopeStaff, "TestBanOrdersRefusedForUnbanned and TestBanOrdersStaleDigest409 cover its refusals (not banned, unknown handle, stale or forged digest)"},
 	"/admin/canary":                 {scopeStaff, ""},
 	"/admin/pgp-access":             {scopeStaff, "confirmed browse-only login policy; commerce always requires PGP proof"},
 	"/admin/captcha":                {scopeStaff, ""},

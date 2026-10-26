@@ -299,10 +299,14 @@ func (unavailableModerationModel) Propose(context.Context, moderation.Normalized
 func TestModerationDeadModelCompletesHumanProposal(t *testing.T) {
 	e := newTestApp(t)
 	vendor, _ := e.user("moderation_dead_vendor", "vendor")
+	buyer, _ := e.user("moderation_dead_buyer", "buyer")
+	p := e.product(vendor, "digital")
+	order := e.order(buyer, p, "XMR", stateCompleted)
 	if err := SetModerationEnabled(context.Background(), e.DB, true); err != nil {
 		t.Fatal(err)
 	}
-	p := e.product(vendor, "digital")
+	// A review, not a listing: listings never reach a model (A-651).
+	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Works as described')", randomToken(), order, p, buyer)
 	w := moderationTestWorker(e)
 	w.Engine.Config.Enabled = true
 	w.Engine.Model = unavailableModerationModel{}
@@ -405,10 +409,15 @@ func (m *waitingModerationModel) Propose(ctx context.Context, in moderation.Norm
 func TestModerationInferenceDoesNotBlockPageOrListingEdit(t *testing.T) {
 	e := newTestApp(t)
 	vendor, _ := e.user("moderation_slow_vendor", "vendor")
+	buyer, _ := e.user("moderation_slow_buyer", "buyer")
+	p := e.product(vendor, "digital")
+	order := e.order(buyer, p, "XMR", stateCompleted)
 	if err := SetModerationEnabled(context.Background(), e.DB, true); err != nil {
 		t.Fatal(err)
 	}
-	p := e.product(vendor, "digital")
+	// A review reaches the model; listings never do (A-651).
+	review := randomToken()
+	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Works as described')", review, order, p, buyer)
 	m := &waitingModerationModel{started: make(chan struct{}), release: make(chan struct{})}
 	w := moderationTestWorker(e)
 	w.Engine.Config.Enabled = true
@@ -426,6 +435,7 @@ func TestModerationInferenceDoesNotBlockPageOrListingEdit(t *testing.T) {
 	response := e.do("GET", "/product?id="+p, "", nil)
 	e.check(response, 200)
 	agExec(e, "UPDATE products SET description='Edited while model is waiting' WHERE id=$1", p)
+	agExec(e, "UPDATE reviews SET body='Edited while model is waiting' WHERE id=$1", review)
 	close(m.release)
 	select {
 	case err := <-done:
@@ -515,7 +525,15 @@ func TestModerationHealthRequiresObservedInferenceAndPreservesFailure(t *testing
 		t.Fatal(err)
 	}
 	check("not_observed", "")
+	// A listing never reaches the model (A-651), so it observes nothing.
 	p := e.product(vendor, "digital")
+	if _, err = w.Pass(context.Background(), 20); err != nil {
+		t.Fatal(err)
+	}
+	check("not_observed", "")
+	buyer, _ := e.user("moderation_health_buyer", "buyer")
+	order := e.order(buyer, p, "XMR", stateCompleted)
+	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Works as described')", randomToken(), order, p, buyer)
 	if _, err = w.Pass(context.Background(), 20); err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,120 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Settlement payees are pinned in the database (migration 150, A-652a)
+
+No operator action and no behaviour change for any shipped path. Migration 150 adds three triggers. They check the
+plan the market records for each Monero settlement (its output rows), from the upgrade on.
+
+A new output row is refused when:
+- a refund or stray refund has a market fee or overpayment return output;
+- the claimant does not pay the settlement's destination;
+- a re-request's market fee or return differs, in address or amount, from the settlement it re-requests;
+- otherwise, an overpayment return does not pay the escrow's refund address;
+- otherwise, the market fee is not exactly the escrow's fee rate applied to the order amount, or does not pay the
+  escrow's fee destination.
+
+When a settlement with output rows is built, the build is refused unless:
+- it has a claimant output, and the outputs plus the network fee equal the coins it spends;
+- a re-request spends the same total as the settlement it re-requests, with as many outputs;
+- a release that is not a re-request has a market fee output exactly when the fee reaches the 0.001 XMR output floor,
+  and a return output exactly when it spends at least 0.001 XMR more than the order amount, returning exactly that
+  excess. Smaller amounts are added to the vendor's output, as before.
+
+The one existing exception is kept. When the wallet refused the recorded fee address (the order page names
+`ESCROW_XMR_FEE_ADDRESS`), the fee may go to the new fee address you configure while the settlement still carries
+that refusal. The database cannot check that address, because it is read from your configuration and recorded nowhere
+first; the fee amount is still checked.
+
+An escrow's refund address, fee destination and fee rate can no longer be changed after checkout. No code path, script
+or earlier migration changes them; retention still deletes a retired escrow whole.
+
+The database does not check:
+- the signed transaction itself (the watcher compares the wallet's transaction with the plan before storing it);
+- the network fee (`ESCROW_XMR_MAX_FEE` is applied by the watcher);
+- that the spent total matches the deposits the settlement claims;
+- a build stored with no output rows;
+- the order amount, which the fee and the return follow (the application sets it only while the order is a draft, at checkout);
+- rows written before the upgrade.
+
+If a build ever planned another output, the database would refuse to store it. The watcher logs the refused store and
+the settlement stays requested, unpaid. Do not work around such a refusal by hand; report it.
+
+## A banned vendor's unpaid and unshipped orders can be refunded (A-652b)
+
+No migration. A banned account's page under *Admin → Users* (`/admin/users?handle=`) gains *Orders of this banned
+account*: its open Monero escrow orders and those whose escrow may still hold coins, and a separate form
+(`POST /admin/ban-orders`, administrators only, password and authenticator code) that cancels its orders awaiting
+payment and paid ones not shipped, at most 100 at a time, and has the market send each one's escrowed coins back to the
+refund address its buyer gave at checkout. Nothing changes until an administrator submits it: banning an account still
+cancels none of its open orders, and no new payee or address is involved. The overview now flags *Users* while a banned
+account has open escrow orders. See *Account ban* under [authentication](docs/operator-guide.md#authentication).
+
+## A ban gives buyers of shipped orders at least 72 hours to dispute (A-652d)
+
+**Behaviour change** (owner decision 2026-10-25, "refund + hold"). No migration. Until now banning a vendor left its
+shipped orders' release deadlines alone, so a shipped order with no dispute completed at its deadline (its release then
+held, A-652c) and its buyer could no longer dispute it. Now the ban, in the same step, moves every release deadline of
+the banned vendor's shipped Monero escrow orders with no dispute that is less than 72 hours away (or already passed) to
+72 hours after the ban, never earlier, and tells each buyer, for their order, until when a dispute can be opened and
+that otherwise the order completes and its payment is held. A later deadline stays, the buyer is still told, lifting the
+ban never shortens a deadline, and banning a buyer changes none. No money moves. While the vendor is banned the order
+page, the reminders and the completion notes say the payment is held instead of sent. A vendor banned before the
+upgrade is not revisited: its shipped orders keep the deadlines they have. Do not lift and reimpose a ban to apply
+this: lifting it releases held payments at the next escrow pass. An order the watcher completes at its already-passed
+deadline at the same moment as the ban is not extended either; its release is held (A-652c) and A-652f applies.
+
+## Releases to a banned vendor are held until the ban is lifted (migration 149, A-652c)
+
+**Behaviour change** (owner decision 2026-10-25, "refund + hold"). Until now a banned vendor's open escrow orders were
+paid as usual: a shipped order completed by the buyer's confirmation or its release deadline sent its release to the
+address the vendor gave at shipment. Now a release to a banned vendor stays requested, with the class `vendor-closed`,
+until the ban is lifted: the escrow watcher asks the wallet nothing for it, administrators get one *Payment review
+needed* notice for the order, and the order page says the release is held. Refunds and stray refunds are paid as usual,
+a release already built or sent before the ban is sent and followed as before, and no other address is ever paid.
+Lifting the ban is the only step: the next pass builds and sends the release. A release already requested for a vendor
+banned before the upgrade is held from the first pass on the new build. A later administrator action, one order at a
+time, is to refund a release held for a long time to the order's buyer refund address instead (A-652f); it is not
+available yet.
+
+Migration 149 replaces the body of the database function `escrow_market_may_sign` (migration 081), which the trigger
+`xmr_settlements_market_fits` (migration 084) reads before a Monero settlement's transaction is stored, so that for a
+release it also requires the order's vendor not to be banned. (The triggers on the historical Bitcoin escrow tables
+read it too; no active code writes those tables, since Monero is the only payment currency.) It changes no table,
+column, index, row or other function, and no operator action is needed. Rolling the application back to a build
+without the watcher's check leaves the function in place: that build would try to build such a release on each pass,
+and the database refuses to store it (logged as a refused store, the transaction discarded unsent), so it is still not
+paid until the ban is lifted.
+
+## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
+
+No migration. The moderation protocol is now `moderation-v5`, and the controller refuses v1–v4 pins. **If you start
+`moderation-worker` with `--prompt-version moderation-v4`, change it to `moderation-v5`** (or drop the flag, which
+defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Grammars and model
+reason codes are unchanged, so earlier native grammar checks still apply.
+
+By owner directive the model no longer judges listings by text. Listing and upload jobs never reach the model, even
+with `--model` on: they get the deterministic checks only and, when those find nothing, a proposal with the new Go-only
+code `MODEL_NOT_USED` and the same `QUEUE_HUMAN` routing an absent model gives. With the model enabled, listings and
+uploads that the model used to clear as `AUTO_APPLY` now wait in the human queue, so expect more queued proposals and
+plan review staffing; one the model alone used to escalate now waits in the ordinary queue (deterministic injection
+markers still escalate). Reviews, disputes and payment flags still use the model. Stage B no longer receives an
+`actor_reputation` value (it was always 0). Stored v1–v4 decisions keep their bytes and still render, and a controller
+change of prompt version gives new work new decision identities as before.
+
+## The moderation budget is raised on the private panel; lower worker flags are ignored (A-654)
+
+No migration. An administrator can now raise the lifetime moderation budget under **Moderation budget** on the
+private moderation panel (`/admin/moderation`), confirmed with password and authenticator code and audited; it
+applies without restarting the controller. **Flag behaviour change:** a moderation worker started with
+`--max-records` or `--max-reserved-bytes` below the stored value no longer lowers the budget, or exits when that value
+is below the allocations already made; it keeps the stored value and logs
+`moderation-worker: stored moderation budget is higher; flag ignored (--max-records)` (or `--max-reserved-bytes`). A
+higher flag still raises it, and `--max-pending` is unchanged. If your service unit or script passed a lower value on
+purpose to shrink the budget, that no longer works: use the host-only procedure in
+[Capacity and overload](docs/moderation-agent.md#capacity-and-overload). Restart the controller on the new build after
+the app; an older controller still applies a lower flag.
+
 ## Staff pages no longer wait for PostgreSQL's JIT compiler (MOD72-8)
 
 No migration or setting. The application's database pool now starts each connection with `jit` off, beside its
@@ -326,7 +440,7 @@ again even when the deposit is listed again, and its coins are settled with the 
 in the market clears that alert, so the order stays on the desk and under retention's `escrow_alert` reason. To list
 them, use the query in the *Except while it still claims deposits* item below.
 
-## Optional moderation proposals (migrations 125 through 127, 134 and 146)
+## Optional moderation proposals (migrations 125 through 127, 134, 146 and 148)
 
 Application startup applies the append-only moderation tables/triggers and
 offline review receipts. Enqueueing and inference remain off, so existing
@@ -366,8 +480,8 @@ report `stop_type` (or the older `stopped_*` flags), `truncated` and
 launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
 and human review. Stored v1/v2 decisions keep their bytes and still render.
 
-The current `moderation-v4` protocol refuses v1, v2 and v3 pins: change the
-controller's `--prompt-version` to `moderation-v4` when upgrading it. Prompt
+The `moderation-v4` protocol refused v1, v2 and v3 pins; the current pin is
+`moderation-v5` (see the section above). Prompt
 data now writes `[` and `]` inside JSON strings as `\u005b` and `\u005d` (same JSON
 meaning), because llama.cpp's `/completion` parses special tokens in the prompt
 and bracket-spelled control tokens such as `[INST]` in vendor text could
@@ -381,8 +495,9 @@ Each allocation prepays 512 KiB, so the default bytes bind at 512 allocations.
 Legacy usage is inventoried once; no historical data is removed to fit a limit.
 Private queue status shows usage, limits and bounded coalesced overflow warnings.
 At saturation the original marketplace write still commits without a fabricated
-clean result. Raise an approved budget using the controller's bounded capacity
-flags; lowering below allocated usage is refused. Database/index/WAL/backup disk
+clean result. Raise an approved budget under Moderation budget on the private
+moderation panel or with the controller's bounded capacity flags; lowering below
+allocated usage is refused, and a lower lifetime flag is ignored (A-654, above). Database/index/WAL/backup disk
 size is not bounded by the logical payload reservation.
 
 Migration 146 makes refused captures recoverable. Each refusal leaves one
@@ -402,14 +517,31 @@ moved category median) stays a HOLD and is not captured again. Each actor may re
 `max(8, 2% of --max-records)` new allocations per 24 hours (81 by default). At
 the default 256 MiB byte budget (512 lifetime allocations) one constantly editing
 account can use up the pool in about six days; refused targets then wait as
-markers or rescans and nothing new is captured until you raise
-`--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
-"Capture requires attention" on the private moderation panel. A
+markers or rescans and nothing new is captured until you raise the budget on
+the private panel or with `--max-reserved-bytes` or `--max-records`. Watch for `retained_capacity` under
+"Capture requires attention" on the private moderation panel; the Admin overview
+also shows a "Moderation capture needs attention" alert while the pool runs low
+or refused targets wait (A-648). A
 revision whose job completed stale no longer blocks capturing the same content
 later. New proposals omit per-field digests and, except for listings, the text
 fingerprint. The migration adds tables only; existing jobs and proposals are not
 rewritten. Upgrade the app (and its migrations) before restarting the controller:
 an older controller runs no sweep, so markers simply wait.
+
+Migration 148 (SEC72AA-1) stops marketplace writes from waiting on the capacity
+ledger while capture is enabled. Before it, an edit could fail with a deadlock
+error when another transaction had admitted a moderated change and then locked
+the same record. A write whose admission finds the ledger row held now leaves a
+reference row (kind, target id, time noted; no account or content) in the new
+`moderation_deferred` table and commits; the next worker pass admits the
+record's current revision through the usual admission checks. Worker results,
+staff reviews and the capture switch take the ledger row first. The migration
+adds one table and replaces three functions (admission, source deletion and the
+sweep) and adds the drain; no existing row is rewritten. The sweep is a database
+function, so even an older controller's pass drains the new table. Restart the
+controller on the new build after the app: until then its result transaction
+still takes the ledger row last, so an edit racing a worker result can still
+fail with a retryable deadlock error.
 
 New gateway hashes omit weak/low-contrast similarity evidence. Useful legacy
 hashes and exact SHA256 matching remain; no extra wire field, decoding boundary,

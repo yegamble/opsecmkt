@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -47,7 +48,7 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 	signingPath := f.String("signing-key", os.Getenv("MODERATION_SIGNING_KEY_FILE"), "private separate Ed25519 seed file for encrypted escalation bundles")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(out, "usage: opsecmkt moderation-worker [--enabled | --disable] [--once] [--replay] [--database-url-file FILE] [--interval 1m] [--batch 20]\nOptional local inference: --model --model-socket PATH --weights FILE --weights-sha256 HEX --model-id ID --prompt-version moderation-v4\nReview policy: --confidence-floor 0.9 --new-actor-days 14 --abuse-threshold 5 --sla 24h\nCapacity: --max-pending 256 --max-records 4096 --max-reserved-bytes 268435456; three active jobs per actor\nEncrypted private queue export: --escalation-recipient PUBLIC_KEY_FILE --signing-key PRIVATE_SEED_FILE\nReplay skips completed metadata-only jobs. Disabled by default. No target, account or payment mutation. Inference never runs in the web process.")
+			fmt.Fprintln(out, "usage: opsecmkt moderation-worker [--enabled | --disable] [--once] [--replay] [--database-url-file FILE] [--interval 1m] [--batch 20]\nOptional local inference: --model --model-socket PATH --weights FILE --weights-sha256 HEX --model-id ID --prompt-version moderation-v5\nReview policy: --confidence-floor 0.9 --new-actor-days 14 --abuse-threshold 5 --sla 24h\nCapacity: --max-pending 256 --max-records 4096 --max-reserved-bytes 268435456; three active jobs per actor; a lifetime budget flag below the stored value is ignored\nEncrypted private queue export: --escalation-recipient PUBLIC_KEY_FILE --signing-key PRIVATE_SEED_FILE\nReplay skips completed metadata-only jobs. Disabled by default. No target, account or payment mutation. Inference never runs in the web process.")
 			return nil
 		}
 		return errors.New("moderation-worker: invalid flags")
@@ -166,23 +167,8 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		}
 	}
 	if len(capacityFlags) > 0 {
-		// Restarting a controller preserves the stored policy. A partial explicit
-		// update changes only the named limits, never resets other approved values.
-		var current market.ModerationLimits
-		if err = db.QueryRowContext(ctx, `SELECT max_pending,max_records,max_bytes FROM moderation_capacity WHERE singleton`).Scan(&current.MaxPending, &current.MaxRecords, &current.MaxBytes); err != nil {
-			return errors.New("moderation-worker: capacity configuration unavailable")
-		}
-		if capacityFlags["max-pending"] {
-			current.MaxPending = limits.MaxPending
-		}
-		if capacityFlags["max-records"] {
-			current.MaxRecords = limits.MaxRecords
-		}
-		if capacityFlags["max-reserved-bytes"] {
-			current.MaxBytes = limits.MaxBytes
-		}
-		if err = market.ConfigureModerationLimits(ctx, db, current); err != nil {
-			return errors.New("moderation-worker: capacity configuration unavailable or below existing allocations")
+		if err = applyModerationCapacityFlags(ctx, db, limits, capacityFlags, out); err != nil {
+			return err
 		}
 	}
 	if err = market.SetModerationEnabled(ctx, db, true); err != nil {
@@ -215,6 +201,48 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		case <-timer.C:
 		}
 	}
+}
+
+// applyModerationCapacityFlags stores the explicitly named limits. Restarting a controller preserves the stored
+// policy: a partial update changes only the named limits, and the lifetime budget (--max-records,
+// --max-reserved-bytes) only grows here. An administrator can raise it on the private moderation panel without a
+// restart, so a flag below the stored value is an older setting: it is ignored with a fixed line rather than lowering
+// the budget or exiting below the allocations made since (A-654). Lowering is a host-only procedure
+// (docs/moderation-agent.md). The capacity row is locked first, so a concurrent panel raise is never undone.
+func applyModerationCapacityFlags(ctx context.Context, db *sql.DB, limits market.ModerationLimits, named map[string]bool, out io.Writer) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return errors.New("moderation-worker: capacity configuration unavailable")
+	}
+	defer tx.Rollback()
+	var current market.ModerationLimits
+	if err = tx.QueryRowContext(ctx, `SELECT max_pending,max_records,max_bytes FROM moderation_capacity WHERE singleton FOR UPDATE`).Scan(&current.MaxPending, &current.MaxRecords, &current.MaxBytes); err != nil {
+		return errors.New("moderation-worker: capacity configuration unavailable")
+	}
+	if named["max-pending"] {
+		current.MaxPending = limits.MaxPending
+	}
+	for _, budget := range []struct {
+		flag   string
+		value  int64
+		stored *int64
+	}{{"max-records", limits.MaxRecords, &current.MaxRecords}, {"max-reserved-bytes", limits.MaxBytes, &current.MaxBytes}} {
+		if !named[budget.flag] {
+			continue
+		}
+		if budget.value < *budget.stored {
+			fmt.Fprintln(out, "moderation-worker: stored moderation budget is higher; flag ignored (--"+budget.flag+")")
+			continue
+		}
+		*budget.stored = budget.value
+	}
+	if err = market.ConfigureModerationLimits(ctx, tx, current); err != nil {
+		return errors.New("moderation-worker: capacity configuration unavailable or below existing allocations")
+	}
+	if err = tx.Commit(); err != nil {
+		return errors.New("moderation-worker: capacity configuration unavailable")
+	}
+	return nil
 }
 
 // Read only the role's explicitly selected secret. Never import application,

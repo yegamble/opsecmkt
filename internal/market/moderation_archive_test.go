@@ -133,6 +133,17 @@ func TestModerationDeleteTriggerNoDeadlock(t *testing.T) {
 			e.product(v, "digital")
 		}
 	}
+	// The admit-then-lock leg's first listings: only that leg locks them, and
+	// before any other row, so its transactions add no row-order cycle with the
+	// delete leg's two-listing transactions; any deadlock is the capacity row's.
+	var admitting []string
+	for i := range 4 {
+		v, _ := e.user("delete_stress_admit_"+string(rune('a'+i)), "vendor")
+		admitting = append(admitting, v)
+		for range 3 {
+			e.product(v, "digital")
+		}
+	}
 	var deadlocks atomic.Int64
 	note := func(ctx context.Context, err error) {
 		if err != nil && ctx.Err() == nil && strings.Contains(err.Error(), "40P01") {
@@ -184,6 +195,30 @@ func TestModerationDeleteTriggerNoDeadlock(t *testing.T) {
 				defer wg.Done()
 				for i := g; ctx.Err() == nil; i++ {
 					_, err := e.DB.ExecContext(ctx, `UPDATE products SET description=md5(random()::text) WHERE id=(SELECT id FROM products WHERE vendor_id=$1 ORDER BY random() LIMIT 1)`, vendors[i%len(vendors)])
+					note(ctx, err)
+				}
+			}()
+		}
+		// SEC72AA-1: a transaction that admits one moderated change and then
+		// locks another listing, one the vendor edits above also change.
+		for g := range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := g; ctx.Err() == nil; i++ {
+					tx, err := e.DB.BeginTx(ctx, nil)
+					if err != nil {
+						return
+					}
+					_, err = tx.ExecContext(ctx, `UPDATE products SET description=md5(random()::text) WHERE id=(SELECT id FROM products WHERE vendor_id=$1 ORDER BY random() LIMIT 1)`, admitting[i%len(admitting)])
+					if err == nil {
+						_, err = tx.ExecContext(ctx, `UPDATE products SET stock=stock+1 WHERE id=(SELECT id FROM products WHERE vendor_id=$1 ORDER BY random() LIMIT 1)`, vendors[(i+7)%len(vendors)])
+					}
+					if err == nil {
+						err = tx.Commit()
+					} else {
+						_ = tx.Rollback()
+					}
 					note(ctx, err)
 				}
 			}()

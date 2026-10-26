@@ -37,6 +37,15 @@ for (const width of [320, 1280]) {
     await expect(page.getByRole('link', { name: /Message user/ })).toHaveAttribute('href', '/messages?to=ghost_circuit');
     await expect(page.getByRole('table', { name: 'Orders by state' }).locator('tbody tr').last()).toHaveText(/Total\s*1\s*17/);
     await expect(page.getByRole('table', { name: "Disputes on this account's orders" })).toContainText('Opened against this account');
+    // A-653: the vendor's reputation figures and the Go rule's proposed label, read-only (fewer than 25 completed
+    // orders, so STANDARD and no confirmation form); the rule table scrolls inside its own region.
+    const reputation = page.getByRole('region', { name: 'Reputation figures' });
+    await expect(reputation).toContainText('over retained history');
+    await expect(reputation).toContainText('Proposed label: STANDARD (reasons: FEW_COMPLETED_ORDERS, FEW_DISTINCT_BUYERS)');
+    await expect(reputation.getByRole('table', { name: 'Reputation rules and figures' }).locator('tbody tr')).toHaveCount(7);
+    await expect(reputation.locator('form')).toHaveCount(0);
+    const rules = (await reputation.getByRole('region', { name: 'Reputation rules' }).boundingBox())!;
+    expect(rules.x + rules.width, `reputation rules at ${width}px`).toBeLessThanOrEqual(width);
     for (const button of ['Suspend ghost_circuit', 'Ban ghost_circuit', 'Update role of ghost_circuit', 'Remove the verified mark']) {
       await expect(page.getByRole('button', { name: button })).toBeVisible();
     }

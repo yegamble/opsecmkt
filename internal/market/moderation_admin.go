@@ -37,7 +37,10 @@ type ModerationAdminView struct {
 type ModerationCapacityView struct {
 	Pending, MaxPending, AllocatedRecords, MaxRecords, AllocatedBytes, MaxBytes, LegacyJobs, LegacyBytes, CompletedMinimal int64
 	Backfill, MaxBackfill, ActorShare, Parked, Rescans, ActorMarkers                                                       int64
-	Overflow                                                                                                               []ModerationOverflowView
+	// Deferred counts records whose capture found the capacity row busy (moderation_deferred) and that have no marker;
+	// Awaiting is Backfill plus Deferred, so a record both deferred and marked counts once (A-662).
+	Deferred, Awaiting int64
+	Overflow           []ModerationOverflowView
 }
 type ModerationOverflowView struct {
 	Kind, Reason, Last string
@@ -117,9 +120,10 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	}
 	v.Capacity = &ModerationCapacityView{}
 	cap := v.Capacity
-	if err = a.db.QueryRowContext(ctx, `SELECT pending,max_pending,allocated_records,max_records,allocated_bytes,max_bytes,legacy_jobs,legacy_bytes,completed_v2,backfill,max_backfill,GREATEST(8,max_records*2/100),(SELECT count(*) FROM moderation_backfill WHERE parked),(SELECT count(*) FROM moderation_actor_allocations WHERE rescan),GREATEST(0,LEAST(max_actor_markers,max_backfill-1)) FROM moderation_capacity WHERE singleton`).Scan(&cap.Pending, &cap.MaxPending, &cap.AllocatedRecords, &cap.MaxRecords, &cap.AllocatedBytes, &cap.MaxBytes, &cap.LegacyJobs, &cap.LegacyBytes, &cap.CompletedMinimal, &cap.Backfill, &cap.MaxBackfill, &cap.ActorShare, &cap.Parked, &cap.Rescans, &cap.ActorMarkers); err != nil {
+	if err = a.db.QueryRowContext(ctx, `SELECT pending,max_pending,allocated_records,max_records,allocated_bytes,max_bytes,legacy_jobs,legacy_bytes,completed_v2,backfill,max_backfill,GREATEST(8,max_records*2/100),(SELECT count(*) FROM moderation_backfill WHERE parked),(SELECT count(*) FROM moderation_actor_allocations WHERE rescan),GREATEST(0,LEAST(max_actor_markers,max_backfill-1)),(SELECT count(*) FROM moderation_deferred d WHERE NOT EXISTS(SELECT 1 FROM moderation_backfill b WHERE b.kind=d.kind AND b.target_id=d.target_id)) FROM moderation_capacity WHERE singleton`).Scan(&cap.Pending, &cap.MaxPending, &cap.AllocatedRecords, &cap.MaxRecords, &cap.AllocatedBytes, &cap.MaxBytes, &cap.LegacyJobs, &cap.LegacyBytes, &cap.CompletedMinimal, &cap.Backfill, &cap.MaxBackfill, &cap.ActorShare, &cap.Parked, &cap.Rescans, &cap.ActorMarkers, &cap.Deferred); err != nil {
 		return err
 	}
+	cap.Awaiting = cap.Backfill + cap.Deferred
 	overflows, err := a.db.QueryContext(ctx, `SELECT kind,reason,occurrences,last_seen FROM moderation_overflow WHERE occurrences>0 ORDER BY kind,reason`)
 	if err != nil {
 		return err
@@ -247,6 +251,29 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, fail(400, "Choose an existing proposal and a review action.")
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
+		// The capacity row first, before the proposal and source rows
+		// (SEC72AA-1): recording the review updates its counters.
+		//
+		// SEC87-V1: confirmedTx has already locked this administrator's own
+		// account row (FOR NO KEY UPDATE), the session row (FOR SHARE) and the
+		// form receipt; a confirmed receipt form has no hook before those locks
+		// (confirmedTxWith refuses Before for ConfirmedFormNonce), so the capacity
+		// row cannot come first without changing that shared contract. It cannot
+		// deadlock: no transaction holding the capacity row waits on those rows.
+		// Admission takes the capacity row with SKIP LOCKED, and an admitting
+		// marketplace transaction then holds it until commit: no application path
+		// known (QA91-2) then locks an administrator's account, session or receipt
+		// row other than its own actor row, which confirmedTx takes first; if one
+		// ever did, PostgreSQL's deadlock detection aborts one transaction rather
+		// than hanging. The worker's sweep,
+		// results and cached completion, the offline review and the capture
+		// switch reach an account row only through a foreign-key check or FOR KEY
+		// SHARE (SKIP LOCKED in the sweep), which does not conflict with FOR NO
+		// KEY UPDATE, and never sessions or receipts; the budget raise takes the
+		// same order as this review (TestModerationReviewAccountRowBeforeCapacityNoWait).
+		if _, err := c.Tx.ExecContext(c.Ctx(), `SELECT 1 FROM moderation_capacity WHERE singleton FOR UPDATE`); err != nil {
+			return actionResult{}, err
+		}
 		var expires time.Time
 		var disposition string
 		err := c.Tx.QueryRowContext(c.Ctx(), `SELECT expires_at,disposition FROM moderation_suggestions WHERE id=$1 FOR UPDATE`, id).Scan(&expires, &disposition)

@@ -94,6 +94,11 @@ func (e Engine) Evaluate(ctx context.Context, input Input) (Decision, error) {
 	failure := ""
 	if !decidable {
 		switch {
+		case !modelReadsKind(in.Kind):
+			// Deliberate, not a failure: the same review routing as an absent
+			// model, under a code that records why no model was consulted.
+			p.Confidence, p.Action = 0, ActionFlagReview
+			p.ReasonCodes = []string{"MODEL_NOT_USED", "HUMAN_REVIEW"}
 		case !cfg.Enabled || e.Model == nil:
 			p.Confidence, p.Action = 0, ActionFlagReview
 			p.ReasonCodes = []string{"MODEL_ABSENT", "HUMAN_REVIEW"}

@@ -11,8 +11,8 @@ import (
 )
 
 // PromptVersion names the prompts, grammars, allowlists and request limits.
-// v1, v2 and v3 pins are refused; their stored decisions remain readable.
-const PromptVersion = "moderation-v4"
+// v1 through v4 pins are refused; their stored decisions remain readable.
+const PromptVersion = "moderation-v5"
 
 const (
 	ActionNoAction       = "NO_ACTION"
@@ -39,7 +39,7 @@ func ModelActions() []string {
 // ReasonCodes is the complete vocabulary of stored decisions, including codes
 // that only Go may add. Use ModelReasonCodes for what a model may assert.
 func ReasonCodes() []string {
-	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED"}
+	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_NOT_USED", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED"}
 }
 
 // ModelReasonCodes is the final-proposal allowlist: content observations a
@@ -76,10 +76,22 @@ func DefaultConfig() Config {
 	return Config{PromptVersion: PromptVersion, ConfidenceFloor: .9, NewActorDays: 14, AbuseThreshold: 5, HumanSLA: 24 * time.Hour}
 }
 
+// Reputation is reserved and no model sees it. The market never sets it
+// (TestNoMarketCodeSetsActorReputation), so every market job takes Route's
+// unrated-actor weight, and the field stays in the canonical input encoding so
+// input hashes keep their form. A Go reputation rule is a separate change.
 type Actor struct {
 	ID         string  `json:"id"`
 	AgeDays    int     `json:"age_days"`
 	Reputation float64 `json:"reputation"`
+}
+
+// modelReadsKind reports whether an item kind may reach a model. By owner
+// directive the model never judges listings by text: listing and upload items
+// are evaluated by deterministic checks only and record MODEL_NOT_USED. Kinds
+// the market does not queue (message, order) never reach it either.
+func modelReadsKind(kind string) bool {
+	return kind == "review" || kind == "dispute" || kind == "payment_flag"
 }
 
 // Trust is always DATA. It describes provenance; it is not a prompt capability.

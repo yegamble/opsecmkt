@@ -3,7 +3,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, setRole, signedIn, submitStatus, withinViewport } from './db-helpers';
+import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, seedPGPAccess, seedRecordedMoneroEscrow, setRole, signedIn, submitStatus, withinViewport } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
@@ -442,6 +442,48 @@ test('an administrator bans a vendor from the Users section and the vendor canno
   expect(await vendorSignIn(vendorPassword)).toBe(303);
   await expect(vendor.locator('.account-name')).toHaveText(vendorHandle);
   await vendor.context().close();
+  await admin.context().close();
+});
+
+// A-652b: on a banned vendor's account page the administrator refunds its unpaid Monero escrow order with the separate
+// form, with JavaScript disabled. No wallet runs: the escrow record is a format fixture (seedRecordedMoneroEscrow) and
+// the order received nothing, so the refund just cancels it (settlements are covered by the Go simulated-RPC tests).
+// A reload offers nothing more to refund and the buyer's order page shows it cancelled.
+test('an administrator refunds a banned vendor\'s unpaid escrow order from its account page', async ({ browser, baseURL }) => {
+  const sql = (query: string) => execFileSync('psql', [process.env.E2E_DATABASE_URL!, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
+  const hex = (bytes: number) => randomBytes(bytes).toString('hex');
+  const [vendorHandle, buyerHandle] = [uniqueHandle('refund_vendor'), uniqueHandle('refund_buyer')];
+  const [productID, order] = [hex(16), hex(32)];
+  const buyer = await signedIn(browser, baseURL, buyerHandle, 'browser-ban-refund-buyer-123', true);
+  await seedPGPAccess(buyer);
+  sql(`INSERT INTO users(id,handle,password_hash,role) VALUES ('${hex(16)}','${vendorHandle}','x','vendor');
+    INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
+      VALUES ('${productID}',(SELECT id FROM users WHERE handle='${vendorHandle}'),'Ban refund fixture','Seeded by db-admin.spec.ts','Other','Worldwide','physical',100000,500000000000,0);
+    INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)
+      VALUES ('${order}',(SELECT id FROM users WHERE handle='${buyerHandle}'),'${productID}','XMR',500000000000,'awaiting_payment');`);
+  seedRecordedMoneroEscrow(sql, order);
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  await admin.goto(`/admin/users?handle=${vendorHandle}`);
+  await expect(admin.getByRole('region', { name: 'Orders of this banned account' })).toHaveCount(0);
+  const ban = admin.getByRole('region', { name: 'Ban this account' });
+  await ban.getByLabel('Reason').fill('Took payment for orders and shipped nothing.');
+  await ban.getByLabel('Current password').fill(ADMIN.password);
+  expect(await submitStatus(admin, () => ban.getByRole('button', { name: `Ban ${vendorHandle}` }).click())).toBe(303);
+
+  const section = admin.getByRole('region', { name: 'Orders of this banned account' });
+  await expect(section.getByRole('table', { name: 'What the refund takes now' }).locator('tr', { hasText: 'Awaiting payment, nothing received' })).toContainText('1');
+  await expect(section.getByRole('table', { name: 'Open orders and escrows holding coins' })).toContainText(order.slice(0, 8));
+  await section.locator('form').getByLabel('Current password').fill(ADMIN.password);
+  expect(await submitStatus(admin, () => section.getByRole('button', { name: 'Cancel and refund 1 order(s)' }).click())).toBe(303);
+  await expect(admin).toHaveURL(new RegExp(`/admin/users\\?handle=${vendorHandle}#ban-orders$`));
+  await expect(section.getByRole('status')).toContainText('Orders cancelled.');
+  await admin.reload();
+  await expect(section).toContainText('No unpaid or unshipped order is left to refund.');
+  await expect(section.locator('form')).toHaveCount(0);
+  expect(sql(`SELECT state FROM orders WHERE id='${order}'`)).toBe('cancelled');
+  await buyer.goto(`/order?id=${order}`);
+  await expect(buyer.locator('main')).toContainText('Cancelled');
+  await buyer.context().close();
   await admin.context().close();
 });
 

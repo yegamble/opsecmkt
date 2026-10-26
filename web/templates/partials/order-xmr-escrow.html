@@ -43,7 +43,7 @@
 <section class="escrow-deadline" id="xmr-escrow-deadline" aria-labelledby="xmr-escrow-deadline-heading">
 <h3 id="xmr-escrow-deadline-heading">Release deadline</h3>
 <p><strong>{{.At}}</strong> — {{if .Due}}passed: the release is due{{else}}{{.Left}}{{end}}</p>
-<p class="help">{{if not .Due}}The time left was computed when this page loaded; reload the page to update it. {{end}}{{if .Rechecked}}This deadline was moved after the market restored its records from a backup. {{end}}If the buyer has neither confirmed receipt nor opened a dispute by then, the order completes at that time and the market releases the coins in this escrow to the vendor. Opening a dispute cancels the deadline: an administrator then decides the order. Once the deadline has passed, a dispute can no longer be opened.</p>
+<p class="help">{{if not .Due}}The time left was computed when this page loaded; reload the page to update it. {{end}}{{if .Rechecked}}This deadline was moved after the market restored its records from a backup. {{end}}{{if .VendorClosed}}The vendor's account is closed. If the buyer has neither confirmed receipt nor opened a dispute by then, the order completes at that time and the market holds the coins in this escrow: it sends nothing to the vendor while the account is closed, and no other address is ever paid.{{else}}If the buyer has neither confirmed receipt nor opened a dispute by then, the order completes at that time and the market releases the coins in this escrow to the vendor.{{end}} Opening a dispute cancels the deadline: an administrator then decides the order. Once the deadline has passed, a dispute can no longer be opened.</p>
 </section>{{end}}{{with .NextStep}}
 <p role="status">{{.}}</p>{{end}}{{if .Ship}}
 <section class="order-action" id="xmr-escrow-ship" aria-labelledby="xmr-escrow-ship-heading">
@@ -61,7 +61,7 @@
 </section>{{end}}{{if .Confirm}}
 <section class="order-action" id="xmr-escrow-confirm" aria-labelledby="xmr-escrow-confirm-heading">
 <h3 id="xmr-escrow-confirm-heading">Confirm receipt</h3>
-<p class="help" id="xmr-escrow-confirm-help">Confirm receipt only once the goods have arrived. Confirming receipt completes the order and releases the coins in this escrow to the vendor: the market builds the release to the address the vendor gave and sends it. This cannot be undone, and the order can then no longer be disputed. If the goods did not arrive, open a dispute instead.</p>
+<p class="help" id="xmr-escrow-confirm-help">Confirm receipt only once the goods have arrived. {{if and .Deadline .Deadline.VendorClosed}}Confirming receipt completes the order. The vendor's account is closed, so the market then holds the coins in this escrow: it sends nothing to the vendor while the account is closed, and no other address is ever paid.{{else}}Confirming receipt completes the order and releases the coins in this escrow to the vendor: the market builds the release to the address the vendor gave and sends it.{{end}} This cannot be undone, and the order can then no longer be disputed. If the goods did not arrive, open a dispute instead.</p>
 <form class="stack" method="post" action="/escrow-xmr/confirm" aria-describedby="xmr-escrow-confirm-help">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/escrow-xmr/confirm"}}">

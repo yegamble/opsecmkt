@@ -174,6 +174,7 @@ func TestAdminSections(t *testing.T) {
 // adminRedirectsCoveredElsewhere are the admin actions whose success needs a fixture of its own (a host agent, Monero
 // escrow, an uploadable logo, a signed canary, an order or listing); the named test asserts each one's Location.
 var adminRedirectsCoveredElsewhere = map[string]string{
+	"/admin/moderation/budget":      "TestModerationBudgetRaiseConfirmedAudited: /admin/moderation",
 	"/admin/moderation/review":      "TestModerationAdminQueueAuthorizationAndReview: /admin/moderation",
 	"/admin/moderation/offline":     "TestModerationOfflineReviewNoLoginReplayOrStaleAcceptance: /admin/moderation/offline",
 	"/admin/reboot":                 "TestHostRebootCommitsAuditBeforeOneDispatchAndNeverReplays: /admin/system#host-control",
@@ -189,6 +190,7 @@ var adminRedirectsCoveredElsewhere = map[string]string{
 	"/admin/listing":                "inventory tests: the listing edit page the form is on",
 
 	"/admin/escrow-xmr-settled-by-hand": "TestXMREscrowSettledByHand: /moderator, because the order page may no longer be readable once its alert clears",
+	"/admin/ban-orders":                 "TestBanOrdersRefundsUnpaidAndUnshipped: the banned account's page (/admin/users?handle=…#ban-orders), the only page holding its form",
 }
 
 // A-542: every admin post that succeeds returns to the section holding its form, with its notice's fragment, and a

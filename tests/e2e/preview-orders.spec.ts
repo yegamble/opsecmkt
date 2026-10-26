@@ -35,6 +35,9 @@ test('reviews are labelled verified purchases without reviewer handles', async (
   await expect(reviews.locator('.badge')).toHaveText('Completed order (test network)');
   await expect(reviews).toContainText('Rated 4 out of 5');
   await expect(reviews).not.toContainText('preview_user');
+  // A-649: the policy is public; how many reviews it leaves out is not.
+  await expect(reviews).toContainText('Reviews by banned accounts are not shown or counted.');
+  await expect(reviews).not.toContainText('by a banned account is');
 });
 
 test('moderator desk offers no outcome for a dispute without escrow', async ({ page }) => {

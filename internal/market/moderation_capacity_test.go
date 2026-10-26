@@ -119,12 +119,27 @@ func TestModerationConcurrentAdmissionHasAtomicCaps(t *testing.T) {
 			if mode == "actor" {
 				want = 3
 			}
-			if got := agInt(e, `SELECT count(*) FROM moderation_jobs`); got != want {
-				t.Fatalf("admitted %d want %d", got, want)
+			// SEC72AA-1: an admission that found the capacity row busy deferred its
+			// reference instead of waiting, so the cap may not be reached yet.
+			if got := agInt(e, `SELECT count(*) FROM moderation_jobs`); got > want {
+				t.Fatalf("admitted %d, cap %d", got, want)
 			}
 			if got := agInt(e, `SELECT count(*) FROM products`); got != attempts {
 				t.Fatalf("capacity changed marketplace writes: %d", got)
 			}
+			agExec(e, `SELECT moderation_deferred_drain(100)`)
+			if got := agInt(e, `SELECT count(*) FROM moderation_deferred`); got != 0 {
+				t.Fatalf("drain left %d deferred references", got)
+			}
+			if got := agInt(e, `SELECT count(*) FROM moderation_jobs`); got != want {
+				t.Fatalf("after the drain admitted %d want %d", got, want)
+			}
+			if got := agInt(e, `SELECT count(*) FROM products p WHERE NOT EXISTS(SELECT 1 FROM moderation_jobs j WHERE j.target_id=p.id)
+			 AND NOT EXISTS(SELECT 1 FROM moderation_backfill b WHERE b.target_id=p.id)
+			 AND NOT EXISTS(SELECT 1 FROM moderation_actor_allocations a WHERE a.actor_id=p.vendor_id AND a.rescan)`); got != 0 {
+				t.Fatalf("%d listings are covered by no job, marker or rescan", got)
+			}
+			moderationCountersExact(t, e)
 			if got := agInt(e, `SELECT pending FROM moderation_capacity WHERE singleton`); got != want {
 				t.Fatalf("pending charge=%d", got)
 			}
@@ -480,8 +495,12 @@ func TestModerationAllocationLeaseAndRetryExactlyOnce(t *testing.T) {
 func TestModerationLegacyPolicyReplayReservesBeforeInference(t *testing.T) {
 	legacy := newPooledHistoricalFixture(t, 127)
 	vendor, _ := legacy.keylessUser("legacy_policy_budget_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
+	buyer, _ := legacy.keylessUser("legacy_policy_budget_buyer", "buyer")
+	p := legacy.product(vendor, "digital")
+	order := legacy.order(buyer, p, "XMR", stateCompleted)
+	// A review, not a listing: listings never reach a model (A-651).
 	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
-	legacy.product(vendor, "digital")
+	agExec(legacy, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Legacy review body')", randomToken(), order, p, buyer)
 	dsn, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
@@ -573,7 +592,7 @@ func TestModerationLegacyStaleReplaySkipsRecapturedRevision(t *testing.T) {
 // parked behind an unflagged payment are not active work.
 func moderationDrain(t *testing.T, e *testEnv, w *ModerationWorker) {
 	t.Helper()
-	const active = `SELECT (SELECT count(*) FROM moderation_backfill WHERE NOT parked)+(SELECT count(*) FROM moderation_actor_allocations WHERE rescan)+(SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL)`
+	const active = `SELECT (SELECT count(*) FROM moderation_backfill WHERE NOT parked)+(SELECT count(*) FROM moderation_actor_allocations WHERE rescan)+(SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL)+(SELECT count(*) FROM moderation_deferred)`
 	for range 40 {
 		n, err := w.Pass(t.Context(), 20)
 		if err != nil {

@@ -79,6 +79,10 @@ func adminSectionName(slug string) string {
 func (d PageData) AdminSectionAlert(slug string) string {
 	var alerts []string
 	switch slug {
+	case "users":
+		if d.BannedOpenEscrow > 0 { // A-652b, STAFF87-7: refund or follow them from each banned account's page
+			alerts = append(alerts, strconv.Itoa(d.BannedOpenEscrow)+" banned account(s) have open escrow orders.")
+		}
 	case "vendors":
 		if v := d.VendorAdmin; v != nil && v.QueueTotal > 0 {
 			alerts = append(alerts, strconv.Itoa(v.QueueTotal)+" open vendor application(s) await a decision or bond.")

@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,6 +63,8 @@ type AdminUserView struct {
 	DisputesOpened, DisputesAgainst            UserDisputeCounts
 	ActiveListings, ArchivedListings           int
 	IsBanned, IsSuspended, IsClosing, IsClosed bool
+	VendorReputation                           *ReputationView // A-653: a vendor's figures and proposed label (reputation.go); nil for other accounts
+	ReputationUnavailable                      bool            // QA89-2: a vendor's figures could not be counted for this page
 }
 
 // Actionable reports whether the account forms apply: never on the viewer's own account or an administrator's.
@@ -281,6 +284,15 @@ func adminUserLoader(ctx context.Context, a *App, d *PageData) error {
 	if err != nil {
 		return err
 	}
+	if v.Role == "vendor" || v.VendorApproved {
+		// QA89-2: the figures are advice; when they cannot be counted (a statement or lock timeout, a lost connection)
+		// the page still serves its account actions with a "Figures unavailable" panel and no confirmation form.
+		rep, rerr := vendorReputation(ctx, a.db, v.ID)
+		if rerr != nil {
+			log.Printf("admin users: reputation figures unavailable: %s", errorCause(rerr)) // a class, never the driver's text
+		}
+		v.VendorReputation, v.ReputationUnavailable = rep, rerr != nil
+	}
 	d.AdminUser = v
 	return nil
 }
@@ -297,7 +309,9 @@ func previewAdminUser(d *PageData, handle string) bool {
 		Policy:      VendorPolicyView{Bond: "0.5", HasBond: true},
 		Orders: []UserStateCount{{Label: stateLabel(stateShipped), Vendor: 2}, {Label: stateLabel(stateCompleted), Buyer: 1, Vendor: 14},
 			{Label: stateLabel(stateResolved), Vendor: 1}},
-		BuyerOrders: 1, VendorOrders: 17, DisputesAgainst: UserDisputeCounts{Total: 1, Release: 1}, ActiveListings: 3, ArchivedListings: 1}
+		BuyerOrders: 1, VendorOrders: 17, DisputesAgainst: UserDisputeCounts{Total: 1, Release: 1}, ActiveListings: 3, ArchivedListings: 1,
+		VendorReputation: assessReputation("ghost", ReputationFigures{Funded: 17, FundedBuyers: 9, CompletedConfirmed: 10, CompletedDeadline: 3, CompletedDigital: 1,
+			CompletedBuyers: 9, DecidedRelease: 1, Reviews: 11, LowReviews: 1})}
 	d.AdminUserHandle = handle
 	return true
 }

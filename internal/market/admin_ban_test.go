@@ -215,6 +215,8 @@ func TestBanAccount(t *testing.T) {
 	agExpect(e, "/admin/vendor-verify", admin, form("action", "verify", "handle", "ban_vendor", "password", testPassword), 409, "ban_vendor is banned")
 
 	// Open escrow orders keep settling: an independent administrator decides one dispute, the buyer concedes the other.
+	// The refund is paid; the release to the banned vendor is held until the ban is lifted (owner decision 2026-10-25,
+	// A-652c).
 	if r := e.do("POST", "/resolve", admin2, resolverForm(resolvedDispute, "refund", xmrListingPrice)); r.Code != 303 {
 		t.Fatalf("independent administrator's decision: %d %s", r.Code, refusalText(r.Body.String()))
 	}
@@ -236,7 +238,7 @@ func TestBanAccount(t *testing.T) {
 	if got := live(resolvedOrder); len(got) != 1 || got[0] != "refund relayed" {
 		t.Fatalf("refund settlement after the ban: %v", x.xmrSettlements(resolvedOrder))
 	}
-	if got := live(concededOrder); len(got) != 1 || got[0] != "release relayed" {
+	if got := live(concededOrder); len(got) != 1 || got[0] != "release requested" || x.waitClass(x.settlementOf(concededOrder, "release").ID) != xmrVendorClosed {
 		t.Fatalf("release settlement after the ban: %v", x.xmrSettlements(concededOrder))
 	}
 
@@ -279,6 +281,10 @@ func TestBanAccount(t *testing.T) {
 	e.check(e.do("GET", "/account", e.session(w), nil), 200)
 	if agInt(e, "SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", vendorID) != 0 || agStr(e, "SELECT vendor_verified::text FROM users WHERE id=$1", vendorID) != "false" {
 		t.Fatal("lifting the ban restored listings or the verified mark")
+	}
+	x.mustPoll()
+	if got := live(concededOrder); len(got) != 1 || got[0] != "release relayed" {
+		t.Fatalf("held release after the ban was lifted: %v", x.xmrSettlements(concededOrder))
 	}
 	page = e.body("GET", "/admin/users", admin, nil, 200)
 	mustContain(t, page, "ban_applicant · buyer · banned ")
@@ -486,9 +492,10 @@ func TestBanModeratorAndPriorSuspension(t *testing.T) {
 	e.check(e.do("POST", "/login", randomToken(), form("handle", "banmod_vendor", "password", testPassword)), 303)
 }
 
-// SEC-546-3, owner decision 2026-10-19: a release that still waits for the vendor's claim address is held while the
-// vendor is banned, never paid elsewhere, and claimed once the ban is lifted. Here the buyer concedes a dispute on an
-// undelivered digital Monero escrow order (completed for the vendor with no claim yet), then the vendor is banned.
+// SEC-546-3, owner decisions 2026-10-19 and 2026-10-25 ("refund + hold", A-652c): a release that still waits for the
+// vendor's claim address is held while the vendor is banned, never paid elsewhere, and claimed once the ban is lifted;
+// the next pass then builds and relays it. Here the buyer concedes a dispute on an undelivered digital Monero escrow
+// order (completed for the vendor with no claim yet), then the vendor is banned.
 func TestBanHoldsUnclaimedRelease(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -534,5 +541,105 @@ func TestBanHoldsUnclaimedRelease(t *testing.T) {
 	}
 	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release requested "+claim {
 		t.Fatalf("release after the claim: %v", got)
+	}
+	x.mustPoll()
+	if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "release relayed "+claim {
+		t.Fatalf("release after the ban was lifted and the vendor claimed: %v", got)
+	}
+}
+
+// autoApproveForm is the administrator's form letting handle publish listings without review.
+func autoApproveForm(t *testing.T, e *testEnv, admin, handle string) url.Values {
+	t.Helper()
+	on := formOn(t, e.body("GET", "/admin/vendors", admin, nil, 200), "/admin/vendor-auto-approve")
+	on.Set("handle", handle)
+	on.Set("action", "on")
+	on.Set("password", testPassword)
+	return on
+}
+
+// A-650 (SEC87-8, LLM87-N1): a ban turns off listing auto-approval (listing_review.go) and audits that on both
+// accounts; lifting the ban does not turn it back on.
+func TestBanClearsAutoApprove(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("banauto_admin", "admin")
+	vendorID, _ := e.user("banauto_vendor", "vendor")
+	plainID, _ := e.user("banauto_plain", "vendor")
+	setListingReviewMode(e, "hold")
+	on := autoApproveForm(t, e, admin, "banauto_vendor")
+	e.check(e.do("POST", "/admin/vendor-auto-approve", admin, on), 303)
+
+	agExpect(e, "/admin/ban", admin, banForm("ban", "banauto_vendor", testBanReason), 303, "")
+	if agStr(e, "SELECT listing_auto_approve::text FROM users WHERE id=$1", vendorID) != "false" {
+		t.Fatal("the ban left listing auto-approval on")
+	}
+	for who, row := range map[string]string{
+		adminID:  "Banned account banauto_vendor: " + banAudit + "; ended 1 session(s) and any pending sign-ins; listing auto-approval turned off (confirmed with password)",
+		vendorID: "Account banned by administrator banauto_admin: " + banAudit + "; ended 1 session(s) and any pending sign-ins; listing auto-approval turned off",
+	} {
+		if !e.auditExact(who, row) {
+			t.Fatalf("missing audit row %q", row)
+		}
+	}
+	// While banned, it cannot be turned back on.
+	agExpect(e, "/admin/vendor-auto-approve", admin, withField(on, formNonceField, formNonceFor("/admin/vendor-auto-approve")), 409, "banauto_vendor is banned")
+
+	agExpect(e, "/admin/ban", admin, banForm("unban", "banauto_vendor", testLiftReason), 303, "")
+	if agStr(e, "SELECT listing_auto_approve::text FROM users WHERE id=$1", vendorID) != "false" {
+		t.Fatal("lifting the ban turned listing auto-approval back on")
+	}
+	if !e.auditExact(vendorID, "Ban lifted by administrator banauto_admin: "+liftAudit) ||
+		!e.auditExact(adminID, "Lifted the ban on banauto_vendor: "+liftAudit+" (confirmed with password)") {
+		t.Fatal("lifting the ban not audited as before, or its audit mentions auto-approval")
+	}
+	// The only notice about publishing without review is the one that turned it on.
+	if agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE '%without%review%'", vendorID) != 1 {
+		t.Fatal("a ban or unban notice speaks of publishing without review")
+	}
+
+	// A vendor without auto-approval: the audit says nothing about it.
+	agExpect(e, "/admin/ban", admin, banForm("ban", "banauto_plain", testBanReason), 303, "")
+	if !e.auditExact(plainID, "Account banned by administrator banauto_admin: "+banAudit+"; ended 1 session(s) and any pending sign-ins") {
+		t.Fatal("a ban of an account without auto-approval mentions it")
+	}
+
+	// An account banned before A-650 can still have the flag; lifting that ban turns it off, audited on both accounts.
+	agExec(e, "UPDATE users SET listing_auto_approve=true WHERE id=$1", plainID)
+	agExpect(e, "/admin/ban", admin, banForm("unban", "banauto_plain", testLiftReason), 303, "")
+	if agStr(e, "SELECT listing_auto_approve::text FROM users WHERE id=$1", plainID) != "false" {
+		t.Fatal("lifting an earlier ban left listing auto-approval on")
+	}
+	if !e.auditExact(plainID, "Ban lifted by administrator banauto_admin: "+liftAudit+"; listing auto-approval turned off") ||
+		!e.auditExact(adminID, "Lifted the ban on banauto_plain: "+liftAudit+"; listing auto-approval turned off (confirmed with password)") {
+		t.Fatal("turning off an earlier ban's auto-approval not audited on both accounts")
+	}
+}
+
+// A-650: after a ban and its lifting in hold mode, the formerly auto-approved vendor's next edit waits for review.
+func TestBanUnbanEditHeldInHoldMode(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("banheld_admin", "admin")
+	vendorID, vendor := e.user("banheld_vendor", "vendor")
+	setListingReviewMode(e, "hold")
+	e.check(e.do("POST", "/admin/vendor-auto-approve", admin, autoApproveForm(t, e, admin, "banheld_vendor")), 303)
+	p := e.postListing(vendor, "Formerly trusted lantern")
+	if reviewState(e, p) != "approved" {
+		t.Fatal("an auto-approved vendor's listing was held")
+	}
+
+	agExpect(e, "/admin/ban", admin, banForm("ban", "banheld_vendor", testBanReason), 303, "")
+	agExpect(e, "/admin/ban", admin, banForm("unban", "banheld_vendor", testLiftReason), 303, "")
+	vendor = agSession(e, vendorID)
+	e.check(e.do("POST", "/listings/restore", vendor, form("id", p)), 303)
+	edited := listingFields("Formerly trusted lantern")
+	edited.Set("description", "Changed after the ban was lifted.")
+	edited.Set("id", p)
+	edited.Set("stock_seen", "3")
+	e.check(e.do("POST", "/listings/update", vendor, edited), 303)
+	if reviewState(e, p) != "pending" {
+		t.Fatal("the vendor's edit after a ban and its lifting skipped review")
+	}
+	if reviewState(e, e.postListing(vendor, "New lantern after the ban")) != "pending" {
+		t.Fatal("the vendor's new listing after a ban and its lifting skipped review")
 	}
 }

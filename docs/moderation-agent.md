@@ -28,8 +28,9 @@ one-minute interval. Enablement persists in the database: subsequent supported
 content changes enqueue hashes and bounded metadata in their transaction. New
 jobs do not copy listing, dispute, description or review prose. The worker reads
 bounded current source text transiently, checks its digest, and sends only a
-matching captured revision to inference; changed or deleted sources receive HOLD
-without inference. Existing content is not
+matching captured review, dispute or payment-flag revision to inference; listing
+and upload text never reaches a model (see [Trust boundary](#trust-boundary)).
+Changed or deleted sources receive HOLD without inference. Existing content is not
 automatically backfilled. Stopping a worker preserves enqueueing and durable
 jobs; it does not disable the feature. To stop future enqueueing:
 
@@ -51,14 +52,14 @@ store retains the first validated result for its stable identity.
 | `--database-url-file` | Private one-line DSN; defaults to `DATABASE_URL_FILE`; `DATABASE_URL` is accepted only when no file is selected |
 | `--once`, `--replay` | Off; one bounded pass, or explicit eligible legacy-job replay; completed metadata-only jobs are skipped |
 | `--max-pending` | `256`; global active jobs, allowed 1 through 10000; each actor has at most three active jobs |
-| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot; each actor gets at most `max(8, 2%)` of this in 24 hours |
-| `--max-reserved-bytes` | `268435456` (256 MiB); conservative logical payload allocation, allowed 512 KiB through 1 TiB |
+| `--max-records` | `4096`; lifetime allocation slots, allowed 1 through 1000000; extra legacy-policy evaluation also requires a slot; each actor gets at most `max(8, 2%)` of this in 24 hours; a value below the stored limit is ignored ([capacity](#capacity-and-overload)) |
+| `--max-reserved-bytes` | `268435456` (256 MiB); conservative logical payload allocation, allowed 512 KiB through 1 TiB; a value below the stored limit is ignored |
 | `--interval`, `--batch` | `1m`, `20`; intervals 10 seconds through 1 hour, batches 1 through 100 |
 | `--model` | Off; inference requires explicit opt-in |
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v4`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v5`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -113,7 +114,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v4
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v5
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -154,9 +155,22 @@ Base58Check or bech32/bech32m checksum verifies) adds
 `HUMAN_REVIEW`, wherever the solicitation is. `OFF_PLATFORM_CONTACT` remains the
 narrower finding for a destination and solicitation in the same clause.
 `tests/fixtures/injection/corpus.json` labels each case `escalate`,
-`human_review` or `miss`; known misses (other languages, phrases split around an
-intervening field, other encodings, paraphrased intent) reach the model, whose
-recall is unmeasured.
+`human_review` or `miss`; in a review, dispute or payment flag, known misses
+(other languages, phrases split around an intervening field, other encodings,
+paraphrased intent) reach the model, whose recall is unmeasured. In a listing or
+upload they reach the human queue.
+
+The model never judges listings by text (owner directive). Listing and upload
+jobs are evaluated by the deterministic checks only, whether or not `--model` is
+on. When those checks find nothing, the proposal records the Go-only code
+`MODEL_NOT_USED` with `HUMAN_REVIEW` at confidence 0: the same `QUEUE_HUMAN`
+routing and risk score an absent model gives, so a listing or upload is never
+`AUTO_APPLY`. Deterministic findings, injection markers and destinations route as
+before, but a model can no longer escalate a listing or upload that the
+deterministic checks pass: a human sees it in the ordinary queue. The
+local adapter also refuses those kinds before any runtime request
+(`TestListingAndUploadNeverReachModel`, `TestModerationListingSkipsModelWhenEnabled`).
+Reviews, disputes and payment flags still use local inference when it is enabled.
 
 Local inference uses two stages. Stage A extracts bounded findings from the
 untrusted material. Go validates those findings before Stage B receives them
@@ -174,10 +188,25 @@ proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
 path never read or write the review state (`TestModerationNeverWritesReviewState`),
 so a listing whose capture overflowed or was never inferred stays held, and a
 listing published in publish mode is not held by a proposal.
+Moderation moves no money either. The guard's scope is:
+- the moderation code and its launcher;
+- the Go reputation rule (`reputation*.go`) and every other file that imports
+  `internal/moderation`;
+- the panel's templates and the reputation partial;
+- the `moderation*` database functions.
+
+None of it names a money or ban route, a settlement, a refund address, a state
+transition or a wallet send. It writes only `moderation_*` tables, appends to the
+audit log, and writes settings only with the one reviewed statement that turns the
+worker on or off (`UPDATE settings SET value=$1 WHERE key='moderation_enabled'`),
+matched exactly as the literal query of one `ExecContext` call in
+`moderation_worker.go`. Each of these fails `TestModerationNeverMovesMoney`.
+Comments are not read, and SQL assembled at run time from fragments that hold no
+write verb is not seen.
 
 ## Proposal protocol
 
-The `moderation-v4` model response has exactly these seven JSON fields. Additional fields, missing fields,
+The `moderation-v5` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
@@ -196,13 +225,20 @@ completeness, normalization, novelty, actor, money, confidence, model-failure,
 protocol, policy and deadline codes are added by Go alone; both grammars and Go
 validation refuse them from a model. Go maps the aliases back to trusted
 references, so no item, content or actor hash reaches either prompt. Stage B sees
-duplicate checks as counts and match outcomes, not hashes.
+duplicate checks as counts and match outcomes, not hashes, and the actor's account
+age but no reputation figure (moderation-v5 removed `actor_reputation`, which was
+always 0). Stage A carries only the item's fields; Stage B's trusted keys are a
+fixed set. No handle, PGP fingerprint, image hash, payment address or staff text
+(ban, takedown or listing-rejection reason) is in either prompt
+(`TestPromptsCarryNoIdentityOrBehaviourData`). One exception remains: a resolved
+dispute's decision text is written by staff and still reaches Stage A as the
+dispute's `resolution` field until disputes stop using inference.
 
 The pinned llama.cpp `/completion` tokenizes the prompt with special-token
 parsing enabled. Go's JSON encoding already writes `<`, `>` and `&` as escapes,
 and the prompt data also writes `[` and `]` inside string values as `\u005b` and
 `\u005d`, so control tokens spelled with angle or square brackets, such as
-`[INST]` or `<|im_start|>`, cannot be formed from listing text. The JSON meaning
+`[INST]` or `<|im_start|>`, cannot be formed from item text. The JSON meaning
 is unchanged; a bracket-heavy item costs more tokens. Special tokens spelled
 without these characters are not covered, and no selected model's vocabulary has
 been checked. Before enabling inference with a chosen model, list its special and
@@ -214,7 +250,7 @@ untrusted.
 Go derives review summaries and injection-evidence descriptions from validated
 codes and references. Model-written prose is rejected. Historical records keep
 their immutable bytes, while the current queue also renders their presentation
-from codes. Reply drafting is excluded from model actions; v1, v2 and v3
+from codes. Reply drafting is excluded from model actions; v1 through v4
 protocol pins are refused.
 
 The action names include suggestions for sensitive actions so those proposals
@@ -231,7 +267,7 @@ one that cannot fit beside the 1536-token output limit in the launcher's
 end-of-sequence or stop-word finish (`stop_type`, or the older `stopped_*`
 flags), `truncated` false and a matching `tokens_evaluated`. A runtime without
 those fields or that endpoint gets `MODEL_FAILURE` and human review. Longer or
-token-dense items, such as long non-Latin listings, therefore reach human review
+token-dense items, such as long non-Latin reviews, therefore reach human review
 without a model proposal. The embedded grammar still needs validation against
 the operator's selected real runtime.
 
@@ -239,7 +275,7 @@ the operator's selected real runtime.
 
 | Disposition | Effect |
 | --- | --- |
-| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` classification of text with no external destination or weak instruction marker; no marketplace entity is changed |
+| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` model classification of a review with no external destination or weak instruction marker (listings and uploads never reach a model; money-related items escalate); no marketplace entity is changed |
 | `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
 | `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
 | `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
@@ -255,13 +291,18 @@ automatic reply publication, money executor or ban executor is provided.
 
 ## Input coverage and remaining limits
 
-| Source | Queued content and limits |
-| --- | --- |
-| Listing create/update | Title, description, category, region, kind and atomic price; bounded category-price sample and previous text fingerprints supply advisory baselines |
-| New normalized upload | Description, image metadata, SHA256 of normalized bytes and optional gateway-computed dHash; no pixels or original image reaches inference |
-| Dispute create/update | Reason, status/resolution and current order state; money-related cases escalate |
-| Review create/update | Body and rating |
-| Newly flagged payment | Flag/disposition and current order state; no transaction ID, deposit address or wallet details |
+| Source | Queued content and limits | Stage A text when `--model` is on |
+| --- | --- | --- |
+| Listing create/update | Title, description, category, region, kind and atomic price; bounded category-price sample and previous text fingerprints supply advisory baselines | None: deterministic checks only (`MODEL_NOT_USED`) |
+| New normalized upload | Description, image metadata, SHA256 of normalized bytes and optional gateway-computed dHash; no pixels or original image reaches inference | None: deterministic checks only (`MODEL_NOT_USED`) |
+| Dispute create/update | Reason, status/resolution and current order state; money-related cases escalate | Reason and resolution |
+| Review create/update | Body and rating | Body and rating |
+| Newly flagged payment | Flag/disposition and current order state; no transaction ID, deposit address or wallet details | Disposition |
+
+Stage B receives, for the three modelled kinds only, the kind, the actor's account
+age in days, price and completeness facts, order and timer state, money, novelty
+and reversibility flags, derived duplicate and activity counts and the validated
+Stage A codes; no actor reference, reputation figure, hash or text.
 
 Encrypted messages, shipping addresses, delivery contents, keys and raw upload
 bytes are excluded. Migration 127 stores an optional 64-bit perceptual dHash
@@ -288,10 +329,6 @@ machine or schedule new release/refund actions.
 
 Every `FLAG_REVIEW` reaches the human queue or the higher-priority administrator
 queue. A `NO_ACTION` label cannot hide review findings in automatic history.
-
-While capture is enabled, a vendor's edit can fail with a retryable deadlock
-error when another transaction admits a moderated change and then locks that
-same listing; retrying the edit succeeds.
 
 ## Records and recovery
 
@@ -337,11 +374,53 @@ once at migration; runtime admission does not scan the full history.
 Duplicates, rollbacks and same-policy cache reuse do not consume another slot.
 Completion releases active capacity once; it does not erase historical allocation
 or reclaim its reservation. Lowering limits below allocated usage is refused.
-Use the bounded controller flags to raise an approved budget, then restart the
-controller. Unspecified flags preserve the stored policy; a partial update changes
-only its named limits. A no-flag restart can drain prepaid legacy work even when
+
+To raise an approved lifetime budget, an administrator uses **Moderation budget**
+on the private moderation panel (`/admin/moderation`, private administrator
+ingress only). It shows the allocations and reserved MiB used of each limit and
+takes a new maximum of lifetime allocations (1 through 1000000) and of reserved
+bytes in whole MiB (1 through 1048576, that is 1 TiB), confirmed with the
+administrator's password and, when enrolled, authenticator code. Each allocation
+reserves 512 KiB, so 1 MiB holds two; capture stops when either limit runs out,
+and at the defaults the byte limit binds first. Raising the allocations also
+raises each account's daily share (below). The form only raises: a value below
+the current limit, a submission that raises neither, a value outside those bounds,
+or limits still below the allocations already made are refused with "Nothing was
+changed", as is a wrong password or code. A raise is recorded in the audit log as
+"Moderation budget raised from 4096 allocations / 256 MiB to 8192 / 512 MiB by
+administrator <handle>", with no target data. Admission reads the stored limits,
+so the raise applies at once: targets waiting for capture are captured on the
+worker's next pass, without a restart, and the Admin overview alert clears once
+they are.
+
+The bounded controller flags can also raise it; restart the controller to apply
+them. Unspecified flags preserve the stored policy; a partial update changes only
+its named limits. A `--max-records` or `--max-reserved-bytes` below the stored
+value (for example an older flag after a raise on the panel) is ignored, and the
+controller logs `moderation-worker: stored moderation budget is higher; flag
+ignored (--max-records)` (or `--max-reserved-bytes`) and starts with the stored
+value, instead of lowering it or exiting below the allocations made since. A
+higher flag still raises it. `--max-pending` is applied as given, never below the
+active jobs. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
+
+Lowering the lifetime budget is a host-only procedure in the maintenance shell,
+with the worker's database URL. It is one statement that leaves the row unchanged
+when a new limit is below the allocations already made:
+
+```sh
+DATABASE_URL="$(cat /secure/moderation/database-url)" \
+  python3 scripts/postgres-tool.py DATABASE_URL psql -X -v ON_ERROR_STOP=1 -c \
+  "UPDATE moderation_capacity SET max_records=4096, max_bytes=268435456
+   WHERE singleton AND allocated_records<=4096 AND allocated_bytes<=268435456"
+```
+
+`UPDATE 1` means it was lowered; `UPDATE 0` means a limit was below the
+allocations already made, and nothing was changed. It applies at once, without a
+restart, and is not written to the application's audit log, so record it in your
+operations log. Afterwards start the controller without `--max-records` and
+`--max-reserved-bytes`, or with the new values (a higher flag would raise it again).
 
 Migration 146 also limits each actor to `max(8, 2% of --max-records)` new
 allocations in any 24 hours (81 with the default 4096 slots), so one account's
@@ -368,9 +447,17 @@ budget the shared pool is 512 allocations, so one actor can still use about a
 sixth of it per day; size `--max-reserved-bytes` with that in mind. At these
 defaults one account that edits constantly can use up the whole pool in about
 six days (512 / 81). After that every refused target is kept as a marker or
-rescan, but nothing new is captured until an administrator raises
-`--max-reserved-bytes` or `--max-records`; the private moderation panel shows
-this as `retained_capacity` under "Capture requires attention".
+rescan, but nothing new is captured until an administrator raises the budget
+under **Moderation budget** on the private moderation panel (or with
+`--max-reserved-bytes` or `--max-records`); the panel shows
+this as `retained_capacity` under "Capture requires attention", and the Admin
+overview shows a count-only "Moderation capture needs attention" alert from two
+daily shares before the pool is used up (counts only on private administrator
+ingress; see the [operator guide](operator-guide.md#moderation-proposals)).
+Without `ADMIN_SOCKET` there is no private panel, but the worker can still enable
+capture; the alert then says, without numbers, to restart the worker with higher
+`--max-records` and `--max-reserved-bytes` or, on a Tor deployment, to set up
+the private administrator connection.
 
 At saturation, the listing, dispute or other source transaction still commits.
 No clean classification is invented. A fixed, coalesced private overflow warning
@@ -403,7 +490,13 @@ markers each pass, for a re-flag while capture was off, or a deletion.
 One account can hold at most 16 markers (`moderation_capacity.max_actor_markers`,
 and always fewer than the 65536-marker table, `max_backfill`). Past that bound,
 or when the table is full (a counted `backfill_capacity` warning), the account
-is flagged for a rescan instead of adding markers. Once the account can be
+is flagged for a rescan instead of adding markers. Known limit: if the full table
+holds no active marker (for example 65536 parked payment markers), a throttle
+refusal's `backfill_capacity` warning has no waiting marker to tie it to, so the
+Admin overview alert does not appear until the lifetime pool runs low; the
+rescans still capture the accounts' records, raising the budget does not empty
+the table, and the private panel shows the full table, the warning and the
+accounts awaiting a rescan. Once the account can be
 admitted again, each pass re-reads up to 64 of its live records in order of
 creation time (listings, uploads, reviews, disputes and payments all have one),
 then kind and id, from the stored position, through indexes, and queues every
@@ -423,6 +516,38 @@ The rescan walks archived listings and hidden reviews too; unflagged payments
 are re-read when flagged again, as above. Disabling capture stops the sweep;
 markers for records that still exist, and rescans, wait until it is enabled
 again; deleting a marked record still removes its marker at once.
+
+A marketplace write never waits for the capacity ledger (migration 148, SEC72AA-1).
+Admission takes the ledger row only if no other transaction holds it. When a
+worker pass, a result, a staff review or another write's admission holds it, the
+write leaves one reference in `moderation_deferred` (kind, target id and when it
+was noted; no account, digest or content), touches no counter, marker, overflow
+note or account row, and commits. At the start of the next pass while capture is
+enabled, before the half-full queue check, the worker admits up to its pass limit
+of these references, oldest first, at each record's current revision through the
+same admission as a write (so the account's queue order, caps, markers and
+rescans apply) and drops those whose record is gone or no longer capturable (an
+unflagged payment is captured again when flagged again). Deleting the record
+removes its reference at once without the ledger lock. Worker results, the
+private-panel and offline reviews and the capture switch take the ledger row
+before any job, proposal or marketplace row, so a transaction that admitted one
+change and then locks another record cannot deadlock over the ledger with them
+or with a concurrent edit of that record. The private-panel review and the
+budget raise are confirmed forms that lock the administrator's own account and
+session rows before the ledger row (the shared confirmation path has no earlier
+hook); no transaction holding the ledger row waits on those rows, because the
+worker and the offline review reach account rows only through key-share locks,
+and an admitting marketplace transaction, which holds the ledger row until it
+commits, is not known to lock another administrator's account, session or
+receipt row afterwards (if one ever did, PostgreSQL's deadlock detection would
+abort one transaction rather than hang)
+(`TestModerationReviewAccountRowBeforeCapacityNoWait`,
+`TestModerationOfflineReviewLockOrder`; the cached-completion path is checked by
+code reading only). Deferred references count as targets awaiting capture: the
+private panel's "Targets awaiting capture" is the markers plus the deferred
+references that have no marker, and the Admin overview alert's waiting count is
+the active markers plus the deferred references, each target once
+(`TestAdminOverviewModerationBudgetAlertCountsDeferred`).
 
 A revision whose job completed stale (`stale_snapshot`, never evaluated) no
 longer suppresses a later capture of the same content: if a listing changes to a
@@ -471,7 +596,7 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
 isolation and unverified production operation. Both current grammars
-(unchanged from moderation-v3 in moderation-v4) passed the pinned upstream
+(unchanged from moderation-v3 through moderation-v5) passed the pinned upstream
 parser: 25 cases (6 accepted, 19 rejected) and an independent rebuild with 22 cases, all as expected; this does not
 establish correct model judgment.
 

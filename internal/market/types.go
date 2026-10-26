@@ -181,6 +181,7 @@ type PageData struct {
 	HostControl             *HostControlView      // Private administrator app-host reboot readiness and receipts.
 	Moderation              *ModerationAdminView  // Private administrator moderation proposals and bounded status.
 	PrivateModerationAccess bool                  // Navigation only; authority still comes from the private listener and current role.
+	ModerationBudget        *ModerationBudgetView // Overview alert while moderation capture needs the operator (A-648).
 
 	ServerStarted string
 	SchemaVersion int
@@ -305,6 +306,11 @@ type PageData struct {
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
 	// BanHandle, BanChoice and BanReason: likewise for the ban/unban form (A-546).
 	BanHandle, BanChoice, BanReason string
+	// BanOrders: a banned account's page in the user directory, its open Monero escrow orders and the form refunding
+	// the unpaid and unshipped ones (A-652b, admin_ban_orders.go); nil for any other account.
+	BanOrders *BanOrdersView
+	// BannedOpenEscrow: the admin overview, how many banned accounts are the vendor of an open escrow order (STAFF87-7).
+	BannedOpenEscrow int
 	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
 	// reply was refused (A-280), keeping the decision typed for that dispute.
 	ResolveDispute, ResolveText string
@@ -581,13 +587,17 @@ type Review struct {
 	Body, Created      string
 	Product            string // listing title, vendor page only
 	Hidden             bool   // hidden by an administrator (A-125): listed only for administrators and on the order
+	Banned             bool   // A-649: the reviewer's account is banned, so it is not counted; set for administrators only
+	Excluded           bool   // order page: not shown or counted publicly (hidden or banned); the cause is not told
 }
 
-// ReviewSummary counts and averages the public (not hidden) reviews; Hidden counts the others, for administrators only.
+// ReviewSummary counts and averages the public reviews (reviewCountedSQL); Hidden counts those an administrator hid
+// and Banned the other ones by banned accounts (A-649), both for administrators only.
 type ReviewSummary struct {
 	Count   int
 	Average string
 	Hidden  int
+	Banned  int
 }
 
 // P4 Inventory
@@ -773,10 +783,11 @@ type EscrowSetupView struct {
 type EscrowCosignerView struct{ Who, Key string }
 
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
-// Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it.
+// Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
+// VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d).
 type EscrowDeadlineView struct {
-	At, Left       string
-	Due, Rechecked bool
+	At, Left                     string
+	Due, Rechecked, VendorClosed bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At

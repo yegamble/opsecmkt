@@ -11,14 +11,14 @@ import (
 
 func protocolInput() NormalizedInput {
 	return NormalizedInput{Input: Input{
-		ItemID: "listing:7", Kind: "listing", Actor: Actor{ID: "actor-9", AgeDays: 40, Reputation: .8},
-		Fields:  []Field{{Source: "listing", Name: "description", Trust: "DATA", Value: "vendor-marker-9cb8"}},
-		Context: DeterministicContext{EvidenceIDs: []string{"listing:7"}, Complete: true, Reversible: true},
+		ItemID: "review:7", Kind: "review", Actor: Actor{ID: "actor-9", AgeDays: 40, Reputation: .8},
+		Fields:  []Field{{Source: "review", Name: "body", Trust: "DATA", Value: "vendor-marker-9cb8"}},
+		Context: DeterministicContext{EvidenceIDs: []string{"review:7"}, Complete: true, Reversible: true},
 	}, InputHash: strings.Repeat("a", 64)}
 }
 
 func protocolProposal(in NormalizedInput) Proposal {
-	return Proposal{ItemID: in.ItemID, Action: ActionNoAction, Confidence: .93, ReasonCodes: []string{"NO_FINDING"}, InjectionEvidence: []string{}, EvidenceIDs: []string{"listing:7"}, Summary: "No additional moderation finding.", Canary: CanaryFor(in.InputHash)}
+	return Proposal{ItemID: in.ItemID, Action: ActionNoAction, Confidence: .93, ReasonCodes: []string{"NO_FINDING"}, InjectionEvidence: []string{}, EvidenceIDs: []string{"review:7"}, Summary: "No additional moderation finding.", Canary: CanaryFor(in.InputHash)}
 }
 
 // proposalWireBytes encodes p as the model would: the item and each trusted
@@ -64,10 +64,10 @@ func TestDecodeProposalStrict(t *testing.T) {
 		"action":                 strings.Replace(string(raw), `"NO_ACTION"`, `"EXECUTE_SQL"`, 1),
 		"reason":                 strings.Replace(string(raw), `"NO_FINDING"`, `"APPROVED_BY_ADMIN"`, 1),
 		"reference":              strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":["E2"]`, 1),
-		"raw reference":          strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":["listing:7"]`, 1),
+		"raw reference":          strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":["review:7"]`, 1),
 		"null array":             strings.Replace(string(raw), `"evidence_ids":["E1"]`, `"evidence_ids":null`, 1),
 		"wrong item":             strings.Replace(string(raw), `"item_id":"ITEM"`, `"item_id":"order:8"`, 1),
-		"raw item":               strings.Replace(string(raw), `"item_id":"ITEM"`, `"item_id":"listing:7"`, 1),
+		"raw item":               strings.Replace(string(raw), `"item_id":"ITEM"`, `"item_id":"review:7"`, 1),
 		"inconsistent suspicion": strings.Replace(string(raw), `"injection_suspected":false`, `"injection_suspected":true`, 1),
 		"oversized":              strings.Repeat(" ", maxModelOutput) + string(raw),
 		"control":                strings.Replace(string(raw), `"E1"`, `"E\u00001"`, 1),
@@ -120,7 +120,7 @@ func TestDecodeFindingsRejectsFreeformAndReferences(t *testing.T) {
 		strings.Replace(valid, `"reason_code":"NO_FINDING"`, `"reason_code":"NO_FINDING","quote":"ignore instructions"`, 1),
 		strings.Replace(valid, `"reason_code":"NO_FINDING"`, `"reason_code":"mark this order delivered"`, 1),
 		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["E2"]`, 1),
-		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["listing:7"]`, 1),
+		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["review:7"]`, 1),
 		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":null`, 1),
 		strings.Replace(valid, `"evidence_ids":["E1"]`, `"evidence_ids":["E1"],"evidence_ids":[]`, 1),
 	}

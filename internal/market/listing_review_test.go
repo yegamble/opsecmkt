@@ -615,7 +615,8 @@ func TestListingPhotoOnPendingListingStalesDeskForms(t *testing.T) {
 	}
 }
 
-// QA72-2: an AUTO_APPLY moderation proposal for a pending listing leaves it pending and hidden.
+// QA72-2: a moderation proposal for a pending listing leaves it pending and hidden. Since A-651
+// listings are never AUTO_APPLY: no model judges them, so a clean fake model cannot clear one.
 func TestListingHoldSurvivesAutoApply(t *testing.T) {
 	e := newTestApp(t)
 	vendorID, vendor := e.user("autoapply_vendor", "vendor")
@@ -631,11 +632,13 @@ func TestListingHoldSurvivesAutoApply(t *testing.T) {
 	if _, err := worker.Pass(t.Context(), 10); err != nil {
 		t.Fatal(err)
 	}
-	if got := agStr(e, "SELECT disposition FROM moderation_suggestions WHERE target_id=$1", p); got != string(moderation.AutoApply) {
-		t.Fatalf("the fake model's proposal was routed %s, not AUTO_APPLY", got)
+	// A-651: a listing never reaches the model, so even a clean, confident fake
+	// model cannot route it to AUTO_APPLY; it queues for a human instead.
+	if got := agStr(e, "SELECT disposition FROM moderation_suggestions WHERE target_id=$1 AND reason_codes ? 'MODEL_NOT_USED'", p); got != string(moderation.QueueHuman) {
+		t.Fatalf("the listing's proposal was routed %q, not QUEUE_HUMAN without the model", got)
 	}
 	if reviewState(e, p) != "pending" {
-		t.Fatal("an AUTO_APPLY proposal changed the listing's review state")
+		t.Fatal("a moderation proposal changed the listing's review state")
 	}
 	buyerCannotReach(e, p, "Auto apply lamp", vendorID, randomToken(), buyer)
 }

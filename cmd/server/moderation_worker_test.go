@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"opsecmkt/internal/market"
 )
 
 func TestModerationWorkerDisabledAndHelpRequireNoSecretsOrNetwork(t *testing.T) {
@@ -136,5 +138,95 @@ func TestModerationWorkerReadsOnlyPrivateSelectedSecret(t *testing.T) {
 	}
 	if _, err = readModerationPrivate(link); err == nil {
 		t.Fatal("accepted secret symlink")
+	}
+}
+
+// A-654: the budget can be raised from the private panel without a restart, so a controller restarted with an
+// older, lower --max-records or --max-reserved-bytes must not lower the stored value (or exit because it is below
+// the allocations made since); it logs a fixed line instead. A higher flag still raises it.
+func TestWorkerFlagNeverLowersStoredBudget(t *testing.T) {
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	b := make([]byte, 6)
+	rand.Read(b)
+	schema := "modbudget_" + hex.EncodeToString(b)
+	if _, err = db.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	t.Chdir("../..")
+	t.Setenv("DATABASE_URL", u.String())
+	t.Setenv("SETUP_TOKEN", "integration-test-setup-token-5f2c9e7a1b4d8036cafe0123456789abcdef")
+	app, err := market.New(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Close()
+	t.Setenv("MODERATION_ENABLED", "")
+	t.Setenv("DATABASE_URL_FILE", "")
+	limits := func() (v [3]int64) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT max_pending,max_records,max_bytes FROM `+schema+`.moderation_capacity WHERE singleton`).Scan(&v[0], &v[1], &v[2]); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := runModerationWorker(context.Background(), append([]string{"--enabled", "--once"}, args...), &out); err != nil {
+			t.Fatalf("%v: %v (output %q)", args, err, out.String())
+		}
+		return out.String()
+	}
+	const ignored = "moderation-worker: stored moderation budget is higher; flag ignored"
+	// Raised on the panel to 8192 / 512 MiB, with 5000 allocations made since: the old flags are below both.
+	if _, err = db.Exec(`UPDATE ` + schema + `.moderation_capacity SET max_records=8192,max_bytes=536870912,allocated_records=5000`); err != nil {
+		t.Fatal(err)
+	}
+	out := run("--max-records", "4096", "--max-reserved-bytes", "268435456")
+	if strings.Count(out, ignored) != 2 || !strings.Contains(out, ignored+" (--max-records)") || !strings.Contains(out, ignored+" (--max-reserved-bytes)") {
+		t.Fatalf("lower flags not reported as ignored: %q", out)
+	}
+	if got := limits(); got != [3]int64{256, 8192, 536870912} {
+		t.Fatalf("lower flags changed the stored budget: %v", got)
+	}
+	// An equal flag is no change and no warning; a higher one still raises, and the other limit is kept.
+	if out = run("--max-records", "10000", "--max-reserved-bytes", "536870912"); strings.Contains(out, ignored) {
+		t.Fatalf("equal or higher flag reported as ignored: %q", out)
+	}
+	if got := limits(); got != [3]int64{256, 10000, 536870912} {
+		t.Fatalf("higher --max-records: %v", got)
+	}
+	run("--max-reserved-bytes", "1073741824", "--max-pending", "300")
+	if got := limits(); got != [3]int64{300, 10000, 1073741824} {
+		t.Fatalf("higher --max-reserved-bytes: %v", got)
+	}
+	// One lower and one higher flag: the higher one applies, the lower one is reported.
+	out = run("--max-records", "20000", "--max-reserved-bytes", "268435456")
+	if strings.Count(out, ignored) != 1 || !strings.Contains(out, ignored+" (--max-reserved-bytes)") {
+		t.Fatalf("mixed flags: %q", out)
+	}
+	if got := limits(); got != [3]int64{300, 20000, 1073741824} {
+		t.Fatalf("mixed flags: %v", got)
+	}
+	// --max-pending is not a lifetime budget: it may still be lowered, never below the active jobs.
+	run("--max-pending", "200")
+	if got := limits(); got != [3]int64{200, 20000, 1073741824} {
+		t.Fatalf("--max-pending: %v", got)
 	}
 }
