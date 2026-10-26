@@ -85,6 +85,8 @@ var sweepScopes = map[string][2]string{
 	"/admin":                        {scopeStaff, ""},
 	"/admin/ban":                    {scopeStaff, "TestBanAccount covers its refusals (self, administrators, unknown handles, missing reasons)"},
 	"/admin/ban-orders":             {scopeStaff, "TestBanOrdersRefusedForUnbanned and TestBanOrdersStaleDigest409 cover its refusals (not banned, unknown handle, stale or forged digest)"},
+	"/admin/ban-hold-refund-days":   {scopeStaff, "TestHoldRefundSettingBoundsAudit covers its bounds and moderator refusal"},
+	"/admin/escrow-xmr-hold-refund": {scopeStaff, "TestHoldRefundPartyRefused, TestHoldRefundUnbannedRefused and TestHoldRefundStaleDigest409 cover its party, moderator, state and digest refusals (A-652f)"},
 	"/admin/canary":                 {scopeStaff, ""},
 	"/admin/pgp-access":             {scopeStaff, "confirmed browse-only login policy; commerce always requires PGP proof"},
 	"/admin/captcha":                {scopeStaff, ""},
