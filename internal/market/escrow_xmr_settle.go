@@ -836,15 +836,25 @@ func (a *App) buildXMRSettlement(ctx context.Context, s *xmrSettleRow) error {
 // a settlement already built or relayed (this runs only for requested ones). A refused destination keeps its flagged
 // class, so that, once the ban is lifted, a refused claim address is still never tried again and a refused fee address
 // only once the operator has replaced it (validating the new one is a wallet call too, so it waits for the lifted ban).
-// Lifting the ban ends the hold: the next pass builds it as before. It reports whether s is held.
+// Lifting the ban ends the hold: the next pass clears the class and builds it as before. It reports whether s is held.
 func (a *App) xmrReleaseHeld(ctx context.Context, s *xmrSettleRow) (bool, error) {
 	if s.Kind != "release" {
 		return false, nil
 	}
 	var banned bool
 	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id JOIN users v ON v.id=p.vendor_id
-		WHERE o.id=$1 AND v.banned_at IS NOT NULL)`, s.OrderID).Scan(&banned); err != nil || !banned {
+		WHERE o.id=$1 AND v.banned_at IS NOT NULL)`, s.OrderID).Scan(&banned); err != nil {
 		return false, err
+	}
+	if !banned {
+		if s.Wait == xmrVendorClosed {
+			// The ban was lifted: the page no longer says the release is held, even if this pass builds nothing.
+			if _, err := a.execEscrowOrder(ctx, s.OrderID, "UPDATE xmr_settlements SET send_error='',updated=now() WHERE id=$1 AND state='requested' AND send_error=$2", s.ID, xmrVendorClosed); err != nil {
+				return false, err
+			}
+			s.Wait = ""
+		}
+		return false, nil
 	}
 	if strings.HasPrefix(s.Wait, xmrDestRefused) {
 		return true, nil

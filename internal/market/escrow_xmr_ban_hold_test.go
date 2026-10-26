@@ -229,6 +229,14 @@ func TestUnbanLiftsReleaseHold(t *testing.T) {
 	transfers := x.fake.countOf("transfer")
 
 	x.unbanVendor(admin)
+	// A first pass whose build fails before anything is recorded (the wallet not answering) no longer says it is held.
+	x.fake.fault("incoming_transfers", fakeXMRNotOpen)
+	if err := x.poll(); err == nil {
+		t.Fatal("a failed incoming_transfers passed")
+	}
+	if got := x.settlement(s.ID); got.State != "requested" || x.waitClass(s.ID) != "" || strings.Contains(x.panel(order, buyerSess), heldReleaseText) {
+		t.Fatalf("after the ban was lifted and a failed build: %+v, class %q", got, x.waitClass(s.ID))
+	}
 	x.mustPoll()
 	s = x.settlement(s.ID)
 	if s.State != "relayed" || x.waitClass(s.ID) != "" || x.fake.countOf("transfer") != transfers+1 {
