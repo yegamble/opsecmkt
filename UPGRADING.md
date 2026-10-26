@@ -15,6 +15,22 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
+
+No migration. The moderation protocol is now `moderation-v5`, and the controller refuses v1–v4 pins. **If you start
+`moderation-worker` with `--prompt-version moderation-v4`, change it to `moderation-v5`** (or drop the flag, which
+defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Grammars and model
+reason codes are unchanged, so earlier native grammar checks still apply.
+
+By owner directive the model no longer judges listings by text. Listing and upload jobs never reach the model, even
+with `--model` on: they get the deterministic checks only and, when those find nothing, a proposal with the new Go-only
+code `MODEL_NOT_USED` and the same `QUEUE_HUMAN` routing an absent model gives. With the model enabled, listings and
+uploads that the model used to clear as `AUTO_APPLY` now wait in the human queue, so expect more queued proposals and
+plan review staffing; one the model alone used to escalate now waits in the ordinary queue (deterministic injection
+markers still escalate). Reviews, disputes and payment flags still use the model. Stage B no longer receives an
+`actor_reputation` value (it was always 0). Stored v1–v4 decisions keep their bytes and still render, and a controller
+change of prompt version gives new work new decision identities as before.
+
 ## Staff pages no longer wait for PostgreSQL's JIT compiler (MOD72-8)
 
 No migration or setting. The application's database pool now starts each connection with `jit` off, beside its
@@ -366,8 +382,8 @@ report `stop_type` (or the older `stopped_*` flags), `truncated` and
 launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
 and human review. Stored v1/v2 decisions keep their bytes and still render.
 
-The current `moderation-v4` protocol refuses v1, v2 and v3 pins: change the
-controller's `--prompt-version` to `moderation-v4` when upgrading it. Prompt
+The `moderation-v4` protocol refused v1, v2 and v3 pins; the current pin is
+`moderation-v5` (see the section above). Prompt
 data now writes `[` and `]` inside JSON strings as `\u005b` and `\u005d` (same JSON
 meaning), because llama.cpp's `/completion` parses special tokens in the prompt
 and bracket-spelled control tokens such as `[INST]` in vendor text could

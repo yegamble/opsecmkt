@@ -145,7 +145,8 @@ func TestModerationPrivacyV2AllFiveCanonicalStorageAndStale(t *testing.T) {
 					t.Fatalf("pass n=%d: %v", n, err)
 				}
 				wantCalls := 1
-				if changed {
+				// Listings and uploads never reach a model (A-651).
+				if changed || kind == "listing" || kind == "upload" {
 					wantCalls = 0
 				}
 				if m.calls != wantCalls {

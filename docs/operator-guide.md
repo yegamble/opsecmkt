@@ -705,7 +705,10 @@ off by default. The Admin overview on private administrator ingress links to `/a
 on the private administrator connection; it shows job/review/escalation counts,
 injection-suspicion counts, prompt/weights pins, last pass and bounded failure
 classes. These are worker observations, not proof of model or host integrity.
-Model endpoints, raw model JSON and transport errors are omitted.
+Model endpoints, raw model JSON and transport errors are omitted. The model never
+reads listing or upload text: those proposals carry `MODEL_NOT_USED` and wait in
+the human queue unless a deterministic check escalates them; only reviews,
+disputes and payment flags reach the model.
 
 While capture is on, the Admin overview (`/admin`) shows a **Moderation capture
 needs attention** alert when the lifetime pool has at most two daily actor shares

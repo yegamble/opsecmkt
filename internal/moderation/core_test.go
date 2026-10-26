@@ -16,6 +16,20 @@ func ordinaryInput() Input {
 	return Input{ItemID: "listing:123", Kind: "listing", Actor: Actor{ID: "actor:456", AgeDays: 90, Reputation: .8}, Fields: []Field{{Source: "listing", Name: "title", Trust: "DATA", Value: "Handmade notebook"}, {Source: "listing", Name: "description", Trust: "DATA", Value: "A bound paper notebook with a linen cover."}}, Context: DeterministicContext{EvidenceIDs: []string{"listing:123"}, Complete: true, PriceAtomic: 100, CategoryMedianAtomic: 100, Reversible: true}}
 }
 
+// reviewInput is a clean review: unlike listings and uploads, a kind the model
+// still reads (A-651).
+func reviewInput() Input {
+	return Input{ItemID: "review:123", Kind: "review", Actor: Actor{ID: "actor:456", AgeDays: 90, Reputation: .8}, Fields: []Field{{Source: "review", Name: "body", Trust: "DATA", Value: "Arrived well packed; the linen cover is sturdy."}, {Source: "review", Name: "rating", Trust: "DATA", Value: "5"}}, Context: DeterministicContext{EvidenceIDs: []string{"review:123"}, Complete: true, Reversible: true}}
+}
+
+// modelledInput carries ordinaryInput's text under a kind the model reads, for
+// tests of detection that runs before inference. Listings never reach a model.
+func modelledInput() Input {
+	in := ordinaryInput()
+	in.Kind = "review"
+	return in
+}
+
 type modelFunc func(context.Context, NormalizedInput) (Proposal, error)
 
 func (f modelFunc) Propose(ctx context.Context, in NormalizedInput) (Proposal, error) {
@@ -111,35 +125,44 @@ func TestInjectionCorpus(t *testing.T) {
 			if want == "" || want != tc.Disposition || tc.Injection != (tc.Expected == "escalate") || (tc.Expected == "miss") != (tc.MissReason != "") {
 				t.Fatalf("inconsistent corpus label: %+v", tc)
 			}
-			input := ordinaryInput()
-			if tc.Title != "" {
-				input.Fields[0].Value = tc.Title
-			}
-			input.Fields[1].Value = tc.Text
-			if tc.Repeat > 0 {
-				input.Fields[1].Value = strings.Repeat(tc.Text, tc.Repeat)
-			}
-			if tc.Category != "" {
-				input.Fields = append(input.Fields, Field{Source: "listing", Name: "category", Trust: "DATA", Value: tc.Category})
-			}
-			cfg := DefaultConfig()
-			cfg.Enabled = true
-			// A clean, confident model shows what deterministic detection alone
-			// guarantees: quarantined cases must never reach it.
-			engine := Engine{Config: cfg, Model: modelFunc(func(_ context.Context, n NormalizedInput) (Proposal, error) {
-				if tc.Injection {
-					t.Fatal("quarantined deterministic findings must not reach inference")
+			// The labels hold for a kind the model reads. As a listing, which never
+			// reaches a model (A-651), a miss goes to a human, not automatic history.
+			for _, kind := range []string{"review", "listing"} {
+				input := ordinaryInput()
+				input.Kind = kind
+				if tc.Title != "" {
+					input.Fields[0].Value = tc.Title
 				}
-				p := baseProposal(n)
-				p.ReasonCodes = []string{"NO_FINDING"}
-				return p, nil
-			})}
-			d, err := engine.Evaluate(context.Background(), input)
-			if err != nil || d.Proposal.InjectionSuspected != tc.Injection || d.Disposition != tc.Disposition {
-				t.Fatalf("decision %+v, err %v", d, err)
-			}
-			if (d.Proposal.Action != ActionFlagReview && d.Proposal.Action != ActionNoAction) || tc.Injection && d.Proposal.Action != ActionFlagReview || d.DefaultAction != Hold || d.Proposal.Canary != CanaryFor(d.InputHash) {
-				t.Fatalf("trap acquired execution authority: %+v", d)
+				input.Fields[1].Value = tc.Text
+				if tc.Repeat > 0 {
+					input.Fields[1].Value = strings.Repeat(tc.Text, tc.Repeat)
+				}
+				if tc.Category != "" {
+					input.Fields = append(input.Fields, Field{Source: "listing", Name: "category", Trust: "DATA", Value: tc.Category})
+				}
+				cfg := DefaultConfig()
+				cfg.Enabled = true
+				// A clean, confident model shows what deterministic detection alone
+				// guarantees: quarantined cases must never reach it.
+				engine := Engine{Config: cfg, Model: modelFunc(func(_ context.Context, n NormalizedInput) (Proposal, error) {
+					if tc.Injection || kind == "listing" {
+						t.Fatalf("%s: quarantined findings and listings must not reach inference", kind)
+					}
+					p := baseProposal(n)
+					p.ReasonCodes = []string{"NO_FINDING"}
+					return p, nil
+				})}
+				want := tc.Disposition
+				if kind == "listing" && want == AutoApply {
+					want = QueueHuman
+				}
+				d, err := engine.Evaluate(context.Background(), input)
+				if err != nil || d.Proposal.InjectionSuspected != tc.Injection || d.Disposition != want {
+					t.Fatalf("%s: decision %+v, err %v", kind, d, err)
+				}
+				if (d.Proposal.Action != ActionFlagReview && d.Proposal.Action != ActionNoAction) || tc.Injection && d.Proposal.Action != ActionFlagReview || d.DefaultAction != Hold || d.Proposal.Canary != CanaryFor(d.InputHash) {
+					t.Fatalf("trap acquired execution authority: %+v", d)
+				}
 			}
 		})
 	}
@@ -246,7 +269,7 @@ func TestModelDegradationAndProtocolMismatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.Enabled = tc.enabled
-			d, err := (Engine{Config: cfg, Model: tc.model}).Evaluate(context.Background(), ordinaryInput())
+			d, err := (Engine{Config: cfg, Model: tc.model}).Evaluate(context.Background(), reviewInput())
 			if err != nil || d.Disposition != tc.want || d.FailureClass != tc.failure || d.DefaultAction != Hold {
 				t.Fatalf("got %+v, %v", d, err)
 			}
@@ -262,7 +285,7 @@ func TestCancellationSkipsInference(t *testing.T) {
 	d, err := (Engine{Config: cfg, Model: modelFunc(func(context.Context, NormalizedInput) (Proposal, error) {
 		t.Fatal("cancelled pass called model")
 		return Proposal{}, nil
-	})}).Evaluate(ctx, ordinaryInput())
+	})}).Evaluate(ctx, reviewInput())
 	if err != nil || d.Disposition != QueueHuman || d.FailureClass != "model_interrupted" {
 		t.Fatalf("cancelled work lost its review outcome: %+v %v", d, err)
 	}

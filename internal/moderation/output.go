@@ -101,6 +101,7 @@ var reasonDescriptions = map[string]string{
 	"MONEY_INVOLVED":         "financial involvement",
 	"NOVEL_CASE":             "an unfamiliar case",
 	"MODEL_ABSENT":           "contextual classification unavailable",
+	"MODEL_NOT_USED":         "fixed-rule checks only (no model reads this kind)",
 	"MODEL_FAILURE":          "contextual classification failed",
 	"INVALID_OUTPUT":         "an invalid classification response",
 	"CANARY_MISMATCH":        "a response protocol mismatch",

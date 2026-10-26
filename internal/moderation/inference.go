@@ -38,6 +38,8 @@ var ErrPromptTooLarge = errors.New("moderation: prompt exceeds the model context
 
 var errReplyTooLarge = errors.New("moderation: runtime reply exceeds its bound")
 
+var errKindNotModelled = errors.New("moderation: this item kind is never sent to a model")
+
 // The shipped launcher (deploy/moderation/entrypoint.sh) serves one slot with
 // --ctx-size 4096. A prompt plus the maximum output must fit in that slot:
 // otherwise llama.cpp refuses the request, stops at the context limit, or with
@@ -227,12 +229,12 @@ func withStageAFindings(p Proposal, findings []codedFinding, in NormalizedInput)
 
 // stageBContext is Stage B's trusted view. Go has already compared the text and
 // image fingerprints, so Stage B receives outcomes and counts, not hashes. The
-// actor reference is omitted and item/evidence references are aliased.
+// actor reference and any reputation figure are omitted; item and evidence
+// references are aliased. TestPromptsCarryNoIdentityOrBehaviourData pins its keys.
 type stageBContext struct {
 	ItemID                 string         `json:"item_id"`
 	Kind                   string         `json:"kind"`
 	ActorAgeDays           int            `json:"actor_age_days"`
-	ActorReputation        float64        `json:"actor_reputation"`
 	EvidenceIDs            []string       `json:"evidence_ids"`
 	Complete               bool           `json:"complete"`
 	PriceAtomic            int64          `json:"price_atomic"`
@@ -266,7 +268,7 @@ func stageBView(in NormalizedInput, canary string, aliases []string, findings []
 			imageMatch = imageMatch || ImageHashesMatch(h, known, 5)
 		}
 	}
-	return stageBContext{ItemID: modelItemAlias, Kind: in.Kind, ActorAgeDays: in.Actor.AgeDays, ActorReputation: in.Actor.Reputation, EvidenceIDs: aliases,
+	return stageBContext{ItemID: modelItemAlias, Kind: in.Kind, ActorAgeDays: in.Actor.AgeDays, EvidenceIDs: aliases,
 		Complete: c.Complete, PriceAtomic: c.PriceAtomic, CategoryMedianAtomic: c.CategoryMedianAtomic,
 		KnownTextsCompared: len(c.KnownTextHashes), KnownTextMatch: slices.Contains(c.KnownTextHashes, in.TextHash),
 		Images: len(c.ImageHashes), KnownImagesCompared: len(c.KnownImageHashes), KnownImageMatch: imageMatch,
@@ -312,6 +314,10 @@ func modelJSON(v any) ([]byte, error) {
 // Stage B receives codes, aliases and derived context only: Stage A never
 // forwards free-form text, and validated Stage A findings stay in the result.
 func (m *LocalModel) Propose(ctx context.Context, in NormalizedInput) (Proposal, error) {
+	// Engine.Evaluate never calls a model for these kinds; refuse them here too.
+	if !modelReadsKind(in.Kind) {
+		return Proposal{}, errKindNotModelled
+	}
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 	select {
