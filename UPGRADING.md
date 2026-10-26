@@ -15,6 +15,16 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A banned vendor's unpaid and unshipped orders can be refunded (A-652b)
+
+No migration. A banned account's page under *Admin → Users* (`/admin/users?handle=`) gains *Orders of this banned
+account*: its open Monero escrow orders and those whose escrow may still hold coins, and a separate form
+(`POST /admin/ban-orders`, administrators only, password and authenticator code) that cancels its orders awaiting
+payment and paid ones not shipped, at most 100 at a time, and has the market send each one's escrowed coins back to the
+refund address its buyer gave at checkout. Nothing changes until an administrator submits it: banning an account still
+leaves its open orders alone, and no new payee or address is involved. The overview now flags *Users* while a banned
+account has open escrow orders. See *Account ban* under [authentication](docs/operator-guide.md#authentication).
+
 ## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
 
 No migration. The moderation protocol is now `moderation-v5`, and the controller refuses v1–v4 pins. **If you start

@@ -124,6 +124,7 @@ var notices = map[string]struct{ text, section, pages string }{
 	"restored":      {"Account restored.", "suspend", "admin/users admin/user"},
 	"banned":        {"Account banned.", "ban", "admin/users admin/user"},
 	"unbanned":      {"Ban lifted.", "ban", "admin/users admin/user"},
+	"ban-orders":    {"Orders cancelled. The market builds each refund to the buyer's refund address and sends it on its next pass. An order still offered below changed meanwhile or waits for another submission.", "ban-orders", "admin/user"},
 	"factors-reset": {"Second factors reset.", "reset-factors", "admin/users admin/user"},
 	"staff-contact": {"Staff contact saved.", "staff-contact", "admin/site"},
 	"staff-list":    {"Public staff list saved.", "staff-list", "admin/transparency"},

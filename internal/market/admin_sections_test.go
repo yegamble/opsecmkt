@@ -190,6 +190,7 @@ var adminRedirectsCoveredElsewhere = map[string]string{
 	"/admin/listing":                "inventory tests: the listing edit page the form is on",
 
 	"/admin/escrow-xmr-settled-by-hand": "TestXMREscrowSettledByHand: /moderator, because the order page may no longer be readable once its alert clears",
+	"/admin/ban-orders":                 "TestBanOrdersRefundsUnpaidAndUnshipped: the banned account's page (/admin/users?handle=…#ban-orders), the only page holding its form",
 }
 
 // A-542: every admin post that succeeds returns to the section holding its form, with its notice's fragment, and a
