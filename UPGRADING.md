@@ -24,7 +24,9 @@ until the ban is lifted: the escrow watcher asks the wallet nothing for it, admi
 needed* notice for the order, and the order page says the release is held. Refunds and stray refunds are paid as usual,
 a release already built or sent before the ban is sent and followed as before, and no other address is ever paid.
 Lifting the ban is the only step: the next pass builds and sends the release. A release already requested for a vendor
-banned before the upgrade is held from the first pass on the new build.
+banned before the upgrade is held from the first pass on the new build. A later administrator action, one order at a
+time, is to refund a release held for a long time to the order's buyer refund address instead (A-652f); it is not
+available yet.
 
 Migration 149 replaces the body of the database function `escrow_market_may_sign` (migration 081), which the triggers
 that store a settlement's transaction read, so that for a release it also requires the order's vendor not to be
