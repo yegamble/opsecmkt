@@ -19,7 +19,8 @@ import (
 //     shipping regions, fulfillment type, price, dispatch window, or a digital listing's switch between vendor and
 //     automatic delivery) or adds a photo, is saved "pending". Stock, digital units and automatic delivery content
 //     (which staff never see) do not re-hold it, nor does an administrator's edit. An administrator's own listings and the listings of a
-//     vendor an administrator marked users.listing_auto_approve (/admin/vendor-auto-approve) are never held.
+//     vendor an administrator marked users.listing_auto_approve (/admin/vendor-auto-approve) are never held. A ban
+//     clears that flag and lifting it does not set it again (admin_ban.go, A-650).
 //   - A listing that is not approved is on no buyer or guest path (catalog, search, categories, vendor page, product page, checkout
 //     page, draft and payment request: load.go, actions_orders.go, orders_hooks.go) and its photos are not on the
 //     public image route (image_routes.go). Its vendor sees it marked "Awaiting review"; moderators and administrators
