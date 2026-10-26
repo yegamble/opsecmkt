@@ -188,6 +188,10 @@ proposal says. Capture, its overflow, `AUTO_APPLY`, confidence and the model
 path never read or write the review state (`TestModerationNeverWritesReviewState`),
 so a listing whose capture overflowed or was never inferred stays held, and a
 listing published in publish mode is not held by a proposal.
+Moderation moves no money either: the moderation code, the panel's templates and
+the `moderation*` database functions name no money or ban route, settlement,
+refund address, state transition or wallet send, and write only moderation's own
+tables, the audit log and the worker's switch (`TestModerationNeverMovesMoney`).
 
 ## Proposal protocol
 
