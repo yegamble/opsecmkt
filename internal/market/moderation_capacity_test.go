@@ -495,8 +495,12 @@ func TestModerationAllocationLeaseAndRetryExactlyOnce(t *testing.T) {
 func TestModerationLegacyPolicyReplayReservesBeforeInference(t *testing.T) {
 	legacy := newPooledHistoricalFixture(t, 127)
 	vendor, _ := legacy.keylessUser("legacy_policy_budget_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
+	buyer, _ := legacy.keylessUser("legacy_policy_budget_buyer", "buyer")
+	p := legacy.product(vendor, "digital")
+	order := legacy.order(buyer, p, "XMR", stateCompleted)
+	// A review, not a listing: listings never reach a model (A-651).
 	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
-	legacy.product(vendor, "digital")
+	agExec(legacy, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Legacy review body')", randomToken(), order, p, buyer)
 	dsn, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)

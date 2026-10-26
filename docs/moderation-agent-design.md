@@ -39,7 +39,10 @@ them.
 **Tier 1: local inference.** Classify and summarize bounded content, identify
 evidence references and propose an allowed action with confidence and reason
 codes. It has no tools, network fetch capability, credentials, wallet access or
-database connection. No inference runs in a browser or request handler.
+database connection. No inference runs in a browser or request handler. By owner
+directive the model never judges listings by text: listing and upload items stop
+at Tier 0 and go to human review with `MODEL_NOT_USED` when Tier 0 finds nothing.
+Only reviews, disputes and payment flags reach Tier 1.
 
 **Tier 2: human review.** Binding actions stay in the existing authorized
 application workflows. A proposal cannot turn a reported delivery into a
@@ -49,8 +52,10 @@ review. Expiring a review deadline preserves the current marketplace state.
 ## Risk and disposition
 
 Risk considers blast radius, reversibility, money, novelty, confidence,
-injection evidence and actor age/reputation. Trusted database facts take
-precedence over vendor or model assertions. Unknown facts increase uncertainty.
+injection evidence and actor age. The market computes no reputation figure, so
+every job carries the fixed unrated-actor weight, and no model receives one.
+Trusted database facts take precedence over vendor or model assertions. Unknown
+facts increase uncertainty.
 
 | Condition | Disposition | On expiry |
 | --- | --- | --- |

@@ -176,10 +176,14 @@ func TestModerationAdminBenignClassificationSkipsHumanQueue(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("moderation_benign_admin", "admin")
 	vendor, _ := e.user("moderation_benign_vendor", "vendor")
+	buyer, _ := e.user("moderation_benign_buyer", "buyer")
+	p := e.product(vendor, "physical")
+	order := e.order(buyer, p, "XMR", stateCompleted)
 	if err := SetModerationEnabled(t.Context(), e.DB, true); err != nil {
 		t.Fatal(err)
 	}
-	e.product(vendor, "physical")
+	// A review, not a listing: listings never reach a model (A-651).
+	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,5,'Sturdy and well made')", randomToken(), order, p, buyer)
 	cfg := moderation.DefaultConfig()
 	cfg.Enabled = true
 	worker := &ModerationWorker{DB: e.DB, Engine: moderation.Engine{Config: cfg, Model: benignModerationUIModel{}}}

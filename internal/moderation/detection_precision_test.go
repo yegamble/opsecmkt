@@ -49,7 +49,7 @@ func TestExternalDestinationBlocksAutomaticHistory(t *testing.T) {
 		{"wallet product", "Hardware wallet", "Monero hardware-wallet reference; example standard address " + monero},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := ordinaryInput()
+			input := modelledInput()
 			input.Fields[0].Value, input.Fields[1].Value = tc.title, tc.description
 			var calls atomic.Int32
 			d, err := cleanSpyEngine(&calls).Evaluate(context.Background(), input)
@@ -75,10 +75,10 @@ func TestExternalDestinationBlocksAutomaticHistory(t *testing.T) {
 	if err != nil || !slices.Contains(d.ReasonCodes, "OFF_PLATFORM_CONTACT") || d.Disposition != QueueHuman || calls.Load() != 0 {
 		t.Fatalf("same-clause solicitation lost its deterministic finding: %+v calls=%d %v", d, calls.Load(), err)
 	}
-	// An ordinary listing without a destination still reaches automatic history.
-	d, err = cleanSpyEngine(&calls).Evaluate(context.Background(), ordinaryInput())
+	// An ordinary review without a destination still reaches automatic history.
+	d, err = cleanSpyEngine(&calls).Evaluate(context.Background(), reviewInput())
 	if err != nil || d.Disposition != AutoApply {
-		t.Fatalf("ordinary listing lost its clean path: %+v %v", d, err)
+		t.Fatalf("ordinary review lost its clean path: %+v %v", d, err)
 	}
 }
 
@@ -108,7 +108,7 @@ func TestWeakInstructionMarkersDoNotEscalate(t *testing.T) {
 		"A database schema poster for developers.",
 	} {
 		t.Run(text, func(t *testing.T) {
-			input := ordinaryInput()
+			input := modelledInput()
 			input.Fields[1].Value = text
 			var calls atomic.Int32
 			d, err := cleanSpyEngine(&calls).Evaluate(context.Background(), input)

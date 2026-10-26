@@ -88,6 +88,22 @@ The v2 response has no summary or evidence prose; Go renders review text from
 validated codes. Source text is limited to 8192 normalized runes/64 KiB raw, with
 complete original digests and no mutation of caller data.
 
+The model does not judge listings by text (owner directive, A-651, prompt
+`moderation-v5`; v1–v4 pins are refused). Listing and upload jobs never reach a
+model, even with `--model` on: they get the deterministic checks only and, when
+those find nothing, the Go-only `MODEL_NOT_USED` with the same `QUEUE_HUMAN`
+routing and score as an absent model, so they are never `AUTO_APPLY`. Reviews,
+disputes and payment flags still use inference. Stage B no longer receives
+`actor_reputation`; the market never sets a reputation figure (source guard
+`TestNoMarketCodeSetsActorReputation`), so the router's fixed unrated-actor weight
+applies to every job as before, and the canonical input hash keeps its form.
+Prompt capture shows neither stage carrying a handle, PGP fingerprint, image hash,
+payment address, ban/takedown/listing-rejection reason or reputation figure; a
+resolved dispute's staff-written decision text still reaches Stage A until
+disputes stop using inference. Evidence is a fake-model capture
+(`TestListingAndUploadNeverReachModel`, `TestPromptsCarryNoIdentityOrBehaviourData`,
+`TestModerationListingSkipsModelWhenEnabled`); it shows what is sent, not model quality.
+
 The private `/admin/moderation` queue shows bounded status and accepts confirmed
 review annotations. Optional PGP-encrypted, Ed25519-signed packets can be
 downloaded there; a separate offline action key can sign a one-use review token
@@ -411,8 +427,9 @@ Moderators can review but cannot change the mode or a vendor's flag (403). Switc
 listings already waiting stay hidden until staff approve them. The moderation layer (capture triggers and their
 overflow, the worker and its `cmd/server` launcher, `AUTO_APPLY`, confidence and the model path) never names the
 review columns or settings, writes products, or refers to anything `listing_review.go` declares
-(`TestModerationNeverWritesReviewState`, an AST scan), and an `AUTO_APPLY` proposal leaves a pending listing pending
-(`TestListingHoldSurvivesAutoApply`), so a capture that overflowed or a benign proposal leaves the listing held.
+(`TestModerationNeverWritesReviewState`, an AST scan). Since A-651 no model judges a listing, so a listing proposal is
+never `AUTO_APPLY`; a proposal leaves a pending listing pending (`TestListingHoldSurvivesAutoApply`), so a capture that
+overflowed or a proposal with no finding leaves the listing held.
 
 Tests: `listing_review_test.go` (every buyer path including direct GET/POST, approve, reject without archiving,
 reject → edit → resubmit → approve, edit and photo re-hold, stale desk forms, overflow and worker, auto-approve, mode

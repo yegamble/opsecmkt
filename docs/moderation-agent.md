@@ -28,8 +28,9 @@ one-minute interval. Enablement persists in the database: subsequent supported
 content changes enqueue hashes and bounded metadata in their transaction. New
 jobs do not copy listing, dispute, description or review prose. The worker reads
 bounded current source text transiently, checks its digest, and sends only a
-matching captured revision to inference; changed or deleted sources receive HOLD
-without inference. Existing content is not
+matching captured review, dispute or payment-flag revision to inference; listing
+and upload text never reaches a model (see [Trust boundary](#trust-boundary)).
+Changed or deleted sources receive HOLD without inference. Existing content is not
 automatically backfilled. Stopping a worker preserves enqueueing and durable
 jobs; it does not disable the feature. To stop future enqueueing:
 
@@ -58,7 +59,7 @@ store retains the first validated result for its stable identity.
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v4`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v5`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -113,7 +114,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v4
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v5
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -154,9 +155,22 @@ Base58Check or bech32/bech32m checksum verifies) adds
 `HUMAN_REVIEW`, wherever the solicitation is. `OFF_PLATFORM_CONTACT` remains the
 narrower finding for a destination and solicitation in the same clause.
 `tests/fixtures/injection/corpus.json` labels each case `escalate`,
-`human_review` or `miss`; known misses (other languages, phrases split around an
-intervening field, other encodings, paraphrased intent) reach the model, whose
-recall is unmeasured.
+`human_review` or `miss`; in a review, dispute or payment flag, known misses
+(other languages, phrases split around an intervening field, other encodings,
+paraphrased intent) reach the model, whose recall is unmeasured. In a listing or
+upload they reach the human queue.
+
+The model never judges listings by text (owner directive). Listing and upload
+jobs are evaluated by the deterministic checks only, whether or not `--model` is
+on. When those checks find nothing, the proposal records the Go-only code
+`MODEL_NOT_USED` with `HUMAN_REVIEW` at confidence 0: the same `QUEUE_HUMAN`
+routing and risk score an absent model gives, so a listing or upload is never
+`AUTO_APPLY`. Deterministic findings, injection markers and destinations route as
+before, but a model can no longer escalate a listing or upload that the
+deterministic checks pass: a human sees it in the ordinary queue. The
+local adapter also refuses those kinds before any runtime request
+(`TestListingAndUploadNeverReachModel`, `TestModerationListingSkipsModelWhenEnabled`).
+Reviews, disputes and payment flags still use local inference when it is enabled.
 
 Local inference uses two stages. Stage A extracts bounded findings from the
 untrusted material. Go validates those findings before Stage B receives them
@@ -177,7 +191,7 @@ listing published in publish mode is not held by a proposal.
 
 ## Proposal protocol
 
-The `moderation-v4` model response has exactly these seven JSON fields. Additional fields, missing fields,
+The `moderation-v5` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
@@ -196,13 +210,20 @@ completeness, normalization, novelty, actor, money, confidence, model-failure,
 protocol, policy and deadline codes are added by Go alone; both grammars and Go
 validation refuse them from a model. Go maps the aliases back to trusted
 references, so no item, content or actor hash reaches either prompt. Stage B sees
-duplicate checks as counts and match outcomes, not hashes.
+duplicate checks as counts and match outcomes, not hashes, and the actor's account
+age but no reputation figure (moderation-v5 removed `actor_reputation`, which was
+always 0). Stage A carries only the item's fields; Stage B's trusted keys are a
+fixed set. No handle, PGP fingerprint, image hash, payment address or staff text
+(ban, takedown or listing-rejection reason) is in either prompt
+(`TestPromptsCarryNoIdentityOrBehaviourData`). One exception remains: a resolved
+dispute's decision text is written by staff and still reaches Stage A as the
+dispute's `resolution` field until disputes stop using inference.
 
 The pinned llama.cpp `/completion` tokenizes the prompt with special-token
 parsing enabled. Go's JSON encoding already writes `<`, `>` and `&` as escapes,
 and the prompt data also writes `[` and `]` inside string values as `\u005b` and
 `\u005d`, so control tokens spelled with angle or square brackets, such as
-`[INST]` or `<|im_start|>`, cannot be formed from listing text. The JSON meaning
+`[INST]` or `<|im_start|>`, cannot be formed from item text. The JSON meaning
 is unchanged; a bracket-heavy item costs more tokens. Special tokens spelled
 without these characters are not covered, and no selected model's vocabulary has
 been checked. Before enabling inference with a chosen model, list its special and
@@ -214,7 +235,7 @@ untrusted.
 Go derives review summaries and injection-evidence descriptions from validated
 codes and references. Model-written prose is rejected. Historical records keep
 their immutable bytes, while the current queue also renders their presentation
-from codes. Reply drafting is excluded from model actions; v1, v2 and v3
+from codes. Reply drafting is excluded from model actions; v1 through v4
 protocol pins are refused.
 
 The action names include suggestions for sensitive actions so those proposals
@@ -231,7 +252,7 @@ one that cannot fit beside the 1536-token output limit in the launcher's
 end-of-sequence or stop-word finish (`stop_type`, or the older `stopped_*`
 flags), `truncated` false and a matching `tokens_evaluated`. A runtime without
 those fields or that endpoint gets `MODEL_FAILURE` and human review. Longer or
-token-dense items, such as long non-Latin listings, therefore reach human review
+token-dense items, such as long non-Latin reviews, therefore reach human review
 without a model proposal. The embedded grammar still needs validation against
 the operator's selected real runtime.
 
@@ -239,7 +260,7 @@ the operator's selected real runtime.
 
 | Disposition | Effect |
 | --- | --- |
-| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` classification of text with no external destination or weak instruction marker; no marketplace entity is changed |
+| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` model classification of a review with no external destination or weak instruction marker (listings and uploads never reach a model; money-related items escalate); no marketplace entity is changed |
 | `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
 | `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
 | `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
@@ -255,13 +276,18 @@ automatic reply publication, money executor or ban executor is provided.
 
 ## Input coverage and remaining limits
 
-| Source | Queued content and limits |
-| --- | --- |
-| Listing create/update | Title, description, category, region, kind and atomic price; bounded category-price sample and previous text fingerprints supply advisory baselines |
-| New normalized upload | Description, image metadata, SHA256 of normalized bytes and optional gateway-computed dHash; no pixels or original image reaches inference |
-| Dispute create/update | Reason, status/resolution and current order state; money-related cases escalate |
-| Review create/update | Body and rating |
-| Newly flagged payment | Flag/disposition and current order state; no transaction ID, deposit address or wallet details |
+| Source | Queued content and limits | Stage A text when `--model` is on |
+| --- | --- | --- |
+| Listing create/update | Title, description, category, region, kind and atomic price; bounded category-price sample and previous text fingerprints supply advisory baselines | None: deterministic checks only (`MODEL_NOT_USED`) |
+| New normalized upload | Description, image metadata, SHA256 of normalized bytes and optional gateway-computed dHash; no pixels or original image reaches inference | None: deterministic checks only (`MODEL_NOT_USED`) |
+| Dispute create/update | Reason, status/resolution and current order state; money-related cases escalate | Reason and resolution |
+| Review create/update | Body and rating | Body and rating |
+| Newly flagged payment | Flag/disposition and current order state; no transaction ID, deposit address or wallet details | Disposition |
+
+Stage B receives, for the three modelled kinds only, the kind, the actor's account
+age in days, price and completeness facts, order and timer state, money, novelty
+and reversibility flags, derived duplicate and activity counts and the validated
+Stage A codes; no actor reference, reputation figure, hash or text.
 
 Encrypted messages, shipping addresses, delivery contents, keys and raw upload
 bytes are excluded. Migration 127 stores an optional 64-bit perceptual dHash
@@ -487,7 +513,7 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
 isolation and unverified production operation. Both current grammars
-(unchanged from moderation-v3 in moderation-v4) passed the pinned upstream
+(unchanged from moderation-v3 through moderation-v5) passed the pinned upstream
 parser: 25 cases (6 accepted, 19 rejected) and an independent rebuild with 22 cases, all as expected; this does not
 establish correct model judgment.
 

@@ -21,6 +21,7 @@ func Route(in NormalizedInput, p Proposal, cfg Config) (Disposition, int, []stri
 		score += 10
 		add("NEW_ACTOR")
 	}
+	// The market never sets Reputation, so its jobs always take this weight.
 	if in.Actor.Reputation < .5 {
 		score += 5
 	}
@@ -59,7 +60,7 @@ func Route(in NormalizedInput, p Proposal, cfg Config) (Disposition, int, []stri
 	if p.Action == ActionFlagReview {
 		return QueueHuman, score, reasons
 	}
-	if p.Confidence < cfg.ConfidenceFloor || math.IsNaN(p.Confidence) || math.IsInf(p.Confidence, 0) || in.Context.Novel || score >= 30 || slices.Contains(reasons, "INPUT_TRUNCATED") || slices.Contains(reasons, "DETERMINISTIC_CONFLICT") || slices.Contains(reasons, "ORDER_STATE_VIOLATION") || slices.Contains(reasons, "INVALID_FIELDS") || slices.Contains(reasons, "MODEL_ABSENT") || slices.Contains(reasons, "MODEL_FAILURE") || slices.Contains(reasons, "INVALID_OUTPUT") {
+	if p.Confidence < cfg.ConfidenceFloor || math.IsNaN(p.Confidence) || math.IsInf(p.Confidence, 0) || in.Context.Novel || score >= 30 || slices.Contains(reasons, "INPUT_TRUNCATED") || slices.Contains(reasons, "DETERMINISTIC_CONFLICT") || slices.Contains(reasons, "ORDER_STATE_VIOLATION") || slices.Contains(reasons, "INVALID_FIELDS") || slices.Contains(reasons, "MODEL_ABSENT") || slices.Contains(reasons, "MODEL_NOT_USED") || slices.Contains(reasons, "MODEL_FAILURE") || slices.Contains(reasons, "INVALID_OUTPUT") {
 		return QueueHuman, score, reasons
 	}
 	// A model cannot conceal a finding by pairing its reason with NO_ACTION.

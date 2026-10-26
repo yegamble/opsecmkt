@@ -61,6 +61,22 @@ acceptance requirements, not a declaration of deployed verification:
 - Grammar constraints are followed by Go schema, allowlist, bounds, canary and
   evidence-reference validation. Stage B receives validated findings rather than
   raw submitted text. No model response gains a tool, signer or database authority.
+- The model does not judge listings by text (A-651, `moderation-v5`, v4 pins
+  refused). With the model enabled, listing and upload jobs make no model call
+  and the adapter refuses them; with no deterministic finding they record the
+  Go-only `MODEL_NOT_USED` and route exactly as an absent model does
+  (`QUEUE_HUMAN`, never `AUTO_APPLY`), while reviews still reach the model.
+  Stage B has no `actor_reputation`, no market code sets a reputation figure, and
+  neither prompt carries a handle, PGP fingerprint, image hash, payment address,
+  ban/takedown/listing-rejection reason or reputation figure; a stored v4
+  decision keeps its bytes and still renders
+  (`TestListingAndUploadNeverReachModel`, `TestStageBViewHasNoReputation`,
+  `TestPromptsCarryNoIdentityOrBehaviourData`,
+  `TestOldPromptPinAndDraftReplyAreRefused`,
+  `TestModerationListingSkipsModelWhenEnabled`,
+  `TestNoMarketCodeSetsActorReputation`,
+  `TestModerationStoredV4DecisionStaysReadable`; unit and database integration
+  with a capturing fake runtime, which proves what is sent, not model quality).
 - Durable claims recover after interruption. Reprocessing one input/revision and
   policy reuses its decision identity. Stale entity revisions do not change
   marketplace state. Deadline expiry preserves state (`HOLD`).

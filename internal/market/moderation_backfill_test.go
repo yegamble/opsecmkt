@@ -1,12 +1,8 @@
 package market
 
 import (
-	"context"
-	"errors"
 	"strconv"
 	"testing"
-
-	"opsecmkt/internal/moderation"
 )
 
 // SEC72V regressions: refused captures stay recoverable through archive/hide,
@@ -230,21 +226,11 @@ func TestModerationActorRescanRepeatsAfterRefusalDuringScan(t *testing.T) {
 	}
 }
 
-type moderationMedianFlipper struct {
-	e     *testEnv
-	other string
-	calls int
-}
-
-func (m *moderationMedianFlipper) Propose(ctx context.Context, _ moderation.NormalizedInput) (moderation.Proposal, error) {
-	m.calls++
-	_, _ = m.e.DB.ExecContext(ctx, `UPDATE products SET xmr=CASE WHEN xmr=400000000000 THEN 600000000000 ELSE 400000000000 END WHERE id=$1`, m.other)
-	return moderation.Proposal{}, errors.New("model unavailable")
-}
-
-// A category-median change during inference makes a job stale while the
-// victim's own revision is unchanged. That stays a HOLD for humans; it must not
-// re-capture the victim, spend its share or feed its abuse-rate signal.
+// A category-median change while a listing job is evaluated makes it stale
+// while the victim's own revision is unchanged. That stays a HOLD for humans; it
+// must not re-capture the victim, spend its share or feed its abuse-rate signal.
+// Listings never reach a model (A-651), so the change lands between the
+// worker's input read and its persist, where inference used to run.
 func TestModerationContextStaleDoesNotRecapture(t *testing.T) {
 	e := newTestApp(t)
 	victim, _ := e.user("context_stale_victim", "vendor")
@@ -253,15 +239,24 @@ func TestModerationContextStaleDoesNotRecapture(t *testing.T) {
 	moderationEnable(t, e)
 	listing := e.product(victim, "digital")
 	w := moderationTestWorker(e)
-	w.Engine.Config.Enabled = true
-	flipper := &moderationMedianFlipper{e: e, other: otherListing}
-	w.Engine.Model = flipper
-	for range 8 {
-		moderationPasses(t, w, 1)
+	w.WorkerID = "context-stale-worker"
+	j, err := w.claim(t.Context())
+	if err != nil || j.TargetID != listing {
+		t.Fatalf("claim: %+v %v", j, err)
 	}
-	if flipper.calls == 0 {
-		t.Fatal("precondition: inference never ran")
+	in, err := w.input(t.Context(), j)
+	if err != nil {
+		t.Fatal(err)
 	}
+	agExec(e, `UPDATE products SET xmr=400000000000 WHERE id=$1`, otherListing)
+	d, err := w.Engine.Evaluate(t.Context(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = w.persist(t.Context(), j, moderationPolicyHash(w.Engine.Config), in, d); err != nil {
+		t.Fatal(err)
+	}
+	moderationPasses(t, w, 8)
 	if agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE target_id=$1 AND failure_class='stale_snapshot'`, listing) != 1 {
 		t.Fatal("precondition: the median change did not make the victim's job stale")
 	}
