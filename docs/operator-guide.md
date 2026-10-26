@@ -709,8 +709,12 @@ Model endpoints, raw model JSON and transport errors are omitted.
 
 While capture is on, the Admin overview (`/admin`) shows a **Moderation capture
 needs attention** alert when the lifetime pool has at most two daily actor shares
-left (162 allocations at `--max-records 4096`) or when refused targets or account
-rescans wait after a `retained_capacity` or `backfill_capacity` overflow. On the
+left (162 allocations at `--max-records 4096`) or when refused targets still wait
+after a `retained_capacity` or `backfill_capacity` overflow recorded since the
+oldest of them was refused. An unflagged payment's parked marker is not counted,
+and an older overflow does not make later per-account throttle markers (an account
+editing faster than its share) an alert; accounts awaiting a rescan are counted
+but do not trigger it on their own. On the
 private administrator connection it reads, for example, "2 of 512 lifetime
 allocations used; 1 target(s) waiting for capture" and names the settings to
 raise: `--max-records` and `--max-reserved-bytes` on the moderation worker (each

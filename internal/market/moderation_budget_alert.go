@@ -14,10 +14,20 @@ import (
 //
 // One plain read of counters: no row lock, so the overview never waits on (or delays) admission and the worker,
 // which serialise on the capacity row. It returns no row while capture is off.
-const moderationBudgetAlertSQL = `SELECT c.allocated_records,c.max_records,c.allocated_bytes,c.max_bytes,GREATEST(8,c.max_records*2/100),c.backfill,
+//
+// Waiting targets are the active markers only (moderation_backfill_due): a parked marker is an unflagged payment
+// kept until it is flagged again, not a target waiting for budget (QA87-1). Overflow counters never reset, so a
+// capacity overflow counts only if it was recorded at or after the oldest active marker's first refusal: a refusal
+// notes the overflow and inserts its marker in one transaction (moderation_mark_missed), so the two times are equal
+// for the marker it left, and an old overflow cannot turn later per-account throttle markers into a "raise the
+// limits" alert (A-662). Rescans carry no time and are also the ordinary path past an account's marker bound, so
+// they are counted but never tied to an overflow; an overflow that flags a rescan finds that account's own earlier
+// active markers, and an exhausted pool alerts on its own.
+const moderationBudgetAlertSQL = `SELECT c.allocated_records,c.max_records,c.allocated_bytes,c.max_bytes,GREATEST(8,c.max_records*2/100),m.waiting,
  (SELECT count(*) FROM moderation_actor_allocations WHERE rescan),
- EXISTS(SELECT 1 FROM moderation_overflow WHERE reason IN ('retained_capacity','backfill_capacity') AND occurrences>0)
- FROM moderation_capacity c WHERE c.singleton AND EXISTS(SELECT 1 FROM settings WHERE key='moderation_enabled' AND value='true')`
+ COALESCE(m.oldest<=(SELECT max(last_seen) FROM moderation_overflow WHERE reason IN ('retained_capacity','backfill_capacity') AND occurrences>0),false)
+ FROM moderation_capacity c,(SELECT count(*) AS waiting,min(first_missed) AS oldest FROM moderation_backfill WHERE NOT parked) m
+ WHERE c.singleton AND EXISTS(SELECT 1 FROM settings WHERE key='moderation_enabled' AND value='true')`
 
 // ModerationBudgetView is the overview's moderation capture alert: counts only, never an account, target, kind or
 // time. Private is set on the private administrator connection; elsewhere the alert is one sentence without numbers.
@@ -46,7 +56,7 @@ func loadModerationBudgetAlert(ctx context.Context, a *App, _ *http.Request, d *
 	}
 	// Admission refuses a new allocation once either budget lacks a whole one (moderation_admit_job).
 	remaining := max(0, min(maxRecords-used, (maxBytes-usedBytes)/moderationAllocationBytes))
-	if remaining > 2*share && !(overflow && (waiting > 0 || rescans > 0)) {
+	if remaining > 2*share && !overflow { // overflow implies an active marker waits
 		return nil
 	}
 	d.ModerationBudget = &ModerationBudgetView{Used: used, Limit: used + remaining, Waiting: waiting, Rescans: rescans,
