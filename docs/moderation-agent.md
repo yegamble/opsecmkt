@@ -532,7 +532,13 @@ removes its reference at once without the ledger lock. Worker results, the
 private-panel and offline reviews and the capture switch take the ledger row
 before any job, proposal or marketplace row, so a transaction that admitted one
 change and then locks another record cannot deadlock over the ledger with them
-or with a concurrent edit of that record. The private-panel review and the
+or with a concurrent edit of that record. Completing a job updates the ledger
+from a trigger after the job row is locked, so every statement that completes
+or requeues jobs (the worker's result and cached completion, the replay command,
+and any manual or test statement) takes the ledger row first; two statements
+that each complete several jobs without it can lock crossing job rows and
+deadlock (A-667: `TestModerationDisableSweepNoDeadlock` completes jobs ledger
+row first beside the sweep, the capture switch and erasure). The private-panel review and the
 budget raise are confirmed forms that lock the administrator's own account and
 session rows before the ledger row (the shared confirmation path has no earlier
 hook); no transaction holding the ledger row waits on those rows, because the
