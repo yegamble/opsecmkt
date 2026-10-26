@@ -90,6 +90,7 @@
 </tbody></table></div>
 </section>
 {{template "admin-user-reputation" $}}
+{{template "admin-ban-orders" $}}
 {{if not .Actionable}}<section class="panel" aria-label="Account actions">
 <p>Administrator accounts are managed on the host with the <code>-set-role</code> command; their role, suspension, ban and second factors cannot be changed here{{if .Self}}, and neither can your own account{{end}}.</p>
 </section>{{else}}

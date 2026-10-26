@@ -28,14 +28,18 @@ const (
 	roleVendor    = "vendor"
 	roleModerator = "moderator"
 	roleSystem    = "system"
+	// roleBanRefund is an administrator's refund of a banned vendor's unpaid or unshipped Monero escrow order (A-652b,
+	// admin_ban_orders.go). actorRoles never returns it: transition adds it only for the order and administrator that
+	// banOrdersAction marked (withBanRefund), so /orders/cancel, the order page and every other path cannot use it.
+	roleBanRefund = "ban_refund"
 )
 
 // transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing. The buyer's
 // paid -> cancelled is escrowOnly (the no-ship cancel, P2-R5).
 var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
-	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem}}, // system: payment window expired
-	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer}, stateDisputed: {roleBuyer, roleVendor}},
+	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem, roleBanRefund}}, // system: payment window expired
+	statePaid:            {stateShipped: {roleVendor}, stateDelivered: {roleVendor, roleSystem}, stateCancelled: {roleVendor, roleBuyer, roleBanRefund}, stateDisputed: {roleBuyer, roleVendor}},
 	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
 	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
 	stateDisputed:        {stateResolved: {roleModerator}, stateCompleted: {roleBuyer}, stateCancelled: {roleVendor}}, // A-166: party concessions use only /disputes/concede.
@@ -73,6 +77,26 @@ func withConfirmReceipt(ctx context.Context) context.Context {
 }
 
 func isConfirmReceipt(ctx context.Context) bool { return ctx.Value(confirmReceiptCtx{}) != nil }
+
+type banRefundKey struct{}
+type banRefund struct{ orderID, actorID string }
+
+// withBanRefund marks one order's cancellation by administrator actorID as the refund of a banned vendor's order
+// (roleBanRefund). Only banOrdersAction sets it, after its own checks.
+func withBanRefund(ctx context.Context, orderID, actorID string) context.Context {
+	return context.WithValue(ctx, banRefundKey{}, banRefund{orderID, actorID})
+}
+
+// transitionRoles is actorRoles plus roleBanRefund for the marked cancellation (withBanRefund) of a Monero escrow order
+// by an administrator who is not party to it.
+func transitionRoles(ctx context.Context, o *Order, actor *User, to string) []string {
+	roles := actorRoles(o, actor)
+	if m, ok := ctx.Value(banRefundKey{}).(banRefund); ok && actor != nil && actor.Role == "admin" && m.orderID == o.ID && m.actorID == actor.ID &&
+		to == stateCancelled && o.xmrEscrow() && slices.Equal(roles, []string{roleModerator}) {
+		roles = append(roles, roleBanRefund)
+	}
+	return roles
+}
 
 var (
 	errConflict  = fail(409, "This order changed or is no longer in that state. Reload and try again.")
@@ -200,7 +224,7 @@ func (a *App) transition(ctx context.Context, tx *sql.Tx, orderID, from, to stri
 		return nil, errEscrowComplete
 	}
 	allowed, ok := transitions[from][to]
-	if !ok || !slices.ContainsFunc(actorRoles(&o, actor), func(r string) bool {
+	if !ok || !slices.ContainsFunc(transitionRoles(ctx, &o, actor, to), func(r string) bool {
 		return slices.Contains(allowed, r) && (o.Escrow || !escrowOnly[[3]string{from, to, r}])
 	}) {
 		return nil, errForbidden

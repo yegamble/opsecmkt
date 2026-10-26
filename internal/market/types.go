@@ -306,6 +306,11 @@ type PageData struct {
 	RoleHandle, RoleChoice, ResetHandle, SuspendHandle, SuspendChoice string
 	// BanHandle, BanChoice and BanReason: likewise for the ban/unban form (A-546).
 	BanHandle, BanChoice, BanReason string
+	// BanOrders: a banned account's page in the user directory, its open Monero escrow orders and the form refunding
+	// the unpaid and unshipped ones (A-652b, admin_ban_orders.go); nil for any other account.
+	BanOrders *BanOrdersView
+	// BannedOpenEscrow: the admin overview, how many banned accounts are the vendor of an open escrow order (STAFF87-7).
+	BannedOpenEscrow int
 	// ResolveDispute and ResolveText: the desk re-rendered after a resolve form loaded before the other party's
 	// reply was refused (A-280), keeping the decision typed for that dispute.
 	ResolveDispute, ResolveText string

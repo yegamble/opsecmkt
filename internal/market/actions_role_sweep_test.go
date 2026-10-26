@@ -84,6 +84,7 @@ var sweepScopes = map[string][2]string{
 
 	"/admin":                        {scopeStaff, ""},
 	"/admin/ban":                    {scopeStaff, "TestBanAccount covers its refusals (self, administrators, unknown handles, missing reasons)"},
+	"/admin/ban-orders":             {scopeStaff, "TestBanOrdersRefusedForUnbanned and TestBanOrdersStaleDigest409 cover its refusals (not banned, unknown handle, stale or forged digest)"},
 	"/admin/canary":                 {scopeStaff, ""},
 	"/admin/pgp-access":             {scopeStaff, "confirmed browse-only login policy; commerce always requires PGP proof"},
 	"/admin/captcha":                {scopeStaff, ""},
