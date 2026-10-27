@@ -189,11 +189,11 @@ func TestErrorCauseClasses(t *testing.T) {
 	}
 }
 
-// QA-178-2: a statement timeout, a lock timeout, a server that is shutting down or refusing connections, and
-// a lost connection (errorCause's db-connection class) answer the busy 503; application errors and a client
-// that went away do not.
+// QA-178-2: a statement timeout, a lock timeout, a deadlock (A-668), a server that is shutting down or refusing
+// connections, and a lost connection (errorCause's db-connection class) answer the busy 503; application errors and a
+// client that went away do not.
 func TestDBBusyClasses(t *testing.T) {
-	for _, code := range []string{"57014", "55P03", "57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006"} {
+	for _, code := range []string{"57014", "55P03", "40P01", "57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006"} {
 		if !dbBusy(fmt.Errorf("x: %w", &pgconn.PgError{Code: code})) {
 			t.Errorf("SQLSTATE %s is not busy", code)
 		}

@@ -273,16 +273,18 @@ func writeEscrowDownloadFailure(w http.ResponseWriter, r *http.Request, err erro
 }
 
 // dbBusy reports a statement cancelled by the application pool's statement_timeout or lock_timeout (A-177),
-// or a database that is unavailable (QA-178-2): shutting down or refusing connections (57P01-57P03, 53300),
-// or a lost or failed transport (08000, 08001, 08003, 08004, 08006 or dbConnLost; the other class 08 codes,
-// such as 08P01 protocol_violation, point at configuration, which retrying does not fix). The database is
-// overloaded, restarting or a row is held too long, so the request is answered 503 (retry), not 500. A client
-// that went away or a request past its deadline is not.
+// a transaction PostgreSQL ended to break a deadlock (40P01, A-668: like 55P03 it ends a statement's lock wait and
+// rolls back the transaction it ran in, and every such wait in the pool is also bounded by lock_timeout, so it can
+// arise only where 55P03 already could), or a database that is unavailable (QA-178-2):
+// shutting down or refusing connections (57P01-57P03, 53300), or a lost or failed transport (08000, 08001, 08003,
+// 08004, 08006 or dbConnLost; the other class 08 codes, such as 08P01 protocol_violation, point at configuration,
+// which retrying does not fix). The database is overloaded, restarting or a row is held too long, so the request is
+// answered 503 (retry), not 500. A client that went away or a request past its deadline is not.
 func dbBusy(err error) bool {
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) {
 		switch pe.Code {
-		case "57014", "55P03", "57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006":
+		case "57014", "55P03", "40P01", "57P01", "57P02", "57P03", "53300", "08000", "08001", "08003", "08004", "08006":
 			return true
 		}
 		return false
