@@ -76,20 +76,22 @@
 </div>{{else}}
 <p>No Monero escrow settlement is waiting for a relay check.</p>{{end}}
 <h4 id="xmr-escrow-missing">Missing Monero escrow wallets past their destruction date</h4>
-<p>A wallet the escrow wallet-rpc cannot open is missing, and the market keeps its sealed seed: its file may be on a volume not yet restored, and it may still hold coins. Once you have checked that its files are gone from the escrow wallet volume and its backups, and that nothing in it is owed, confirm its destruction: its sealed seed is wiped and it can never be recovered. You cannot confirm a wallet holding an order of yours. Each confirmation needs your password and is audited.</p>{{if .Missing}}
+<p>A wallet the escrow wallet-rpc cannot open is missing, and the market keeps its sealed seed: its file may be on a volume not yet restored, and it may still hold coins. Once you have checked that its files are gone from the escrow wallet volume and its backups, and that nothing in it is owed, confirm its destruction: its sealed seed is wiped and it can never be recovered. The confirmation is refused while the market's records say the wallet still holds coins (a counted deposit of one of its orders that no settlement has spent for good): restore it from its sealed seed so that the market can settle them, and it is destroyed by the usual rule once it is empty. You cannot confirm a wallet holding an order of yours. Each confirmation needs your password and is audited.</p>{{if .Missing}}
 <div class="table-wrap" tabindex="0" role="region" aria-labelledby="xmr-escrow-missing">
 <table>
 <thead>
 <tr>
 <th scope="col">Wallet</th>
 <th scope="col">Destruction date</th>
+<th scope="col">Unspent in the records</th>
 <th scope="col">Action</th>
 </tr>
 </thead>
 <tbody>{{range .Missing}}<tr>
 <td class="mono">{{.Name}}</td>
 <td>{{.DestroyAfter}}</td>
-<td>{{if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-destroyed">
+<td>{{.Owed}}</td>
+<td>{{if .Owes}}Refused while the records say it holds coins: restore it from its sealed seed{{else if not $.XMREscrowRecovery.On}}Turn Monero escrow on to confirm{{else}}<form class="stack" method="post" action="/admin/escrow-xmr-destroyed">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/escrow-xmr-destroyed"}}">
 <input type="hidden" name="wallet_id" value="{{.ID}}">

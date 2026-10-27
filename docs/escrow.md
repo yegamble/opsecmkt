@@ -247,7 +247,10 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   files listed on `/admin/payments`. A wallet another wallet program
   has open is temporarily unavailable: it keeps its state and its accounts, waits, and is logged once until it is closed
   there. A missing wallet past its 90 days is listed on `/admin/payments`, where an administrator confirms its destruction
-  (password step-up, audited) once the operator has checked that the file is gone and nothing is owed. A wallet that
+  (password step-up, audited) once the operator has checked that the file is gone and nothing is owed; the list shows the
+  sum the records say it still holds, and while that is above zero (a counted deposit of one of its orders that no
+  settlement claims, or that one claims which is not confirmed 100 deep) the confirmation is refused and the seal kept
+  (A-672). A wallet that
   would not open while the sweep ran counts as checked, so after its file is restored the operator sets the sweep marker
   again for its lookahead. A changed `MONERO_WALLET_SECRET` disables Monero escrow with one fixed log line and no wallet
   is created or opened; a changed `ESCROW_XMR_SEED_KEY` stops wallet creation only, until the operator re-pins it.
@@ -350,6 +353,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
   `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
+  `TestXMREscrowConfirmDestroyedRefusesUnspent`,
   `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,
   `TestXMREscrowRowlessAccountRetiresFreeSlots`, `TestXMREscrowRowlessAccountNormalCrashBurnsBatch`,
   `TestXMREscrowRecordedAccountsKeepFreeSlots`, `TestXMREscrowRestoredCheckoutWaitsForReconcile`,

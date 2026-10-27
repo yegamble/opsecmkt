@@ -1030,6 +1030,80 @@ func TestXMREscrowConfirmDestroyed(t *testing.T) {
 	}
 }
 
+// missingSection is /admin/payments' list of missing Monero escrow wallets past their destruction date, as sess sees it.
+func (x *xmrEscrowEnv) missingSection(sess string) string {
+	x.t.Helper()
+	p := html.UnescapeString(x.page("/admin/payments", sess))
+	i, j := strings.Index(p, `id="xmr-escrow-missing"`), strings.Index(p, `id="xmr-escrow-destroyed"`)
+	if i < 0 || j < i {
+		x.t.Fatalf("/admin/payments has no missing-wallet section:\n%s", p)
+	}
+	return p[i:j]
+}
+
+// A-672 (PAY93-1): a missing wallet's destruction is refused while the records show coins of it owed. A completed
+// digital order whose vendor never claimed has a counted deposit no settlement claims: the confirmation answers 409,
+// the seal is kept, and /admin/payments shows the sum the records hold for the wallet and offers no confirmation. Once
+// the release is confirmed 100 deep (its file was back meanwhile, then gone again), the confirmation goes ahead.
+func TestXMREscrowConfirmDestroyedRefusesUnspent(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.completed()
+	name := x.walletOf(order)
+	x.rotate()
+	var file *fakeXMRWalletFile
+	x.fake.edit(func(f *fakeXMREscrow) { file = f.files[name]; delete(f.files, name) })
+	x.mustPoll()
+	if x.walletState(name) != "missing" {
+		x.failWallets()
+	}
+	x.days(name, 91)
+	id := strconv.Itoa(agInt(x.testEnv, "SELECT id FROM xmr_escrow_wallets WHERE name=$1", name))
+	_, admin := x.user("a672_admin_"+randomToken()[:6], "admin")
+	confirm := func() (int, string) {
+		w := x.do("POST", "/admin/escrow-xmr-destroyed", admin, url.Values{"wallet_id": {id}, "gone": {"confirmed"}, "password": {testPassword}})
+		return w.Code, w.Body.String()
+	}
+	sealed := func() bool {
+		return agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='missing' AND seed_sealed IS NOT NULL", name) == 1
+	}
+	owed := x.A.escrowAmount(&Order{Currency: "XMR"}, xmrListingPrice)
+	if code, body := confirm(); code != 409 || !strings.Contains(body, "Nothing was changed.") || !sealed() {
+		t.Fatalf("an unclaimed deposit: %d %s (sealed and missing: %v)", code, body, sealed())
+	}
+	if s := x.missingSection(admin); !strings.Contains(s, name) || !strings.Contains(s, owed) || strings.Contains(s, `action="/admin/escrow-xmr-destroyed"`) {
+		t.Fatalf("/admin does not show the %s the records hold for %s, or offers its confirmation:\n%s", owed, name, s)
+	}
+	// The file is back before the destruction date, so the watcher reads the wallet again and does not destroy it.
+	x.rotate()
+	x.fake.edit(func(f *fakeXMREscrow) { f.files[name] = file })
+	x.mustPoll()
+	rel, _ := x.release(order)
+	x.mustPoll()
+	x.fake.mine(10)
+	x.mustPoll()
+	x.fake.mine(100)
+	x.mustPoll()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE id=$1 AND state='confirmed' AND reorg_safe_at IS NOT NULL", rel); n != 1 {
+		t.Fatalf("release %d not confirmed 100 deep: %+v", rel, x.settlement(rel))
+	}
+	x.fake.edit(func(f *fakeXMREscrow) { delete(f.files, name) })
+	x.mustPoll()
+	if x.walletState(name) != "missing" {
+		x.failWallets()
+	}
+	x.days(name, 91)
+	if s := x.missingSection(admin); !strings.Contains(s, x.A.escrowAmount(&Order{Currency: "XMR"}, 0)) || !strings.Contains(s, `action="/admin/escrow-xmr-destroyed"`) {
+		t.Fatalf("/admin does not offer the confirmation once nothing is owed:\n%s", s)
+	}
+	if code, body := confirm(); code != 303 {
+		t.Fatalf("after the release: %d %s", code, body)
+	}
+	if agInt(x.testEnv, "SELECT count(*) FROM xmr_escrow_wallets WHERE name=$1 AND state='destroyed' AND seed_sealed IS NULL", name) != 1 {
+		t.Fatalf("after the confirmation: %s", x.walletState(name))
+	}
+}
+
 // A-420: while the sweep marker is set, the probe covers the 12 months before the current one whatever the database
 // holds: an order placed after the restore does not hide an October wallet created after the backup.
 func TestXMREscrowSweepProbesEarlierMonths(t *testing.T) {
