@@ -64,7 +64,7 @@ button:disabled {
   opacity:.6;
   cursor:not-allowed
 }
-a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,pre[tabindex]:focus-visible {
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,pre[tabindex]:focus-visible,.table-wrap[tabindex]:focus-visible {
   outline:3px solid var(--amber);
   outline-offset:2px
 }
@@ -2048,4 +2048,55 @@ img.vendor-avatar {
 .text-brand .market-wordmark-name {white-space:normal; overflow:visible; overflow-wrap:anywhere; text-overflow:clip}
 @media(min-width:641px) {
   .brand.text-brand,.branding-preview.text-brand {width:max(224px,10ch); min-height:56px}
+}
+
+/* A-521: order and transaction IDs in a table wrap at any character inside their cell instead of widening it (the
+   table itself does not wrap); a soft wrap adds no characters, so a selected or copied ID stays whole. */
+.long-id {
+  white-space:normal;
+  overflow-wrap:anywhere;
+  word-break:break-all
+}
+/* A-521: below 641 px the main navigation collapses behind the header's native Menu disclosure (no script); from
+   641 px the disclosure is hidden and the header's own copy of the navigation is shown. Only one is rendered. */
+.nav-menu {
+  border-bottom:1px solid var(--line)
+}
+.nav-menu>summary {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  min-height:48px;
+  padding:0 16px;
+  font:0.875rem var(--mono);
+  letter-spacing:.045em;
+  text-transform:uppercase;
+  color:var(--amber);
+  list-style:none
+}
+.nav-menu>summary::-webkit-details-marker {
+  display:none
+}
+.nav-menu-icon::before {
+  content:'+';
+  font-size:1.25rem;
+  line-height:1
+}
+.nav-menu[open]>summary .nav-menu-icon::before {
+  content:'\2212'
+}
+.nav-menu>.nav {
+  border-top:1px solid var(--line);
+  border-bottom:0
+}
+header>.nav {
+  display:none
+}
+@media(min-width:641px) {
+  .nav-menu {
+    display:none
+  }
+  header>.nav {
+    display:flex
+  }
 }
