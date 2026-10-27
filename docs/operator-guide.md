@@ -669,10 +669,11 @@ otherwise, blank or absent values keep it disabled.
 
 ### Administration sections
 
-`/admin` (the **Admin** link) is an overview: the staff attention counts, the
+`/admin` (the **Admin** link) is an overview: the staff attention counts
+(including listings awaiting review, linked to the moderation desk), the
 *Get your marketplace ready* checklist and a link to each section, flagged when
-something in it needs you (for example open vendor applications, a Monero escrow
-alert or a paused image scanner). Every
+something in it needs you (for example open vendor applications or listings
+awaiting review, a Monero escrow alert or a paused image scanner). Every
 administration panel is on exactly one section page, and every admin page starts
 with the same section navigation (plain links that wrap on a narrow screen; the
 current one is marked for screen readers). Where this guide says
@@ -705,6 +706,10 @@ off by default. The Admin overview on private administrator ingress links to `/a
 on the private administrator connection; it shows job/review/escalation counts,
 injection-suspicion counts, prompt/weights pins, last pass and bounded failure
 classes. These are worker observations, not proof of model or host integrity.
+Its review queue lists escalations (such as disputes, payment flags and injection
+suspicions) first and then the soonest deadline; proposals past their deadline
+are on HOLD under **Deadline passed**, and the kind and disposition filters work
+without JavaScript ([moderation guide](moderation-agent.md#review-and-service-inventory)).
 Model endpoints, raw model JSON and transport errors are omitted. The model never
 reads listing or upload text: those proposals carry `MODEL_NOT_USED` and wait in
 the human queue unless a deterministic check escalates them; only reviews,

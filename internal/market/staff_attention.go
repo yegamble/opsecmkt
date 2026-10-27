@@ -8,8 +8,10 @@ import (
 
 // StaffAttention holds separate, uncapped counts for work a staff member can currently read or act on.
 // The categories intentionally overlap: one order may need a dispute decision and a payment review.
+// ListingReviews counts listings awaiting review (pending, not archived) that the viewer may review: its own are
+// excluded, as the desk refuses them (A-686). It reads the partial index products_review_queue.
 type StaffAttention struct {
-	Disputes, PaymentReviews, EscrowAlerts int
+	Disputes, PaymentReviews, EscrowAlerts, ListingReviews int
 	// RestoreGate and RestoreSweep are set while a restore pauses Monero escrow (A-559): the restore gate and the
 	// restore sweep. The summary then names what is paused (RestorePaused) until the gate is cleared and the sweep ran.
 	RestoreGate, RestoreSweep bool
@@ -49,9 +51,10 @@ func loadStaffAttention(ctx context.Context, a *App, _ *http.Request, d *PageDat
 	    AND (pm.disposition<>'escalated' OR $2='admin')),
 	 (SELECT count(*) FROM orders o JOIN products pr ON pr.id=o.product_id
 	  WHERE ` + escrowStaffAlertCandidates("o.id") + ` AND ` + escrowStaffAlert("o.id") + ` AND o.buyer_id<>$1 AND pr.vendor_id<>$1),
+ (SELECT count(*) FROM products p WHERE p.review_state='pending' AND NOT p.archived AND p.vendor_id<>$1),
 	 ` + restoreGateSQL + `, EXISTS(SELECT 1 FROM settings WHERE key=$3 AND value='true')
 	FROM users WHERE id=$1 AND role=$2 AND role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL`
-	err = tx.QueryRowContext(ctx, query, d.User.ID, d.User.Role, xmrEscrowSweepKey).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts, &v.RestoreGate, &v.RestoreSweep)
+	err = tx.QueryRowContext(ctx, query, d.User.ID, d.User.Role, xmrEscrowSweepKey).Scan(&v.Disputes, &v.PaymentReviews, &v.EscrowAlerts, &v.ListingReviews, &v.RestoreGate, &v.RestoreSweep)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
