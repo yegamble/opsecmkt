@@ -21,7 +21,9 @@ existing documented operations workflow.
 wallet on *Admin → Payments* used to wipe its sealed seed even when the records showed coins of it that no settlement
 had spent (for example an unclaimed completed digital order). The list now shows that sum for each missing wallet
 (*Unspent in the records*), and while it is above zero the confirmation is refused with nothing changed: restore the
-wallet from its sealed seed so that the coins are paid out, after which it is destroyed as usual. A held release whose
+wallet from its sealed seed (this needs the offline seed key) so that any coins are paid out, after which it
+is destroyed as usual; the sum also counts deposits of a settlement marked external or settled by hand, whose coins
+may already be gone, and such a wallet reads empty once restored. A held release whose
 escrow wallet is already destroyed is no longer refunded to the buyer (A-652f): settle it with the operator. Wallets
 destroyed before the upgrade are not changed. See *Destruction, and deleting the files* under
 [Monero escrow](docs/operator-guide.md#monero-escrow).

@@ -1988,7 +1988,7 @@ for example an unclaimed completed digital order, or an order decided for the ve
 While that sum is above zero the confirmation is refused (409, nothing changed) and the seal kept (A-672): restore the
 wallet from its sealed seed under its name with the derived password (*The offline seed check*, step 3, above) and set the
 sweep marker again, so that the market reads it again and those coins are paid out as usual (a release, a refund or a
-stray refund); it is then destroyed by the usual rule once it is empty. **Do not keep an
+stray refund); it is then destroyed by the usual rule once it is empty. The sum also counts deposits claimed by a settlement the watcher found spent outside the market (external) or one marked settled by hand; those coins may already be gone, and the restored wallet then reads empty and is destroyed at once. Restoring needs the sealed seed, so keep the offline seed key. **Do not keep an
 escrow wallet open in another wallet program** (for example `monero-wallet-cli` on the same files): a wallet "opened by another
 wallet program" keeps its state and its accounts, but the market cannot read its deposits or send its settlements until you
 close it there (logged once). **The market cannot reach the wallet volume, so the files stay until you delete them.**
