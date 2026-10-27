@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -319,6 +320,74 @@ func TestBanWaitsForHeldShippedOrder(t *testing.T) {
 	}
 	if code := <-done; code != 303 {
 		t.Fatalf("the ban that waited for the held order: %d", code)
+	}
+	x.checkBanNotice(order, x.releaseAt(order))
+}
+
+// PAY93-1 (A-668): an interleaving the ban's lock order does not avoid. An administrator who bought a vendor's shipped
+// order bans the vendor while the vendor writes to them about it. The message holds the order, then the vendor's account
+// row (FOR SHARE NOWAIT: the ban does not hold it yet), then waits for the administrator's account row, which the ban's
+// confirmation locked before the ban began waiting for the order: a deadlock (40P01). The ban began waiting first, so
+// its deadlock check, deadlock_timeout (1 s by default) later, is the one that finds the cycle: PostgreSQL ends the ban
+// and rolls it back, and the message goes on. The probe starts its wait as soon as the ban is seen waiting, well inside
+// that second; were it ever later, the probe would be the victim (or the ban would time out with 55P03) and the test
+// fails rather than passes. The ban answers the retryable busy 503 with nothing changed, and the same form submitted
+// again goes through.
+func TestBanAdminBuyerMessageDeadlockIsBusy(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, admin, _ := x.shippedXMR(x.physical(x.vendor))
+	adminID := x.partyOf(order, roleBuyer)
+	agExec(x.testEnv, "UPDATE users SET role='admin' WHERE id=$1", adminID) // the order's buyer is an administrator
+	x.forceDeadline(order, "release_at=now()-interval '1 minute'")
+	handle := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor)
+	// Everything a ban would change: the account, its sessions, listings and handle reservation, the audit trail,
+	// notices, the order, its history and release deadline, and the form's saved response.
+	const state = `SELECT concat_ws('|',
+		(SELECT concat_ws(',',banned_at,suspended_at,role,vendor_verified,listing_auto_approve) FROM users WHERE id=$1),
+		(SELECT count(*) FROM sessions WHERE user_id=$1), (SELECT count(*) FROM products WHERE vendor_id=$1 AND archived),
+		(SELECT count(*) FROM banned_handles), (SELECT count(*) FROM audit_events), (SELECT count(*) FROM notifications),
+		(SELECT state FROM orders WHERE id=$2), (SELECT count(*) FROM order_events WHERE order_id=$2),
+		(SELECT concat_ws(',',release_at,release_recheck) FROM escrows WHERE order_id=$2), (SELECT count(*) FROM form_submissions))`
+	before := agStr(x.testEnv, state, x.vendor, order)
+	logs := captureLog(t)
+	tx, err := x.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("SET LOCAL lock_timeout='20s'"); err != nil { // longer than the ban's 11 s (walletLockWait)
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", order); err != nil {
+		t.Fatal(err)
+	}
+	ban := banForm("ban", handle, testBanReason)
+	ban.Set(formNonceField, formNonceFor("/admin/ban")) // submitted twice below: the same form
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- x.do("POST", "/admin/ban", admin, ban) }()
+	x.waitForLockWaits(1) // the ban holds the administrator's account row and waits for the order
+	if _, err = tx.Exec("SELECT 1 FROM users WHERE id=$1 FOR SHARE NOWAIT", x.vendor); err != nil {
+		t.Fatalf("the vendor's account row while the ban waits for the order: %v", err)
+	}
+	if _, err = tx.Exec("SELECT 1 FROM users WHERE id=$1 FOR SHARE", adminID); err != nil {
+		t.Fatalf("the message, not the ban, was ended: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	w := <-done
+	if w.Code != 503 || w.Header().Get("Retry-After") == "" || !strings.HasPrefix(w.Body.String(), errBusyMsg) {
+		t.Fatalf("the deadlocked ban: %d Retry-After=%q %s", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+	}
+	if got := logs.lines("name=/admin/ban status="); len(got) != 1 || !strings.Contains(got[0], "status=503") || !strings.HasSuffix(got[0], "cause=40P01") {
+		t.Fatalf("no 503 for the ban caused by a deadlock in the log:\n%s", logs.String())
+	}
+	if after := agStr(x.testEnv, state, x.vendor, order); after != before {
+		t.Fatalf("the deadlocked ban changed something:\n%s\n%s", before, after)
+	}
+	if w := x.do("POST", "/admin/ban", admin, ban); w.Code != 303 {
+		t.Fatalf("the same ban submitted again: %d %s", w.Code, w.Body.String())
 	}
 	x.checkBanNotice(order, x.releaseAt(order))
 }
