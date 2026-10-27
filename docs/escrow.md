@@ -363,7 +363,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
 - Real `monerod` and `monero-wallet-rpc` 0.18.5.1 on a local fakechain, run by the `escrow-xmr-regtest` CI job (A-498) or by hand
   (`scripts/test-escrow-xmr-regtest.sh`, [runbook](testnet-runbook.md#9-manual-monero-escrow-fakechain-check); the app
   runs inside the Go test against the real daemon and wallet-rpc, and the script refuses any daemon that is not a
-  fakechain). Eighteen legs, each a Go test:
+  fakechain). Twenty-one legs, each a Go test:
   1. `TestXMREscrowRegtestWallets`: the first pass creates the month's wallet, seals its seed (the seal decrypts, and a
      wallet restored from it at the stored restore height has the stored primary address), activates it and keeps its free
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
@@ -454,6 +454,22 @@ wallet takes an order again and no settlement is relayed until an administrator 
       release is recorded sent with its deposit claim and one order note (none saying a transaction the market did not
       make spent the coins), and it confirms. Added with A-566; run locally on wr-a566 fakechain nodes set up as CI's job,
       its CI evidence is the `escrow-xmr-regtest` job once merged.
+  21. `TestXMREscrowRegtestFeeAndReturn` (A-673, A-681): releases that return an overpayment, in two cases. In each a
+      digital order is funded with its price and 0.002 XMR more, and the network fee comes from the claimant's output
+      (`subtract_fee_from_outputs [0]`). *fee and return* is the only case whose app charges a market fee
+      (`ESCROW_XMR_FEE_BPS=250`, `ESCROW_XMR_FEE_ADDRESS` a subaddress of the funder's wallet; every other leg runs
+      without one): its release has three destinations. *return only* has no fee: two destinations, the claim address
+      and the buyer's return. Each release must pass `checkXMRBuild` and migration 150's plan rules with one `transfer`
+      call and store exactly the planned outputs. Once it is confirmed, the funder's `get_transfers` must list:
+      - the fee address receiving `marketFeeSats(price, 250)`;
+      - the refund address receiving the excess;
+      - the claim address receiving the input total less the network fee, the fee and the excess.
+
+      Its first CI run (40545579717, A-673 only) found that monero-wallet-rpc 0.18.5.1 lists `amounts_by_dest` in the
+      order it paid the destinations, not the order asked: [claimant, buyer_return, market_fee] for
+      [claimant, market_fee, buyer_return]. `checkXMRBuild` compared them by position and refused the build, so a market
+      with a fee could not release (A-681). It now requires the claimant's output first, after the fee, and matches the
+      other outputs by amount. The leg's evidence after A-681 is the `escrow-xmr-regtest` CI job.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against

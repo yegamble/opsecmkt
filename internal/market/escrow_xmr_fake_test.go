@@ -42,7 +42,8 @@ import (
 // outputs, newest first, until the destinations are covered (-17 not enough money when the account's unfrozen outputs
 // do not cover them, as for an account the wallet does not have; -37 not enough unlocked money when they cover them
 // only with locked ones), takes the network fee (fakeXMRFee, at the priority get_default_fee_priority gives) from
-// destination 0 alone when subtract_fee_from_outputs is [0], refusing as wallet2 does coins too few for that fee (A-467:
+// destination 0 alone when subtract_fee_from_outputs is [0] and lists amounts_by_dest in wallet2's order (destination 0,
+// then the others from the last back, A-681), refusing as wallet2 does coins too few for that fee (A-467:
 // -17 below the fee of a one-input transaction by size, -16 when destination 0 is below the fee, -46 when it equals it,
 // each recorded from 0.18.5.1; estimate_tx_size_and_weight and the daemon's get_fee_estimate give the recorded weight
 // estimates and fees per byte) (an address in invalid is refused, -2, as validate_address says; a
@@ -712,6 +713,10 @@ var fakeXMRWalletMethods = map[string]func(f *fakeXMREscrow, params json.RawMess
 			}
 			total += amounts[i]
 		}
+		// wallet2's create_transactions_2 pays the destinations from the first and removes each one it paid by moving the
+		// last into its place (pop_index), so amounts_by_dest lists the first, then the others from the last back (A-681:
+		// on the fakechain, [claimant, market_fee, buyer_return] came back as [claimant, buyer_return, market_fee]).
+		slices.Reverse(amounts[1:])
 		f.built[tx.Metadata] = tx
 		res := map[string]any{"tx_hash": hash, "fee": tx.Fee, "amount": total, "tx_metadata": tx.Metadata, "tx_blob": tx.Blob,
 			"spent_key_images": map[string]any{"key_images": slices.Clone(tx.KeyImages)}, "amounts_by_dest": map[string]any{"amounts": amounts}}

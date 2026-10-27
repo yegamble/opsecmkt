@@ -872,7 +872,7 @@ type xmrBuiltTx struct {
 	Fee, Amount    int64 // Amount: the sum of the destinations' amounts after the fee
 	Metadata, Blob string
 	SpentKeyImages []string
-	AmountsByDest  []int64 // one per destination, in order
+	AmountsByDest  []int64 // one per destination, in the order wallet2 paid them (not always the order asked: checkXMRBuild)
 }
 
 // buildTransfer builds, and never relays, a transaction from escrow account account to dests (transfer with
