@@ -194,8 +194,8 @@ func TestReputationLabelTable(t *testing.T) {
 	if !slices.Equal(got, codes) {
 		t.Fatalf("rule rows %v, want %v", got, codes)
 	}
-	for i, want := range []string{"30 completed (buyer confirmed 20, release deadline 6, digital on funding 4) of 30 funded", "20 distinct buyers of completed orders (20 of funded orders)",
-		"20 distinct buyers for 30 completed and 2 non-delivery refunds or disputes lost: 62% of 32", "2 non-delivery refunds (buyer no-ship cancels 2, vendor cancellations of paid orders 0) against 30 completed: 6% of 32",
+	for i, want := range []string{"30 completed (buyer confirmed 20, release deadline 6, digital on funding 4) of 30 funded; 0 held releases refunded to the buyer after a ban", "20 distinct buyers of completed orders (20 of funded orders)",
+		"20 distinct buyers for 30 completed and 2 non-delivery refunds, disputes lost or held releases refunded: 62% of 32", "2 non-delivery refunds (buyer no-ship cancels 2, vendor cancellations of paid orders 0) against 30 completed: 6% of 32",
 		"0 disputes lost (decided refund 0, vendor conceded 0; won: decided release 0, buyer conceded 0) against 30 completed: 0% of 30",
 		"0 of 20 counted reviews at 2 stars or fewer: 0%", "1 listings now (taken down 1, rejected 0)"} {
 		if v.Rules[i].Figure != want {
@@ -268,6 +268,7 @@ func TestReputationMonotonic(t *testing.T) {
 		"completion becomes vendor cancel":     becomes(func(f *ReputationFigures) { f.VendorCancels++ }),
 		"completion becomes decided refund":    becomes(func(f *ReputationFigures) { f.DecidedRefund++ }),
 		"completion becomes vendor concession": becomes(func(f *ReputationFigures) { f.VendorConceded++ }),
+		"completion becomes held refund":       becomes(func(f *ReputationFigures) { f.HeldRefunds++ }),
 	}
 	names := slices.Sorted(func(yield func(string) bool) {
 		for k := range worsen {

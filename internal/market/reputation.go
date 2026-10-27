@@ -56,7 +56,7 @@ const (
 	repRiskLowRatingPct    = 30
 	repRiskRemovals        = 3 // current takedowns and rejections; any one keeps the vendor below HIGH_REPUTATION
 	repLowRating           = 2 // a counted review of this many stars or fewer is a low rating
-	reputationDigestPrefix = "A-653 reputation figures v1"
+	reputationDigestPrefix = "A-653 reputation figures v2"
 )
 
 // reputationRank orders the labels, best first: HIGH_REPUTATION 3, STANDARD 2, INSUFFICIENT_HISTORY 1, AT_RISK 0.
@@ -83,6 +83,10 @@ type ReputationFigures struct {
 	DecidedRefund, DecidedRelease, BuyerConceded, VendorConceded int
 	Reviews, LowReviews                                          int // counted reviews (reviewCountedSQL) and those of repLowRating stars or fewer
 	Takedowns, Rejections                                        int // the vendor's listings taken down or rejected now
+	// HeldRefunds: completed orders, or orders decided for the vendor, that an administrator refunded to the buyer because
+	// the vendor's ban held the release too long (A-652f). Its own class: never a no-ship cancel or a vendor cancellation,
+	// and not an adverse rate; it counts in the buyer spread, so a completion refunded so never lifts the label.
+	HeldRefunds int
 }
 
 func (f ReputationFigures) Completed() int {
@@ -133,8 +137,8 @@ func reputationRules(f ReputationFigures) []ReputationRule {
 		}
 		return r
 	}
-	volume := ReputationRule{Code: repFewCompleted, Figure: fmt.Sprintf("%d completed (buyer confirmed %d, release deadline %d, digital on funding %d) of %d funded",
-		c, f.CompletedConfirmed, f.CompletedDeadline, f.CompletedDigital, f.Funded),
+	volume := ReputationRule{Code: repFewCompleted, Figure: fmt.Sprintf("%d completed (buyer confirmed %d, release deadline %d, digital on funding %d) of %d funded; %d held releases refunded to the buyer after a ban",
+		c, f.CompletedConfirmed, f.CompletedDeadline, f.CompletedDigital, f.Funded, f.HeldRefunds),
 		High: fmt.Sprintf("%d or more", repHighCompleted), Lower: fmt.Sprintf("%s below %d", repInsufficient, repMinCompleted)}
 	switch {
 	case c < repMinCompleted:
@@ -148,10 +152,11 @@ func reputationRules(f ReputationFigures) []ReputationRule {
 		buyers.Effect = repStandard
 	}
 	// QA89-1: the spread is measured against the orders the rates count (completed, non-delivery refunds and disputes
-	// lost), so a repeat buyer's completion ending adversely instead keeps its share and never lifts the label.
-	adverse := f.Nondelivery() + f.DisputesLost()
+	// lost) and the held-release refunds (A-652f), so a repeat buyer's completion ending adversely or refunded after a ban
+	// instead keeps its share and never lifts the label.
+	adverse := f.Nondelivery() + f.DisputesLost() + f.HeldRefunds
 	s := c + adverse
-	spread := ReputationRule{Code: repConcentration, Figure: fmt.Sprintf("%d distinct buyers for %d completed and %d non-delivery refunds or disputes lost: %s of %d",
+	spread := ReputationRule{Code: repConcentration, Figure: fmt.Sprintf("%d distinct buyers for %d completed and %d non-delivery refunds, disputes lost or held releases refunded: %s of %d",
 		b, c, adverse, repPct(b, s), s),
 		High: fmt.Sprintf("%d%% or more", repHighSpreadPct), Lower: fmt.Sprintf("%s below %d%% from %d such orders", repAtRisk, repRiskSpreadPct, repMinCompleted)}
 	switch {
@@ -205,7 +210,7 @@ func reputationLabel(rules []ReputationRule) (string, []string) {
 // is refused.
 func reputationDigest(vendorID string, f ReputationFigures) string {
 	n := []int{f.Funded, f.FundedBuyers, f.CompletedConfirmed, f.CompletedDeadline, f.CompletedDigital, f.CompletedBuyers, f.NoShipCancels,
-		f.VendorCancels, f.DecidedRefund, f.DecidedRelease, f.BuyerConceded, f.VendorConceded, f.Reviews, f.LowReviews, f.Takedowns, f.Rejections}
+		f.VendorCancels, f.DecidedRefund, f.DecidedRelease, f.BuyerConceded, f.VendorConceded, f.Reviews, f.LowReviews, f.Takedowns, f.Rejections, f.HeldRefunds}
 	parts := make([]string, len(n))
 	for i, x := range n {
 		parts[i] = strconv.Itoa(x)
@@ -224,7 +229,8 @@ func assessReputation(vendorID string, f ReputationFigures) *ReputationView {
 // A completion counts only by its ordinary route: the buyer's confirmation from shipped or delivered, the system's at
 // a physical order's release deadline (from shipped) or a digital order's on funding (from delivered). The event that
 // ended an order is its latest move into its current state; same-state notes (settlement and decision notes) are not
-// moves. $2–$5 are the decided and conceded dispute statuses.
+// moves. $2–$5 are the decided and conceded dispute statuses. A held-release refund (A-652f) is the one move out of
+// completed or resolved, an administrator's (staff) to cancelled.
 var reputationSQL = `WITH f AS (SELECT o.id,o.buyer_id,o.state,
 		(SELECT e.from_state||':'||CASE WHEN e.actor_id IS NULL THEN 'system' WHEN e.actor_id=o.buyer_id THEN 'buyer' WHEN e.actor_id=p.vendor_id THEN 'vendor' ELSE 'staff' END
 			FROM order_events e WHERE e.order_id=o.id AND e.to_state=o.state AND e.from_state<>o.state ORDER BY e.id DESC LIMIT 1) AS ended
@@ -240,7 +246,8 @@ SELECT (SELECT count(*) FROM f),(SELECT count(DISTINCT buyer_id) FROM f),
 	(SELECT count(*) FROM d WHERE status=$2),(SELECT count(*) FROM d WHERE status=$3),(SELECT count(*) FROM d WHERE status=$4),(SELECT count(*) FROM d WHERE status=$5),
 	(SELECT count(*) FROM r),(SELECT count(*) FROM r WHERE rating<=` + strconv.Itoa(repLowRating) + `),
 	(SELECT count(*) FROM products p WHERE p.vendor_id=$1 AND p.admin_archive_reason IS NOT NULL),
-	(SELECT count(*) FROM products p WHERE p.vendor_id=$1 AND p.review_state='rejected')`
+	(SELECT count(*) FROM products p WHERE p.vendor_id=$1 AND p.review_state='rejected'),
+	(SELECT count(*) FROM f WHERE state='cancelled' AND ended IN ('completed:staff','resolved:staff'))`
 
 // vendorReputationFigures counts vendorID's figures in one statement (one snapshot), on q: the database for the
 // account page, the confirming transaction for vendorAutoApproveAction. It takes no lock.
@@ -250,7 +257,7 @@ func vendorReputationFigures(ctx context.Context, q rowQuerier, vendorID string)
 		disputeOutcomes["refund"], disputeOutcomes["release"], concededByBuyer, concededByVendor).Scan(
 		&f.Funded, &f.FundedBuyers, &f.CompletedConfirmed, &f.CompletedDeadline, &f.CompletedDigital, &f.CompletedBuyers,
 		&f.NoShipCancels, &f.VendorCancels, &f.DecidedRefund, &f.DecidedRelease, &f.BuyerConceded, &f.VendorConceded,
-		&f.Reviews, &f.LowReviews, &f.Takedowns, &f.Rejections)
+		&f.Reviews, &f.LowReviews, &f.Takedowns, &f.Rejections, &f.HeldRefunds)
 	return f, err
 }
 
