@@ -15,6 +15,17 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A missing escrow wallet that the records say still holds coins is not destroyed (A-672)
+
+**Behaviour change** (A-672). No migration and no new setting. Confirming the destruction of a missing Monero escrow
+wallet on *Admin → Payments* used to wipe its sealed seed even when the records showed coins of it that no settlement
+had spent (for example an unclaimed completed digital order). The list now shows that sum for each missing wallet
+(*Unspent in the records*), and while it is above zero the confirmation is refused with nothing changed: restore the
+wallet from its sealed seed so that the coins are paid out, after which it is destroyed as usual. A held release whose
+escrow wallet is already destroyed is no longer refunded to the buyer (A-652f): settle it with the operator. Wallets
+destroyed before the upgrade are not changed. See *Destruction, and deleting the files* under
+[Monero escrow](docs/operator-guide.md#monero-escrow).
+
 ## A banned vendor's listings stay down and its digital orders are not delivered (A-652e)
 
 **Behaviour change** (A-652e). No migration and no new setting. A digital order of a banned vendor that is paid after

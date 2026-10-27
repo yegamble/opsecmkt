@@ -446,6 +446,38 @@ func TestHoldRefundRefusesSpentOrExternal(t *testing.T) {
 	}
 }
 
+// A-672 (PAY93-1): no refund is requested from a destroyed escrow wallet, which the market can never open to build it.
+// Here a missing wallet's destruction was confirmed while the records still showed the order's coins in it, as an
+// earlier build allowed (a database restored after the wallet was destroyed holds the same records). The order page
+// says why and offers no form; the action answers 409 and inserts no settlement.
+func TestHoldRefundRefusedOnDestroyedWallet(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("hr_gone_"+randomToken()[:6], "admin")
+	order, _, _ := x.completed()
+	name := x.walletOf(order)
+	x.rotate()
+	x.fake.edit(func(f *fakeXMREscrow) { delete(f.files, name) })
+	x.mustPoll()
+	x.days(name, 91)
+	agExec(x.testEnv, "UPDATE xmr_escrow_wallets SET state='destroyed',seed_sealed=NULL,destroyed_at=$2,updated=now() WHERE name=$1 AND state='missing'", name, x.now)
+	if x.walletState(name) != "destroyed" {
+		x.failWallets()
+	}
+	x.banVendor(admin)
+	x.mustPoll()
+	x.ageHold(order, 91)
+	agExpect(x.testEnv, "/admin/escrow-xmr-hold-refund", admin, x.holdRefundPost(order), 409, "escrow wallet was destroyed")
+	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order) != 0 {
+		t.Fatalf("a refused hold refund changed order %s: %s", shortID(order), x.state(order))
+	}
+	page := x.orderPage(order, admin)
+	mustContain(t, page, "escrow wallet was destroyed")
+	if strings.Contains(page, `action="/admin/escrow-xmr-hold-refund"`) {
+		t.Fatal("the order page offers a refund from a destroyed wallet")
+	}
+}
+
 // An administrator who is the order's buyer (or vendor) is refused before the password (403), and a moderator by the
 // role gate; the buyer's page offers no staff form.
 func TestHoldRefundPartyRefused(t *testing.T) {
