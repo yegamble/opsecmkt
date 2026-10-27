@@ -262,3 +262,64 @@ func TestXMRQuantityCheckoutRejectsPriceChangeBeforeStockLock(t *testing.T) {
 		t.Fatal("concurrent price edit left an underpriced or partially reserved order")
 	}
 }
+
+// TestOrderDraftAndCheckoutIgnoreForgedPriceFields (A-674, QA93-1): the draft action saves only the product, currency
+// and quantity it is sent and prices the draft itself (the listing's price times the quantity, checkedOrderTotal), and
+// checkout reprices from the listing and the saved quantity. A forged price, amount, total, role, buyer, vendor, state
+// or quantity at checkout changes nothing. Simulated wallet RPC, not chain evidence.
+func TestOrderDraftAndCheckoutIgnoreForgedPriceFields(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	product := x.physical(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET stock=10 WHERE id=$1", product)
+	other, _ := x.user("forged_other_"+randomToken()[:6], "buyer")
+	x.mustPoll()
+	forged := func(f url.Values) url.Values {
+		for k, v := range map[string]string{"amount": "1", "price": "1", "xmr": "1", "btc": "1", "total": "1", "role": "admin", "buyer_id": other, "vendor_id": x.buyer, "state": statePaid} {
+			f.Set(k, v)
+		}
+		return f
+	}
+	snapshot := func(order string) string {
+		return agStr(x.testEnv, "SELECT quantity::text||':'||amount::text||':'||state FROM orders WHERE id=$1", order)
+	}
+	unchanged := func(when, order string, stock int) {
+		t.Helper()
+		if got := agStr(x.testEnv, "SELECT buyer_id||':'||product_id||':'||currency FROM orders WHERE id=$1", order); got != x.buyer+":"+product+":XMR" {
+			t.Fatalf("%s: order buyer:product:currency %q, want the signed-in buyer, %s, XMR", when, got, product)
+		}
+		if got := agInt(x.testEnv, "SELECT stock FROM products WHERE id=$1", product); got != stock {
+			t.Fatalf("%s: stock %d, want %d", when, got, stock)
+		}
+		if got := agStr(x.testEnv, "SELECT vendor_id FROM products WHERE id=$1", product); got != x.vendor {
+			t.Fatalf("%s: listing vendor %q, want %q", when, got, x.vendor)
+		}
+		if got := agStr(x.testEnv, "SELECT string_agg(role,',') FROM users WHERE id IN ($1,$2)", x.buyer, other); got != "buyer,buyer" {
+			t.Fatalf("%s: roles %q, want both still buyers", when, got)
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM orders WHERE buyer_id=$1", other); n != 0 {
+			t.Fatalf("%s: a forged buyer_id gave the other account %d orders", when, n)
+		}
+	}
+
+	w := x.do("POST", "/orders", x.buyerSess, forged(url.Values{"product_id": {product}, "currency": {"XMR"}, "quantity": {"2"}}))
+	x.check(w, 303)
+	order := strings.TrimPrefix(w.Header().Get("Location"), "/order?id=")
+	if got := snapshot(order); got != "2:1000000000000:draft" {
+		t.Fatalf("draft saved %q, want 2 units at the listing's price, still a draft", got)
+	}
+	unchanged("draft", order, 10)
+	if n := agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", order); n != 0 {
+		t.Fatalf("a forged state on the draft created %d escrows", n)
+	}
+
+	page := x.page("/order?id="+order, x.buyerSess)
+	checkout := forged(url.Values{"order_id": {order}, "quantity": {"1"}, "refund_address": {testXMRAddr("forged price refund", true)}, formNonceField: {renderedFormNonce(t, page, "/orders/escrow-xmr")}})
+	x.check(x.do("POST", "/orders/escrow-xmr", x.buyerSess, checkout), 303)
+	if got := snapshot(order); got != "2:1000000000000:awaiting_payment" {
+		t.Fatalf("checkout left %q, want the saved 2 units at the listing's price, awaiting payment", got)
+	}
+	unchanged("checkout", order, 8)
+	if n := agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", order); n != 1 {
+		t.Fatalf("checkout made %d escrows, want 1", n)
+	}
+}
