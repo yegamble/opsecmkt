@@ -434,6 +434,36 @@ func TestCheckXMRBuild(t *testing.T) {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
 		}
 	}
+	// A-681: monero-wallet-rpc 0.18.5.1 lists amounts_by_dest as destination 0 (the claimant's), then the others from the
+	// last back. The claimant's output must be first, after the fee; the others are matched by amount in any order.
+	three := []settleOutput{{"claimant", "v", 1000}, {"market_fee", "f", 200}, {"buyer_return", "r", 50}}
+	same := []settleOutput{{"claimant", "v", 1000}, {"market_fee", "f", 200}, {"buyer_return", "r", 200}}
+	asClaimant := []settleOutput{{"claimant", "v", 1000}, {"market_fee", "f", 1000}, {"buyer_return", "r", 50}}
+	for name, c := range map[string]struct {
+		plan    []settleOutput
+		amounts []int64
+		want    string
+	}{
+		"wallet order":             {three, []int64{990, 50, 200}, ""},
+		"plan order":               {three, []int64{990, 200, 50}, ""},
+		"equal amounts":            {same, []int64{990, 200, 200}, ""},
+		"claimant not first":       {three, []int64{50, 990, 200}, xmrBadBuild},
+		"fee from the return":      {three, []int64{1000, 40, 200}, xmrBadBuild},
+		"fee from an equal output": {same, []int64{1000, 190, 200}, xmrBadBuild},
+		// The same amounts as an honest build in another order, but the fee came from the market fee's output.
+		"fee from the claimant's twin": {asClaimant, []int64{1000, 50, 990}, xmrBadBuild},
+		"an output paid twice":         {three, []int64{990, 200, 200}, xmrBadBuild},
+		"an output missing, one new":   {three, []int64{990, 200, 49}, xmrBadBuild},
+	} {
+		var sum int64
+		for _, n := range c.amounts {
+			sum += n
+		}
+		tx := xmrBuiltTx{Fee: 10, Amount: sum, SpentKeyImages: []string{"a"}, AmountsByDest: c.amounts}
+		if got := checkXMRBuild(tx, c.plan, []string{"a"}, 50, 960); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+	}
 }
 
 // A wallet whose transfer reply does not pay the plan is not trusted: the build is discarded unrelayed and flagged.
@@ -472,6 +502,60 @@ func TestXMREscrowAmountsByDestChecked(t *testing.T) {
 		if x.settlement(id).State != "relayed" {
 			t.Fatalf("%s: honest wallet again: %s", name, x.settlement(id).State)
 		}
+	}
+}
+
+// TestXMREscrowFeeAndReturnBuilt (A-681): a release that returns an overpayment of 0.002 XMR is built, stored and
+// relayed as planned, with a market fee (three destinations, which monero-wallet-rpc 0.18.5.1 lists in amounts_by_dest
+// as claimant, buyer_return, market_fee: not the order asked) and without one (two: claimant, buyer_return). Each output
+// row keeps its planned role, address and amount, the claimant's after the network fee.
+func TestXMREscrowFeeAndReturnBuilt(t *testing.T) {
+	const excess = 2000000000
+	for _, c := range []struct {
+		name string
+		bps  int64
+	}{{"fee and return", 250}, {"return only", 0}} {
+		t.Run(c.name, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			feeAddr := ""
+			if c.bps > 0 {
+				feeAddr = testXMRAddr("market fee", false)
+				t.Setenv("ESCROW_XMR_FEE_BPS", strconv.FormatInt(c.bps, 10))
+				t.Setenv("ESCROW_XMR_FEE_ADDRESS", feeAddr)
+				x.restart()
+			}
+			x.mustPoll()
+			order, addr := x.freshCheckout(x.digital(x.vendor))
+			x.fake.payAddress(addr, hex64("deposit "+order), xmrListingPrice+excess, 10)
+			x.mustPoll()
+			if x.state(order) != stateCompleted {
+				t.Fatalf("funded order: %s", x.state(order))
+			}
+			refund := agStr(x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)
+			id, claim := x.release(order)
+			var listed []int64
+			x.fake.edit(func(f *fakeXMREscrow) {
+				f.transferLie = func(res map[string]any) {
+					listed = slices.Clone(res["amounts_by_dest"].(map[string]any)["amounts"].([]int64))
+				}
+			})
+			x.mustPoll()
+			s := x.settlement(id)
+			marketFee := marketFeeSats(xmrListingPrice, c.bps)
+			toClaim := strconv.FormatInt(s.InputTotal-s.Fee-marketFee-excess, 10)
+			want := []string{"claimant:" + claim + ":" + toClaim, "buyer_return:" + refund + ":" + strconv.FormatInt(excess, 10)}
+			wallet := []int64{s.InputTotal - s.Fee - marketFee - excess, excess}
+			if c.bps > 0 {
+				want = slices.Insert(want, 1, "market_fee:"+feeAddr+":"+strconv.FormatInt(marketFee, 10))
+				wallet = append(wallet, marketFee) // wallet2's order, not the plan's
+			}
+			if s.State != "relayed" || s.InputTotal != xmrListingPrice+excess || x.fake.countOf("transfer") != 1 || !slices.Equal(listed, wallet) {
+				t.Fatalf("release %+v (wait %q), transfer %d, amounts_by_dest %v (want %v)", s, x.waitClass(id), x.fake.countOf("transfer"), listed, wallet)
+			}
+			if got := x.outputsOf(id); !slices.Equal(got, want) {
+				t.Fatalf("outputs\n got %v\nwant %v", got, want)
+			}
+		})
 	}
 }
 

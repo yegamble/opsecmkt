@@ -30,7 +30,8 @@ import (
 //     all be unlocked and sum to the deposits claimed, or the build waits (and staff are told if it persists); the
 //     plan is planXMRSettlement's (Bitcoin's planSettlement for the same kind) or, for a re-request, the stored plan;
 //     transfer with do_not_relay takes the network fee from the claimant's output alone. The reply is checked
-//     (checkXMRBuild): exactly the claimed key images, amounts_by_dest the plan less the fee on the claimant's output,
+//     (checkXMRBuild): exactly the claimed key images, amounts_by_dest the plan less the fee on the claimant's output
+//     (the claimant's first, the others in any order: the wallet lists them in the order it paid them, A-681),
 //     the fee within ESCROW_XMR_MAX_FEE and the claimant's output at least the Monero floor; otherwise it is discarded
 //     unrelayed, the settlement stays requested and staff are told (a refund too few ends instead: xmrSettleTooSmall).
 //     A refund the wallet refuses to build because its coins are at or below the network fee is too few as well
@@ -635,27 +636,38 @@ func planXMRSettlement(kind string, total, price, feeBps int64, feeDest, claiman
 // those key images, amounts_by_dest is the plan with the network fee taken from the claimant's output alone (every
 // other output exact), the fee is at most maxFee and the claimant's output at least floor. It returns "" or the wait
 // class of the first check that fails.
+//
+// amounts_by_dest is not in the order the destinations were asked (A-681). On the fakechain, monero-wallet-rpc 0.18.5.1
+// answered [claimant, market_fee, buyer_return] with [claimant, buyer_return, market_fee] (CI run 40545579717): it lists
+// them in the order wallet2 paid them, the first, then (as wallet2's create_transactions_2 reads, removing each paid
+// destination by moving the last into its place) the others from the last back. Only the three-destination order was
+// observed; nothing here depends on the others' order. The claimant's output, destination 0, must be first, after the
+// fee: matched by amount alone, a fee taken from another output of the claimant's planned amount would pass. The other
+// outputs are matched by amount, each planned amount exactly once, in any order; two of equal planned amount pay the
+// same either way.
 func checkXMRBuild(tx xmrBuiltTx, plan []settleOutput, keyImages []string, maxFee, floor int64) string {
-	if !slices.Equal(slices.Sorted(slices.Values(tx.SpentKeyImages)), slices.Sorted(slices.Values(keyImages))) || len(tx.AmountsByDest) != len(plan) {
+	if !slices.Equal(slices.Sorted(slices.Values(tx.SpentKeyImages)), slices.Sorted(slices.Values(keyImages))) || len(plan) == 0 || len(tx.AmountsByDest) != len(plan) {
+		return xmrBadBuild
+	}
+	claimant := plan[0].Sats - tx.Fee
+	others := make([]int64, 0, len(plan)-1)
+	for _, o := range plan[1:] {
+		others = append(others, o.Sats)
+	}
+	slices.Sort(others)
+	if tx.AmountsByDest[0] != claimant || !slices.Equal(slices.Sorted(slices.Values(tx.AmountsByDest[1:])), others) {
 		return xmrBadBuild
 	}
 	var sum int64
-	for i, o := range plan {
-		want := o.Sats
-		if i == 0 {
-			want -= tx.Fee
-		}
-		if tx.AmountsByDest[i] != want {
-			return xmrBadBuild
-		}
-		sum += tx.AmountsByDest[i]
+	for _, n := range tx.AmountsByDest {
+		sum += n
 	}
 	switch {
 	case tx.Amount != sum:
 		return xmrBadBuild
 	case tx.Fee > maxFee:
 		return xmrFeeCap
-	case tx.AmountsByDest[0] < floor:
+	case claimant < floor:
 		return xmrTooSmall
 	}
 	return ""
@@ -1148,7 +1160,7 @@ func (a *App) storeXMRBuilt(ctx context.Context, s *xmrSettleRow, built xmrBuilt
 	}
 	for i, o := range plan.Outputs {
 		if i == 0 {
-			o.Sats = built.AmountsByDest[0]
+			o.Sats -= built.Fee // the claimant's output after the network fee, as checkXMRBuild found it (A-681)
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO xmr_settlement_outputs(settlement_id,n,role,address,amount) VALUES($1,$2,$3,$4,$5)", s.ID, i, o.Role, o.Address, o.Sats); err != nil {
 			return false, err
