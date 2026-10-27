@@ -249,6 +249,12 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 			}
 			return actionResult{}, err
 		}
+		if banned, err := ownerBannedLocked(c, l.ID); err != nil || banned {
+			if err == nil {
+				err = errOwnerBanned
+			}
+			return actionResult{}, err
+		}
 	}
 	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET archived=$2,archived_at=CASE WHEN $2 THEN now() END,private_expired_at=NULL,updated=now() WHERE id=$1`, l.ID, archive); err != nil {
 		return actionResult{}, err
@@ -342,14 +348,11 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 				}
 				return actionResult{}, err
 			}
-			// A banned vendor keeps the vendor role (A-546), so the ban is checked here, under the share lock
-			// sellerIsVendorLocked holds on the owner's account row (A-652e).
-			var banned bool
-			if err = tx.QueryRowContext(ctx, "SELECT u.banned_at IS NOT NULL FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", id).Scan(&banned); err != nil {
+			if banned, err := ownerBannedLocked(c, id); err != nil || banned {
+				if err == nil {
+					err = errOwnerBanned
+				}
 				return actionResult{}, err
-			}
-			if banned {
-				return actionResult{}, fail(409, "This listing's owner is banned, so it cannot be restored while the ban lasts. Nothing was changed.")
 			}
 			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=false,archived_at=NULL,admin_archive_reason=NULL,private_expired_at=NULL,updated=now() WHERE id=$1", id); err != nil {
 				return actionResult{}, err

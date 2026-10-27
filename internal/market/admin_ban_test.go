@@ -647,8 +647,8 @@ func TestBanUnbanEditHeldInHoldMode(t *testing.T) {
 
 // A-652e: after a ban every listing of the vendor stays archived and out of the public catalogue, whatever staff or
 // the moderation worker do next: approving the vendor's pending listing is refused (it is archived), the restore of
-// its taken-down listing is refused (the owner is banned), and one moderation worker pass over its queued listings
-// changes no listing.
+// its taken-down listing is refused (the owner is banned), so is an administrator's plain restore of a listing the ban
+// archived, and one moderation worker pass over its queued listings changes no listing.
 func TestBanListingsStayArchived(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("bsa_admin", "admin")
@@ -688,6 +688,8 @@ func TestBanListingsStayArchived(t *testing.T) {
 	}
 	agExpect(e, "/admin/listing", admin, takedownForm(t, e.body("GET", "/listing-edit?id="+taken, admin, nil, 200), "restore", taken), 409, "banned")
 	stayArchived("an administrator's restore")
+	agExpect(e, "/listings/restore", admin, form("id", active), 409, "banned")
+	stayArchived("an administrator's plain restore of a listing the ban archived")
 	if _, reason := takenDown(e, taken); reason != takedownReason {
 		t.Fatalf("takedown reason after a refused restore: %q", reason)
 	}
