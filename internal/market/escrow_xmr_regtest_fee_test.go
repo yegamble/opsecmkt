@@ -1,9 +1,11 @@
 package market
 
 import (
+	"context"
 	"maps"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // TestXMREscrowRegtestFeeAndReturn (A-673; scripts/test-escrow-xmr-regtest.sh, run by the escrow-xmr-regtest CI job): the
@@ -49,7 +51,20 @@ func TestXMREscrowRegtestFeeAndReturn(t *testing.T) {
 	r.mustPoll()
 	s := r.settlement(id)
 	if s.State != "relayed" || s.InputTotal != price+excess || p.count("transfer") != 1 || p.count("relay_tx") != 1 {
-		t.Fatalf("release %+v (wait %q), transfer %d, relay_tx %d, last transfer error %v; events %q", s, r.waitClass(id), p.count("transfer"), p.count("relay_tx"), p.transferFailure(), r.events(order))
+		// The market discards a build that disagrees with its plan; build the plan once more, unrelayed, so the failure
+		// shows the wallet's own fee and amounts_by_dest (a payments finding: report these amounts, never adjust the leg).
+		var dry struct {
+			Fee           int64 `json:"fee"`
+			AmountsByDest struct {
+				Amounts []int64 `json:"amounts"`
+			} `json:"amounts_by_dest"`
+		}
+		account := agInt64(t, r.testEnv, "SELECT s.account_index FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id WHERE es.order_id=$1", order)
+		dests := []map[string]any{{"address": claim, "amount": price - fee}, {"address": feeAddr, "amount": fee}, {"address": refund, "amount": excess}}
+		dryErr := p.wallet.callWithin(context.Background(), 2*time.Minute, "/json_rpc", "transfer", map[string]any{"destinations": dests, "account_index": account,
+			"priority": 0, "subtract_fee_from_outputs": []int{0}, "do_not_relay": true}, &dry)
+		t.Fatalf("release %+v (wait %q), transfer %d, relay_tx %d, last transfer error %v; events %q; the plan built again unrelayed: fee %d, amounts_by_dest %v (planned %d, %d, %d before the fee), error %v",
+			s, r.waitClass(id), p.count("transfer"), p.count("relay_tx"), p.transferFailure(), r.events(order), dry.Fee, dry.AmountsByDest.Amounts, price-fee, fee, excess, dryErr)
 	}
 	toClaim := s.InputTotal - s.Fee - fee - excess
 	want := []string{"claimant:" + claim + ":" + strconv.FormatInt(toClaim, 10), "market_fee:" + feeAddr + ":" + strconv.FormatInt(fee, 10),
