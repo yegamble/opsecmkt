@@ -49,10 +49,11 @@ import (
 // and has been for the days; the live release is requested, was never built and supersedes nothing, and no release of
 // the order ever had a transaction (a release that may be on the network, or a re-request of one, is never superseded);
 // or there is no release row at all and the order is a completed digital one or was decided for the vendor; no deposit
-// was spent outside the market and no settlement of the order was spent by another transaction (external); something is
-// counted; the restore gate is clear and a restore's sweep of the escrow wallets has completed. The form states a
-// digest of the release, the order's state, the counted sum and when the hold began; any change refuses it (409). Every
-// refusal says "Nothing was changed".
+// was spent outside the market and no settlement of the order was spent by another transaction (external); the order's
+// escrow wallet is not destroyed (A-672: a refund from it could never be built); something is counted; the restore gate
+// is clear and a restore's sweep of the escrow wallets has completed. The form states a digest of the release, the
+// order's state, the counted sum and when the hold began; any change refuses it (409). Every refusal says "Nothing was
+// changed".
 //
 // Afterwards a deposit that arrives late, or one left out, goes to the stray-refund path as for any cancelled order;
 // both parties are notified (transition) and the order history records it; the administrator's and the vendor's
@@ -85,6 +86,7 @@ var (
 	errHoldRefundOnNetwork = fail(409, "The release to the vendor is not a held request: it was built or may be on the network (built, relayed, confirmed, spent by another transaction, failed with a transaction, or a re-request of one), or it failed, so it is never replaced by a refund. Nothing was changed.")
 	errHoldRefundNoRelease = fail(409, "This order has no release to the vendor: only a completed digital order whose vendor never claimed, or an order whose dispute was decided for the vendor before any release was requested, is refunded without one. Nothing was changed.")
 	errHoldRefundSpent     = fail(409, "A deposit of this escrow was spent outside the market, or a settlement's coins were spent by another transaction: settle it with the operator. Nothing was changed.")
+	errHoldRefundDestroyed = fail(409, "This order's escrow wallet was destroyed, so the market can never open it to send a refund: settle it with the operator. Nothing was changed.")
 	errHoldRefundNothing   = fail(409, "Nothing is counted in this order's escrow, so there is nothing to refund. Nothing was changed.")
 	errHoldRefundStale     = fail(409, "This order's release or escrow changed since the page was shown. Reload the order page and review it again. Nothing was changed.")
 )
@@ -195,6 +197,7 @@ type holdRefundRow struct {
 	releaseState                                    string
 	releaseBuilt, releaseReRequest                  bool // it has a transaction; it supersedes a settlement
 	everBuilt, anyRelease, liveRefund, spent        bool
+	destroyed                                       bool // the order's escrow wallet is destroyed (A-672)
 	sum                                             int64
 }
 
@@ -205,7 +208,8 @@ const holdRefundSQL = `SELECT o.state,COALESCE(o.listing_kind,p.kind),o.buyer_id
 	EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='release'),
 	EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='refund' AND s.state<>'superseded'),
 	EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.spent_outside) OR EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=o.id AND s.state='external'),
-	EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged)
+	EXISTS(SELECT 1 FROM payments pm WHERE pm.order_id=o.id AND pm.flagged),
+	EXISTS(SELECT 1 FROM xmr_escrow_slots sl JOIN xmr_escrow_wallets w ON w.id=sl.wallet_id WHERE sl.id=es.xmr_slot_id AND w.state='destroyed')
 	FROM orders o JOIN products p ON p.id=o.product_id JOIN users v ON v.id=p.vendor_id JOIN escrows es ON es.order_id=o.id AND es.coin='XMR'
 	CROSS JOIN LATERAL (SELECT GREATEST(v.banned_at,COALESCE((SELECT max(e.created) FROM order_events e WHERE e.order_id=o.id AND e.to_state=o.state AND e.from_state<>e.to_state),o.updated)) AS since) h
 	LEFT JOIN LATERAL (SELECT s.id,s.state,s.tx_hash,s.supersedes FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded') rel ON true
@@ -216,7 +220,7 @@ func readHoldRefund(ctx context.Context, q rowQuerier, order string, days int) (
 	r := &holdRefundRow{}
 	if err := q.QueryRowContext(ctx, holdRefundSQL, order, days).Scan(&r.state, &r.kind, &r.buyerID, &r.vendorID, &r.vendor, &r.outcome, &r.banned,
 		&r.heldSince, &r.dueAt, &r.due, &r.release, &r.releaseState, &r.releaseBuilt, &r.releaseReRequest,
-		&r.everBuilt, &r.anyRelease, &r.liveRefund, &r.spent, &r.flagged); err != nil {
+		&r.everBuilt, &r.anyRelease, &r.liveRefund, &r.spent, &r.flagged, &r.destroyed); err != nil {
 		return nil, err
 	}
 	var err error
@@ -252,6 +256,8 @@ func (r *holdRefundRow) refusal(days int) error {
 		return errHoldRefundNoRelease
 	case r.spent:
 		return errHoldRefundSpent
+	case r.destroyed:
+		return errHoldRefundDestroyed
 	case r.sum <= 0:
 		return errHoldRefundNothing
 	case !r.due:

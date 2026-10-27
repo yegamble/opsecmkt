@@ -67,6 +67,14 @@ const xmrDestroyableSQL = `w.destroy_after <= $2
 	AND NOT EXISTS (SELECT 1 FROM xmr_escrow_slots s JOIN xmr_settlements x ON x.order_id=s.order_id WHERE s.wallet_id=w.id
 		AND (x.state IN ('requested','built','relayed') OR x.state='confirmed' AND x.reorg_safe_at IS NULL))`
 
+// xmrOwedFrom is the deposits the records say wallet w (the row alias) still holds (A-672): each counted deposit of an
+// order of it (confirmations>=0, not spent outside the market; a locked or late one included) that no settlement
+// claims, or that a settlement claims which is not confirmed and reorg-safe. A missing wallet's destruction is refused
+// while there is one (xmrConfirmDestroyedAction); the watcher's own destruction needs a zero get_balance instead.
+const xmrOwedFrom = `FROM xmr_escrow_slots os JOIN payments op ON op.order_id=os.order_id AND op.currency='XMR'
+	WHERE os.wallet_id=w.id AND op.confirmations>=0 AND NOT op.spent_outside
+	AND NOT EXISTS (SELECT 1 FROM xmr_settlements ox WHERE ox.id=op.xmr_settlement_id AND ox.state='confirmed' AND ox.reorg_safe_at IS NOT NULL)`
+
 // xmrRetain records each wallet's last order close and retains each closing wallet with no open order at now (see the
 // file comment).
 func (a *App) xmrRetain(ctx context.Context, now time.Time) error {

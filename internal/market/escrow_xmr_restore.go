@@ -285,10 +285,12 @@ const xmrSweepDoneNotice = "Monero escrow's restore sweep is complete: every esc
 	"The restore gate is still set, so new Monero escrow checkouts, settlement building and relay, re-requests, release deadlines and new escrow wallets stay paused " +
 	"until the operator clears it once the restored records are reconciled with the wallets (docs/testnet-runbook.md, Clear the gate). See Admin → Payments."
 
-// XMRMissingWalletView is one missing escrow wallet past its destroy_after: an administrator may confirm its destruction.
+// XMRMissingWalletView is one missing escrow wallet past its destroy_after: an administrator may confirm its destruction
+// unless the records say it still holds coins (Owes, A-672).
 type XMRMissingWalletView struct {
-	ID                 int64
-	Name, DestroyAfter string
+	ID                       int64
+	Name, DestroyAfter, Owed string // Owed: the sum of the deposits xmrOwedFrom selects, formatted
+	Owes                     bool
 }
 
 // XMREscrowHeldView is one Monero settlement a restore holds, or whose relay an administrator confirmed.
@@ -356,17 +358,20 @@ func xmrEscrowRecoveryLoader(ctx context.Context, a *App, _ *http.Request, d *Pa
 	if a.escrowXMR != nil {
 		now = a.escrowXMR.clock()
 	}
-	rows, err = a.db.QueryContext(ctx, `SELECT id,name,to_char(destroy_after AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"') FROM xmr_escrow_wallets
-		WHERE state='missing' AND destroy_after<=$1 ORDER BY destroy_after,name LIMIT 200`, now)
+	rows, err = a.db.QueryContext(ctx, `SELECT w.id,w.name,to_char(w.destroy_after AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI "UTC"'),
+		COALESCE((SELECT sum(op.amount) `+xmrOwedFrom+`),0)
+		FROM xmr_escrow_wallets w WHERE w.state='missing' AND w.destroy_after<=$1 ORDER BY w.destroy_after,w.name LIMIT 200`, now)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var w XMRMissingWalletView
-		if err = rows.Scan(&w.ID, &w.Name, &w.DestroyAfter); err != nil {
+		var owed int64
+		if err = rows.Scan(&w.ID, &w.Name, &w.DestroyAfter, &owed); err != nil {
 			rows.Close()
 			return err
 		}
+		w.Owed, w.Owes = a.escrowAmount(&Order{Currency: "XMR"}, owed), owed > 0
 		v.Missing = append(v.Missing, w)
 	}
 	rows.Close()
@@ -433,8 +438,9 @@ func xmrRebroadcastAction(c *actionCtx) (actionResult, error) {
 // xmrConfirmDestroyedAction is an administrator's confirmation that a missing escrow wallet past its destroy_after is
 // gone from the wallet volume and owes nothing: its sealed seed is wiped and it is recorded destroyed (A-419). Only an
 // administrator who is not a party to any of its orders, with a password step-up, an explicit check and an audit row;
-// refused for a wallet that is not missing, not past destroy_after or with an order or settlement still open, and while
-// the restore gate or the sweep is set.
+// refused for a wallet that is not missing, not past destroy_after or with an order or settlement still open, while the
+// records say it still holds coins (xmrOwedFrom, A-672: restored from its sealed seed, it is settled and then destroyed
+// by the usual rule), and while the restore gate or the sweep is set.
 func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 	id, err := strconv.ParseInt(c.Form.Get("wallet_id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -455,10 +461,12 @@ func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 		}
 		var name, state string
 		var allowed, party, paused bool
+		var owed int64
 		err = c.Tx.QueryRowContext(ctx, `SELECT w.name,w.state,COALESCE(`+xmrDestroyableSQL+`,false),
 				EXISTS(SELECT 1 FROM xmr_escrow_slots s JOIN orders o ON o.id=s.order_id JOIN products p ON p.id=o.product_id WHERE s.wallet_id=w.id AND (o.buyer_id=$3 OR p.vendor_id=$3)),
-				`+restoreGateSQL+` OR EXISTS(SELECT 1 FROM settings WHERE key=$4 AND value='true')
-			FROM xmr_escrow_wallets w WHERE w.id=$1 FOR UPDATE`, id, now, c.User.ID, xmrEscrowSweepKey).Scan(&name, &state, &allowed, &party, &paused)
+				`+restoreGateSQL+` OR EXISTS(SELECT 1 FROM settings WHERE key=$4 AND value='true'),
+				COALESCE((SELECT sum(op.amount) `+xmrOwedFrom+`),0)
+			FROM xmr_escrow_wallets w WHERE w.id=$1 FOR UPDATE`, id, now, c.User.ID, xmrEscrowSweepKey).Scan(&name, &state, &allowed, &party, &paused, &owed)
 		if err == sql.ErrNoRows {
 			return "", actionResult{}, fail(404, "Wallet not found")
 		}
@@ -474,6 +482,9 @@ func xmrConfirmDestroyedAction(c *actionCtx) (actionResult, error) {
 			return "", actionResult{}, fail(409, "The market is reconciling a restore from backup: no escrow wallet is destroyed until it has finished. Nothing was changed.")
 		case !allowed:
 			return "", actionResult{}, fail(409, "This wallet is not past its destruction date, or an order or settlement of it is still open. Nothing was changed.")
+		case owed > 0:
+			return "", actionResult{}, fail(409, "The market's records say this wallet still holds "+c.A.escrowAmount(&Order{Currency: "XMR"}, owed)+
+				": a deposit of one of its orders that no settlement has spent for good. Restore the wallet from its sealed seed so that the market can settle it; once it is empty the market destroys it by the usual rule. Nothing was changed.")
 		}
 		opID, err := c.A.prepareRetentionXMRDestruction(ctx, c.Tx, id, now)
 		if err != nil {
