@@ -231,6 +231,19 @@ acceptance requirements, not a declaration of deployed verification:
   and no external inference, redirects, model downloads or ambient proxy egress.
   Deployed runtime secret/mount/network isolation needs an actual host rehearsal;
   package tests alone cannot establish it.
+- The private review queue lists unexpired `ESCALATE_ADMIN` proposals first and
+  then the soonest deadline; with 60 listing proposals and one dispute
+  escalation the escalation is first on page 1, `?kind=dispute` lists only it,
+  a proposal past its deadline is only under *Deadline passed*, the kind and
+  disposition filters survive paging and unknown values are refused (400); the
+  review form preselects no choice and its hold option says the proposal closes
+  and marketplace state is kept; upload proposals link to the photo's listing,
+  the evidence's order or the avatar's account page and to nothing once the image
+  is deleted; confidence is labelled model-stated and uncalibrated
+  (`TestModerationAdminQueueFiltersAndOrder`, `TestModerationAdminHoldLabel`,
+  `TestModerationAdminUploadTargetLinks`, `TestModerationTargetURLAllowlist`,
+  `TestModerationAdminConfidenceLabel`, A-685). The page is served only on the
+  private administrator socket, so no browser test covers it.
 - Administrator diagnostics expose only bounded review metadata and health
   classes, not runtime endpoints, credentials or raw transport errors. Verify
   no-JavaScript rendering and sensitive-data access on the deployed private path.
@@ -667,6 +680,7 @@ These checks require recorded implementation and workflow verification before ma
 - [x] PR #111's listing writes follow the same rule: a vendor's change to the subcategory or additional shipping regions re-holds an approved listing through the edit form, and a switch between vendor-delivered and automatic digital delivery re-holds it, while switching between the two automatic methods, digital units and stock do not; the vendor-contact rule counts only approved listings (`TestListingShippingRegionChangeReholds`, `TestListingDigitalDeliveryModeChangeReholds`).
 - [x] A rejected listing needs no administrator: its vendor's change to what buyers see, or a new photo, resubmits it (pending, reason cleared, "Resubmitted listing … for review" audited) whatever the mode, and approval then publishes it; a stock-only change, switching to publish or an administrator's edit leaves it rejected with its reason; a reject form rendered before the vendor's change is refused (409); retention's withdrawn-listing purge clears the reason (`TestListingRejectedVendorEditsAndResubmits`, `TestListingRejectionReasonFollowsListingRetention`).
 - [x] Browser journey with JavaScript off: the administrator sets hold, a vendor lists, a buyer cannot find or open it, a moderator rejects it with a reason, the vendor reads "Rejected — <reason>" and edits it, the moderator approves the resubmitted listing and the buyer then sees it; the desk, the vendor desk and the admin panel fit 320 px (`db-listing-review.spec.ts`, `preview-listing-review.spec.ts`).
+- [x] Listings awaiting review (pending, not archived) are counted in the staff navigation badge and the *Needs attention* line, linked to `/moderator#listing-review`, and flag the Vendors section on `/admin`; one pending listing reads "1 listing awaiting review" for a moderator and an administrator, and a moderator who owns it does not count it (`TestStaffAttentionCountsPendingListings`, A-686).
 
 ### Vendor reputation rule (A-653)
 
