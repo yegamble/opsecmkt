@@ -88,8 +88,25 @@ The v2 response has no summary or evidence prose; Go renders review text from
 validated codes. Source text is limited to 8192 normalized runes/64 KiB raw, with
 complete original digests and no mutation of caller data.
 
-The model does not judge listings by text (owner directive, A-651, prompt
-`moderation-v5`; v1–v4 pins are refused). Listing and upload jobs never reach a
+Model proposals never become `AUTO_APPLY` (A-684, prompt `moderation-v6`; v1–v5
+pins are refused): a confident `NO_ACTION`/`NO_FINDING` from a model waits in
+the human queue like any other proposal, because no evaluation shows model
+judgment or its uncalibrated confidence is fit to clear an item
+(`TestModelProposalNeverAutoApplies`); no deterministic path produced it
+either, so new work never enters automatic history. Both grammars end at the
+closing brace with bounded whitespace (the v5 ones let a real runtime emit
+newlines until its output limit, so every modelled item failed), each completion
+asks for at most 256 tokens, the canary is `m-` plus 8 hex, and neither grammar
+can repeat a reason code (`TestGrammarsTerminateAtRoot`,
+`TestCompletionAtPredictLimitFailsClosed`, `TestCanaryIsShortAndChecked`,
+`TestGrammarsCannotRepeatReasonCode`; 35 native-parser cases at llama.cpp
+`3bb63cbc`). An external destination records the Go-only `EXTERNAL_DESTINATION`
+beside `HUMAN_REVIEW` (`TestRouteExternalDestinationCode`). No model has been
+measured fit for use at the shipped launcher limits; see
+[the token budget](moderation-agent.md#token-budget-throughput-and-model-size).
+
+The model does not judge listings by text (owner directive, A-651, first in
+`moderation-v5`). Listing and upload jobs never reach a
 model, even with `--model` on: they get the deterministic checks only and, when
 those find nothing, the Go-only `MODEL_NOT_USED` with the same `QUEUE_HUMAN`
 routing and score as an absent model, so they are never `AUTO_APPLY`. Reviews,

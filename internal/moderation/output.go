@@ -109,6 +109,7 @@ var reasonDescriptions = map[string]string{
 	"HUMAN_REVIEW":           "human review required",
 	"POLICY_BOUNDARY":        "an action outside automatic authority",
 	"SLA_EXPIRED":            "an expired review deadline",
+	"EXTERNAL_DESTINATION":   "a recognised external contact or payment destination",
 }
 
 // SummaryForReasons renders only fixed application-owned phrases. Unknown

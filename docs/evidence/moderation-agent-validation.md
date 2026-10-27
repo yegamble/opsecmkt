@@ -209,6 +209,62 @@ v3 hashes above, so the v3 native grammar check applies to v4 unchanged; no
 new parser run was needed. The escaping is covered by Go unit tests with a
 fake runtime (`internal/moderation/special_tokens_test.go`); no model was run.
 
+Moderation-v5 (A-651) kept the v3 templates. **What these checks did not show:**
+every check above asked whether the parser accepts a complete valid reply and
+refuses an invalid one. None asked what may follow the closing brace. Each v1–v5
+root ended `"}" ws` with `ws ::= [ \t\n\r]*`, so the grammar never required the
+generation to stop. In the iteration 94 local-runtime instrument (llama.cpp
+b1-9ff0d7e90, an unpinned 7B Q4_0 model) every completion ran to `n_predict`
+emitting newlines (`stop_type` `limit`), so every modelled item became
+`MODEL_FAILURE`. These parser results establish grammar acceptance, not
+termination or fitness for use.
+
+### Moderation-v6 native grammar check (A-684, 2026-10-27)
+
+Both v6 roots end at `"}"`, `ws` is `[ \t\n]{0,4}`, and no rule has an unbounded
+repetition; each reason code has one optional slot in a fixed order; evidence
+arrays hold at most one entry per alias; the canary is `m-` plus 8 hex. The
+official archive for llama.cpp `3bb63cbc` was downloaded again, matched the
+archive, `src/llama-grammar.cpp` and `tests/test-gbnf-validator.cpp` hashes in
+the first table, and `tests/test-gbnf-validator.cpp` was rebuilt with Apple clang
+21.0.0 using the source-only build above (`-Wl,-dead_strip` in place of
+`--gc-sections` on macOS). Grammars were substituted by `stageAGrammarFor` and
+`proposalGrammarFor` for an input hash of 64 lowercase `a` characters (canary
+`m-d9e58e33`): Stage A with one alias and with 32 aliases, the proposal with two
+aliases and with none. The harness read the validator's explicit valid/invalid
+text, not its exit status.
+
+35 cases, all as expected: 10 accepted, 25 rejected.
+
+| Accepted | Rejected |
+| --- | --- |
+| Stage A: `NO_FINDING`; empty findings; an ordered pair; all five codes in order; newlines and spaces of at most four characters; with 32 aliases, `E1` and `E32` | Stage A: anything after `}` (a newline, a space); five spaces in a row; a repeated `SPAM_TEMPLATE` or `HUMAN_REVIEW`; two codes out of order; `NO_FINDING` beside a finding; the pre-v6 canary form; `EXTERNAL_DESTINATION`; `DETERMINISTIC_CONFLICT`; a truncated reply; an unknown alias; a repeated alias |
+| Proposal: `NO_FINDING`; an ordered subset at confidence `1` with two aliases; bounded whitespace; with no aliases, an empty evidence list | Proposal: a newline after `}`; five spaces in a row; a repeated code; codes out of order; an empty code list; `EXTERNAL_DESTINATION`; `MODEL_ABSENT`; a wrong canary; confidence `1.01`; an extra `summary` field; three entries for two aliases; an alias with an empty context |
+
+| V6 artifact | SHA256 |
+| --- | --- |
+| Stage A template (`internal/moderation/prompts/stage-a.gbnf`) | `57793a6febaead52df7de00e3e85fdb28ff849c8d0a50f6f190ecb91382426b1` |
+| Proposal template (`internal/moderation/prompts/proposal.gbnf`) | `174a1777c337999983faaf4a12c23dca74a3e27edb772d691b79563327c012c5` |
+| Substituted Stage A grammar, one alias | `c9eac7992b3463a6115dc3d78ffed070b3453f042a6fef5d8c6c51db252f62be` |
+| Substituted Stage A grammar, 32 aliases | `a59182844c3982512ff110cf67f4a7284e31d448a24c43d7c95533937c0b3aaa` |
+| Substituted proposal grammar, two aliases | `2fe7457b9662f1a062a1c9984127faa53f5e466cca8fc9d414feecd7d97f52e3` |
+| Substituted proposal grammar, no aliases | `94815b503d4f82ac24ef19b78cf6415eb2c9e7fee870a0c877faf12097ba7260` |
+| Thirty-five-case inputs JSON | `be055b16a48ff7e407228cf16817d023814c8bc624430b92c86b6d7b46a89ca2` |
+| Thirty-five-case result JSON | `6e1c5a0ca13fc9d0d33dada3808e0253739694031de6e48ef9b14f3c841ceedf` |
+
+The artifacts were kept in the implementer's session scratch directory, not in
+the repository. The same properties are pinned in Go by a small GBNF test oracle
+(`internal/moderation/grammar_oracle_test.go`): `TestGrammarsTerminateAtRoot`
+parses the substituted grammars, refuses any unbounded repetition and any
+character after `}`, and `TestGrammarsCannotRepeatReasonCode` checks every
+repeated code. The oracle is not llama.cpp; it complements the native check.
+
+These are grammar-parser results only. No model was run for v6: whether a
+selected model ends at `}` with `stop_type` `eos`, within 256 tokens and the
+`--model-timeout` deadline at the shipped launcher limits, is **unverified** and
+remains the opsec-llm seat's local-runtime rerun and an operator acceptance
+check.
+
 Focused local verification completed before the final-source CI run:
 
 - Closed protocol, custom-adapter prose removal, routing and coded provenance

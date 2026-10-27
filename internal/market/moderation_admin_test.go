@@ -5,7 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -174,7 +177,9 @@ func (benignModerationUIModel) Propose(_ context.Context, in moderation.Normaliz
 		Summary: "No review finding.", Canary: moderation.CanaryFor(in.InputHash)}, nil
 }
 
-func TestModerationAdminBenignClassificationSkipsHumanQueue(t *testing.T) {
+// A confident benign model result waits in the human queue (A-684); an
+// AUTO_APPLY row stored by an earlier protocol still renders as history.
+func TestModerationAdminBenignModelResultQueuesForHuman(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("moderation_benign_admin", "admin")
 	vendor, _ := e.user("moderation_benign_vendor", "vendor")
@@ -196,16 +201,44 @@ func TestModerationAdminBenignClassificationSkipsHumanQueue(t *testing.T) {
 	if err := e.DB.QueryRow(`SELECT id,disposition FROM moderation_suggestions`).Scan(&id, &disposition); err != nil {
 		t.Fatal(err)
 	}
-	if disposition != string(moderation.AutoApply) {
-		t.Fatalf("benign classification disposition=%s", disposition)
+	if disposition != string(moderation.QueueHuman) {
+		t.Fatalf("benign model classification disposition=%s", disposition)
 	}
+
+	// The row a moderation-v5 worker wrote for a clean review it cleared.
+	order2 := e.order(buyer, p, "XMR", stateCompleted)
+	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Packed well')", randomToken(), order2, p, buyer)
+	var j moderationJob
+	if err := e.DB.QueryRow(`SELECT id,kind,target_id,actor_id,content_hash,snapshot,queued_at,capture_version,metadata,actor_ref FROM moderation_jobs WHERE kind='review' AND completed_at IS NULL`).Scan(&j.ID, &j.Kind, &j.TargetID, &j.ActorID, &j.ContentHash, &j.Snapshot, &j.QueuedAt, &j.CaptureVersion, &j.Metadata, &j.ActorRef); err != nil {
+		t.Fatal(err)
+	}
+	hash := func(data string) string {
+		sum := sha256.Sum256([]byte(data))
+		return hex.EncodeToString(sum[:])
+	}
+	in := moderationMinimalInput(j)
+	reasons := []string{"NO_FINDING"}
+	inputHash := hash("moderation-v5-input:" + j.ContentHash)
+	proposal := moderation.Proposal{ItemID: in.ItemID, Action: moderation.ActionNoAction, Confidence: .95, ReasonCodes: reasons, InjectionEvidence: []string{}, EvidenceIDs: in.Context.EvidenceIDs, Summary: moderation.SummaryForReasons(reasons), Canary: "moderation-" + inputHash[:32]}
+	proposalBytes, _ := json.Marshal(proposal)
+	historical := hash("moderation-v5-decision:" + j.ContentHash)
+	decision := moderation.Decision{ID: historical, InputHash: inputHash, OutputHash: hash(string(proposalBytes)), Proposal: proposal, Disposition: moderation.AutoApply, ReasonCodes: reasons, Actor: "moderation-worker", PromptVersion: "moderation-v5", SLA: 24 * time.Hour, DefaultAction: moderation.Hold}
+	decisionBytes, _ := json.Marshal(decision)
+	inputBytes, _ := json.Marshal(moderationStoredMetadata(j, in))
+	reasonBytes, _ := json.Marshal(reasons)
+	agExec(e, `INSERT INTO moderation_suggestions(id,job_id,kind,target_id,actor_id,content_hash,policy_hash,input,decision,disposition,risk_score,confidence,reason_codes,input_hash,output_hash,prompt_version,model_id,weights_hash,expires_at,failure_class)
+	 VALUES($1,$2,'review',$3,'',$4,$5,$6,$7,'AUTO_APPLY',0,0.95,$8,$9,$10,'moderation-v5','','',now()+interval '24 hours','')`, historical, j.ID, j.TargetID, j.ContentHash, hash("moderation-v5-policy"), string(inputBytes), string(decisionBytes), string(reasonBytes), inputHash, decision.OutputHash)
+	agExec(e, `UPDATE moderation_jobs SET completed_at=now() WHERE id=$1`, j.ID)
+
 	e.A.adminSocket = "/run/test-private-admin/http.sock"
 	queue := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
 	e.check(queue, 200)
-	mustNotContain(t, queue.Body.String(), id)
+	mustContain(t, queue.Body.String(), id)
+	mustNotContain(t, queue.Body.String(), historical)
 	history := privateHostRequest(e, "GET", "/admin/moderation?state=reviewed", admin, nil, true)
 	e.check(history, 200)
-	mustContain(t, history.Body.String(), id, "Automatic classification recorded")
+	mustContain(t, history.Body.String(), historical, "Automatic classification recorded")
+	mustNotContain(t, history.Body.String(), id)
 }
 
 func TestModerationAdminStaleAndExpiredProposalsHold(t *testing.T) {

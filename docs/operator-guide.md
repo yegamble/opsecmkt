@@ -713,7 +713,9 @@ without JavaScript ([moderation guide](moderation-agent.md#review-and-service-in
 Model endpoints, raw model JSON and transport errors are omitted. The model never
 reads listing or upload text: those proposals carry `MODEL_NOT_USED` and wait in
 the human queue unless a deterministic check escalates them; only reviews,
-disputes and payment flags reach the model.
+disputes and payment flags reach the model. Even a confident benign model
+result waits for a human (`moderation-v6`, A-684). An item naming an external
+contact or payment destination also carries `EXTERNAL_DESTINATION`.
 
 While capture is on, the Admin overview (`/admin`) shows a **Moderation capture
 needs attention** alert when the lifetime pool has at most two daily actor shares

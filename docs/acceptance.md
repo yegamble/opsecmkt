@@ -61,8 +61,27 @@ acceptance requirements, not a declaration of deployed verification:
 - Grammar constraints are followed by Go schema, allowlist, bounds, canary and
   evidence-reference validation. Stage B receives validated findings rather than
   raw submitted text. No model response gains a tool, signer or database authority.
-- The model does not judge listings by text (A-651, `moderation-v5`, v4 pins
-  refused). With the model enabled, listing and upload jobs make no model call
+- No model proposal is `AUTO_APPLY` at any confidence (A-684, `moderation-v6`,
+  v1–v5 pins refused): a confident clean model result, through a custom adapter or
+  the two-stage local adapter, routes `QUEUE_HUMAN`, while no-model routing keeps
+  its reasons and score; an `AUTO_APPLY` row stored by an earlier protocol still
+  renders as history. Both grammars end at `}` with whitespace bounded to four
+  characters and no unbounded repetition, so nothing may follow the closing brace;
+  each completion asks for at most 256 tokens and a generation stopped at that
+  limit is `MODEL_FAILURE`; the canary is `m-` plus 8 hex and Go still refuses a
+  mismatch; neither grammar can repeat a reason code and Go still refuses one; a
+  recognised destination adds the Go-only `EXTERNAL_DESTINATION`, which neither
+  grammar nor Go validation accepts from a model, so a listing with
+  `telegram @handle` and a plain one get different codes and summaries
+  (`TestModelProposalNeverAutoApplies`, `TestGrammarsTerminateAtRoot`,
+  `TestCompletionAtPredictLimitFailsClosed`, `TestCanaryIsShortAndChecked`,
+  `TestGrammarsCannotRepeatReasonCode`, `TestRouteExternalDestinationCode`,
+  `TestModerationAdminBenignModelResultQueuesForHuman`; unit, a Go GBNF test
+  oracle, database integration and 35 cases on the pinned native llama.cpp
+  grammar parser. None runs a model: termination within budget on a selected
+  model at the shipped launcher limits is unverified).
+- The model does not judge listings by text (A-651, first in `moderation-v5`).
+  With the model enabled, listing and upload jobs make no model call
   and the adapter refuses them; with no deterministic finding they record the
   Go-only `MODEL_NOT_USED` and route exactly as an absent model does
   (`QUEUE_HUMAN`, never `AUTO_APPLY`), while reviews still reach the model.

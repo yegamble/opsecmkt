@@ -7,11 +7,19 @@ import (
 
 // Route is an authority boundary: score influences review urgency, while hard
 // rules always outrank confidence, reputation, or a model's proposed action.
+// It returns no AUTO_APPLY: every proposal that the deterministic checks could
+// not decide, model-derived ones included, waits for a human (A-684).
 func Route(in NormalizedInput, p Proposal, cfg Config) (Disposition, int, []string) {
 	reasons := append([]string{}, p.ReasonCodes...)
 	add := func(code string) { reasons = appendUnique(reasons, code) }
-	if reviewOnlySignal(in) {
+	destination, instruction := reviewOnlySignal(in)
+	if destination || instruction {
 		add("HUMAN_REVIEW")
+	}
+	// Go-only and fixed: a listing already carries HUMAN_REVIEW with
+	// MODEL_NOT_USED, so without this code a destination left no trace.
+	if destination {
+		add("EXTERNAL_DESTINATION")
 	}
 	score := min(30, in.Context.BlastRadius)
 	if !in.Context.Reversible {
@@ -55,23 +63,10 @@ func Route(in NormalizedInput, p Proposal, cfg Config) (Disposition, int, []stri
 		slices.Sort(reasons)
 		return QueueHuman, score, reasons
 	}
-	// FLAG_REVIEW is a request for human attention, including a high-confidence
-	// deterministic signal. Automatic history is reserved for a benign NO_ACTION.
-	if p.Action == ActionFlagReview {
-		return QueueHuman, score, reasons
-	}
-	if p.Confidence < cfg.ConfidenceFloor || math.IsNaN(p.Confidence) || math.IsInf(p.Confidence, 0) || in.Context.Novel || score >= 30 || slices.Contains(reasons, "INPUT_TRUNCATED") || slices.Contains(reasons, "DETERMINISTIC_CONFLICT") || slices.Contains(reasons, "ORDER_STATE_VIOLATION") || slices.Contains(reasons, "INVALID_FIELDS") || slices.Contains(reasons, "MODEL_ABSENT") || slices.Contains(reasons, "MODEL_NOT_USED") || slices.Contains(reasons, "MODEL_FAILURE") || slices.Contains(reasons, "INVALID_OUTPUT") {
-		return QueueHuman, score, reasons
-	}
-	// A model cannot conceal a finding by pairing its reason with NO_ACTION.
-	// Only an explicit clean result and age metadata belong in automatic history.
-	if !slices.Contains(reasons, "NO_FINDING") {
-		return QueueHuman, score, reasons
-	}
-	for _, code := range reasons {
-		if code != "NO_FINDING" && code != "NEW_ACTOR" {
-			return QueueHuman, score, reasons
-		}
-	}
-	return AutoApply, score, reasons
+	// FLAG_REVIEW asks for human attention. A NO_ACTION/NO_FINDING proposal can
+	// only come from a model (deterministic checks never decide a clean item),
+	// and no evaluation shows that model judgment or its stated confidence is
+	// fit to clear an item, so it is queued at any confidence. An opt-in gated on
+	// a measured evaluation report is separate work (A-692).
+	return QueueHuman, score, reasons
 }

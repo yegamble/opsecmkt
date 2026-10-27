@@ -121,7 +121,9 @@ func TestInjectionCorpus(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			// Labels must agree with the asserted outcome; a miss names its reason.
-			want := map[string]Disposition{"escalate": EscalateAdmin, "human_review": QueueHuman, "miss": AutoApply}[tc.Expected]
+			// A miss also queues for a human, but only because no model proposal
+			// is automatic (A-684): no deterministic signal records it.
+			want := map[string]Disposition{"escalate": EscalateAdmin, "human_review": QueueHuman, "miss": QueueHuman}[tc.Expected]
 			if want == "" || want != tc.Disposition || tc.Injection != (tc.Expected == "escalate") || (tc.Expected == "miss") != (tc.MissReason != "") {
 				t.Fatalf("inconsistent corpus label: %+v", tc)
 			}
@@ -152,12 +154,11 @@ func TestInjectionCorpus(t *testing.T) {
 					p.ReasonCodes = []string{"NO_FINDING"}
 					return p, nil
 				})}
-				want := tc.Disposition
-				if kind == "listing" && want == AutoApply {
-					want = QueueHuman
-				}
 				d, err := engine.Evaluate(context.Background(), input)
-				if err != nil || d.Proposal.InjectionSuspected != tc.Injection || d.Disposition != want {
+				if err != nil || d.Proposal.InjectionSuspected != tc.Injection || d.Disposition != tc.Disposition {
+					t.Fatalf("%s: decision %+v, err %v", kind, d, err)
+				}
+				if kind == "review" && (tc.Expected == "miss") != slices.Equal(d.ReasonCodes, []string{"NO_FINDING"}) {
 					t.Fatalf("%s: decision %+v, err %v", kind, d, err)
 				}
 				if (d.Proposal.Action != ActionFlagReview && d.Proposal.Action != ActionNoAction) || tc.Injection && d.Proposal.Action != ActionFlagReview || d.DefaultAction != Hold || d.Proposal.Canary != CanaryFor(d.InputHash) {
@@ -264,7 +265,7 @@ func TestModelDegradationAndProtocolMismatch(t *testing.T) {
 			p := baseProposal(n)
 			p.ReasonCodes = []string{"NO_FINDING"}
 			return p, nil
-		}), AutoApply, ""},
+		}), QueueHuman, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := DefaultConfig()

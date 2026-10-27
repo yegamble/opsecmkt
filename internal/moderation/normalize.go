@@ -219,6 +219,9 @@ var protocolCodeName = regexp.MustCompile(`(?:^|[^a-z0-9_])(?:` + strings.Join(p
 
 var delimiterMarkers = []string{"<<u ", "<<end", "</system", "<system", "[inst]", "[system]", "begin trusted", "end trusted"}
 
+// The pre-v6 canary form stays a protocol reference. The current short form
+// (m- plus 8 hex) is not matched: it resembles ordinary part numbers, and an
+// author cannot know it, since it derives from a hash of the item's own text.
 var canaryToken = regexp.MustCompile(`moderation-[0-9a-f]{32}`)
 var base64Token = regexp.MustCompile(`[A-Za-z0-9+/]{16,}={0,2}`)
 
