@@ -95,15 +95,23 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 // Content that cannot be delivered automatically (blank or over the limit) leaves the order paid for
 // the vendor to deliver by hand; it never blocks the payment transition. Neither is a listing an administrator
 // took down (A-163) delivered: the order stays paid with a history note, for the vendor to deliver or cancel.
+// Nor is the listing of a banned vendor (A-652e): the order stays paid, no inventory unit is consumed, and the note
+// names the closed account and says an administrator can refund the order (admin_ban_orders.go, A-652b).
 func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	if to != statePaid || o.Kind != "digital" {
 		return nil
 	}
-	var content, mode string
-	var takenDown bool
-	// FOR KEY SHARE waits for a takedown in progress (it holds the listing row FOR UPDATE) and then reads its result,
-	// without blocking stock reservations on the same listing.
-	if err := tx.QueryRowContext(ctx, "SELECT delivery_content,digital_delivery_mode,admin_archive_reason IS NOT NULL FROM products WHERE id=$1 FOR KEY SHARE", o.ProductID).Scan(&content, &mode, &takenDown); err != nil {
+	var content, mode, handle string
+	var takenDown, banned bool
+	// FOR KEY SHARE OF p waits for a takedown in progress (it holds the listing row FOR UPDATE) and then reads its
+	// result, without blocking stock reservations on the same listing. The vendor's account row is read without a lock:
+	// a ban holds it FOR NO KEY UPDATE, which a KEY SHARE lock would not wait for anyway, and a SHARE lock here, taken
+	// while this transaction holds the order, would make the payment wait on every write to the vendor's account row (a
+	// checkout of theirs as a buyer holds it during the escrow node call). A ban that commits after this read is
+	// concurrent with the payment, which is then delivered as one funded just before the ban, and nothing is released
+	// to the banned vendor (A-652c).
+	if err := tx.QueryRowContext(ctx, `SELECT p.delivery_content,p.digital_delivery_mode,p.admin_archive_reason IS NOT NULL,u.handle,u.banned_at IS NOT NULL
+		FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1 FOR KEY SHARE OF p`, o.ProductID).Scan(&content, &mode, &takenDown, &handle, &banned); err != nil {
 		return err
 	}
 	if mode == "manual" {
@@ -111,6 +119,11 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 	}
 	if mode == "reusable" && (strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars) {
 		return nil
+	}
+	if banned {
+		note := "Not delivered automatically: the vendor's account " + handle + " is closed. An administrator can refund this order to the buyer's refund address under Orders of this banned account, on that account's page."
+		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
+		return err
 	}
 	if takenDown {
 		note := "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand or cancel and refund."

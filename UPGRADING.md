@@ -15,6 +15,16 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A banned vendor's listings stay down and its digital orders are not delivered (A-652e)
+
+**Behaviour change** (A-652e). No migration and no new setting. A digital order of a banned vendor that is paid after
+the ban used to be delivered automatically and completed. Now it stays paid with nothing delivered (no inventory unit is
+used), and its history says the vendor's account is closed and that an administrator can refund it: refund it with the
+account's other unpaid and unshipped orders under *Orders of this banned account* on the account's page (A-652b).
+Orders delivered before the upgrade are not changed. *Restore listing* on a listing you took down is now refused, with
+nothing changed, while its vendor is banned; lift the ban first. See *Account ban* under
+[authentication](docs/operator-guide.md#authentication).
+
 ## A release held for a banned vendor can be refunded to the buyer (A-652f)
 
 **Behaviour change** (owner decisions 2026-10-26). No migration. A release held because the vendor is banned (A-652c)

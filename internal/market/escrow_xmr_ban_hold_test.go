@@ -341,6 +341,92 @@ func TestBanNeverHoldsRefunds(t *testing.T) {
 	}
 }
 
+// A-652e: a digital order awaiting payment when its vendor is banned, and funded after the ban, is not delivered
+// automatically, in either automatic mode: it stays paid, its content (or an inventory unit) is not released, and its
+// history names the closed account and says an administrator can refund it under Orders of this banned account, with no
+// claim or delivery by the vendor offered. That refund (A-652b) then pays it back to the refund address pinned at
+// checkout. The same order of an unbanned vendor is delivered as before.
+func TestBanStopsAutoDelivery(t *testing.T) {
+	for _, mode := range []string{"reusable", "inventory"} {
+		t.Run(mode, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			e := x.testEnv
+			_, admin := e.user("bsad_admin_"+randomToken()[:6], "admin")
+			product := x.product
+			if mode == "inventory" {
+				product = digitalInventoryFixture(t, x, "unit A secret", "unit B secret")
+			}
+			if got := agStr(e, "SELECT digital_delivery_mode FROM products WHERE id=$1", product); got != mode {
+				t.Fatalf("fixture listing mode %q, want %q", got, mode)
+			}
+			// Control: with the vendor not banned, a funded order is delivered automatically.
+			control, controlAddr := x.freshCheckout(product)
+			x.fake.payAddress(controlAddr, hex64("a652e control "+control), xmrListingPrice, 10)
+			x.mustPoll()
+			if x.state(control) != stateCompleted || agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", control) != 1 {
+				t.Fatalf("an unbanned vendor's order was not delivered automatically: %s", x.state(control))
+			}
+
+			order, addr := x.freshCheckout(product)
+			reserved := agInt(e, "SELECT count(*) FROM digital_units WHERE order_id=$1", order)
+			if want := map[string]int{"reusable": 0, "inventory": 1}[mode]; reserved != want {
+				t.Fatalf("checkout reserved %d unit(s), want %d", reserved, want)
+			}
+			handle := x.banVendor(admin)
+			x.fake.payAddress(addr, hex64("a652e banned "+order), xmrListingPrice, 10)
+			x.mustPoll()
+			x.mustPoll()
+			if x.state(order) != statePaid {
+				t.Fatalf("an order funded after its vendor's ban is %s, want paid", x.state(order))
+			}
+			if n := agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", order); n != 0 {
+				t.Fatalf("a banned vendor's order was delivered automatically (%d deliveries)", n)
+			}
+			if n := agInt(e, "SELECT count(*) FROM digital_units WHERE order_id=$1", order); n != reserved {
+				t.Fatalf("funding changed the order's units: %d, want %d", n, reserved)
+			}
+			if n := agInt(e, "SELECT count(*) FROM digital_units WHERE product_id=$1 AND delivered_at IS NOT NULL AND order_id IS DISTINCT FROM $2", product, control); n != 0 {
+				t.Fatalf("%d inventory unit(s) consumed for the banned vendor's order", n)
+			}
+			want := "Not delivered automatically: the vendor's account " + handle + " is closed"
+			if n := agInt(e, "SELECT count(*) FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND from_state='paid' AND to_state='paid' AND strpos(note,$2)>0 AND strpos(note,'Orders of this banned account')>0", order, want); n != 1 {
+				t.Fatalf("withheld-delivery notes %d, want 1: %q", n, x.events(order))
+			}
+			for _, s := range append(x.events(order), x.noticesOf(x.vendor, order)...) {
+				for _, bad := range []string{"claim", "deliver by hand", "vendor can deliver", "Automatic delivery"} {
+					if strings.Contains(s, bad) {
+						t.Fatalf("the history or the vendor's notices offer %q: %q", bad, s)
+					}
+				}
+			}
+			mustNotContain(t, x.page("/order?id="+order, x.sessOf(order, roleBuyer)), "licence key XC-1234", "unit A secret", "unit B secret")
+
+			// A-652b: the administrator's refund of the banned account's orders pays it back to the pinned address.
+			w := x.do("POST", "/admin/ban-orders", admin, x.banOrdersForm(admin, handle))
+			if w.Code != 303 {
+				t.Fatalf("refund the banned vendor's orders: %d %s", w.Code, w.Body)
+			}
+			if x.state(order) != stateCancelled {
+				t.Fatalf("after the refund the order is %s", x.state(order))
+			}
+			if got := x.xmrSettlements(order); len(got) != 1 || got[0] != "refund requested "+x.refundAddressOf(order) {
+				t.Fatalf("settlements %v, want one refund to the pinned refund address", got)
+			}
+			if n := agInt(e, "SELECT count(*) FROM digital_units WHERE order_id=$1", order); n != 0 {
+				t.Fatalf("the refunded order still holds %d unit(s)", n)
+			}
+			x.mustPoll()
+			if s := x.settlementOf(order, "refund"); s.State == "requested" || s.State == "failed" || x.liveOutcomes(order) != 1 {
+				t.Fatalf("refund not built once: %+v", s)
+			}
+			if agInt(e, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='release'", order) != 0 {
+				t.Fatal("a release was requested for the banned vendor's undelivered order")
+			}
+		})
+	}
+}
+
 // Migration 149 replaces escrow_market_may_sign and nothing else: the catalog (relations, columns, constraints,
 // indexes, triggers, every other function, types) and every row are as migration 148 left them, the function keeps its
 // signature, language and volatility, and the one-outcome and one-built indexes are unchanged.

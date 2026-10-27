@@ -272,7 +272,8 @@ const minTakedownReason, maxTakedownReason = 10, 500
 // edit page. A takedown archives the listing with the administrator's reason (10–500 characters after trimming,
 // stored unencrypted in products.admin_archive_reason and shown to the vendor, never on public pages). The vendor
 // can still edit it but not restore it, and it is not delivered automatically while taken down (autoDeliveryHook).
-// Only this restore clears the reason, and like any restore it needs the owner to still be a vendor. The
+// Only this restore clears the reason, and like any restore it needs the owner to still be a vendor; it also
+// needs the owner not to be banned (A-652e). The
 // administrator confirms with their own password (and authenticator code when enrolled); both accounts are
 // audited, with the reason, and the vendor gets a link-free notification.
 func adminListingAction(c *actionCtx) (actionResult, error) {
@@ -340,6 +341,15 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 					err = fail(409, "This listing's owner is no longer a vendor or is closing their account, so it cannot be restored. Nothing was changed.")
 				}
 				return actionResult{}, err
+			}
+			// A banned vendor keeps the vendor role (A-546), so the ban is checked here, under the share lock
+			// sellerIsVendorLocked holds on the owner's account row (A-652e).
+			var banned bool
+			if err = tx.QueryRowContext(ctx, "SELECT u.banned_at IS NOT NULL FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", id).Scan(&banned); err != nil {
+				return actionResult{}, err
+			}
+			if banned {
+				return actionResult{}, fail(409, "This listing's owner is banned, so it cannot be restored while the ban lasts. Nothing was changed.")
 			}
 			if _, err = tx.ExecContext(ctx, "UPDATE products SET archived=false,archived_at=NULL,admin_archive_reason=NULL,private_expired_at=NULL,updated=now() WHERE id=$1", id); err != nil {
 				return actionResult{}, err
