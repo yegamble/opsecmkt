@@ -134,8 +134,8 @@ func (p *xmrRPCProxy) wrap(method string, fn func(forward func())) {
 	p.around[method] = fn
 }
 
-// newXMRSettleRegtest is newXMRRegtest with the App's escrow wallet-rpc behind a counting proxy.
-func newXMRSettleRegtest(t *testing.T) (*xmrRegtest, *xmrRPCProxy) {
+// newXMRSettleRegtest is newXMRRegtest (with its env) with the App's escrow wallet-rpc behind a counting proxy.
+func newXMRSettleRegtest(t *testing.T, env ...func(r *xmrRegtest) map[string]string) (*xmrRegtest, *xmrRPCProxy) {
 	t.Helper()
 	walletURL := os.Getenv("ESCROW_XMR_REGTEST_WALLET_URL")
 	if walletURL == "" {
@@ -143,7 +143,7 @@ func newXMRSettleRegtest(t *testing.T) (*xmrRegtest, *xmrRPCProxy) {
 	}
 	p := newXMRRPCProxy(t, walletURL)
 	t.Setenv("ESCROW_XMR_REGTEST_WALLET_URL", p.URL)
-	r := newXMRRegtest(t)
+	r := newXMRRegtest(t, env...)
 	r.mustPoll()
 	return r, p
 }

@@ -51,8 +51,10 @@ func (r *xmrRegtest) height() int64 {
 }
 
 // newXMRRegtest checks the daemon, makes and funds the funder's wallet, and starts an App with ESCROW_XMR on against the
-// escrow wallet-rpc, its clock in a random month of the years 2200 to 2999.
-func newXMRRegtest(t *testing.T) *xmrRegtest {
+// escrow wallet-rpc, its clock in a random month of the years 2200 to 2999. Every leg runs with no market fee unless it
+// passes env: each function, called once the funder's wallet is funded, returns variables that replace the defaults
+// below for that leg's App (A-673: a fee address of the funder's wallet).
+func newXMRRegtest(t *testing.T, env ...func(r *xmrRegtest) map[string]string) *xmrRegtest {
 	t.Helper()
 	daemonURL, walletURL := os.Getenv("ESCROW_XMR_REGTEST_DAEMON_URL"), os.Getenv("ESCROW_XMR_REGTEST_WALLET_URL")
 	funderURL, restoreURL := os.Getenv("ESCROW_XMR_REGTEST_FUNDER_URL"), os.Getenv("ESCROW_XMR_REGTEST_RESTORE_URL")
@@ -97,10 +99,14 @@ func newXMRRegtest(t *testing.T) *xmrRegtest {
 
 	key, pub := testSeedKey(t, nil)
 	r.seedKey, r.keyPath = key, writeSeedKey(t, pub)
-	for k, v := range map[string]string{"ESCROW_XMR": "on", "ESCROW_XMR_WALLET_RPC_URL": walletURL, "ESCROW_XMR_DAEMON_URL": daemonURL,
+	vars := map[string]string{"ESCROW_XMR": "on", "ESCROW_XMR_WALLET_RPC_URL": walletURL, "ESCROW_XMR_DAEMON_URL": daemonURL,
 		"MONERO_WALLET_SECRET": testXMRSecret, "ESCROW_XMR_SEED_KEY": r.keyPath, "ESCROW_XMR_FEE_BPS": "", "ESCROW_XMR_FEE_ADDRESS": "",
 		"ESCROW_XMR_SLOTS": "5", "ESCROW_XMR_MAX_FEE": "", "PAYMENT_CONFIRMATIONS_XMR": "", "MONERO_WALLET_RPC_URL": "", "MONERO_NETWORK": "",
-		"ESCROW_BTC": "", "BITCOIN_RPC_URL": "", "BITCOIN_CHAIN": ""} {
+		"ESCROW_BTC": "", "BITCOIN_RPC_URL": "", "BITCOIN_CHAIN": ""}
+	for _, f := range env {
+		maps.Copy(vars, f(r))
+	}
+	for k, v := range vars {
 		t.Setenv(k, v)
 	}
 	r.testEnv = newTestApp(t)

@@ -144,7 +144,7 @@ run again against the same nodes, since each puts the watcher's clock in a month
 password or URL is printed. The script reports each leg from its own result line, so a failed, skipped or missing leg is
 named and the run fails; it ends with one `PASS:` line listing what was shown. The legs are: `Wallets`, `Funding`,
 `TwoAccountsOneTx`, `Physical`, `RestartMidSend`, `RelayDropped`, `TopUp`, `Reorg`, `FundingReorg`, `External`, `ReRequest`, `StaleRing`, `StaleRingRemedyB`, `Restore`, `Lookahead`,
-`WrongSecret`, `Destroy`, `RefundBelowFee` and `Bond`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
+`WrongSecret`, `Destroy`, `RefundBelowFee`, `SupersededMined`, `FeeAndReturn` and `Bond`, each `TestXMREscrowRegtest<Leg>` in `internal/market/`; what each proves is listed in
 [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain). A pass is evidence for the code and the 0.18.5.1
 nodes on a local fakechain, not for stagenet, testnet or mainnet.
 
