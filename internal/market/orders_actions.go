@@ -60,6 +60,18 @@ func sellerIsVendorLocked(c *actionCtx, productID string) (bool, error) {
 	return ok, err
 }
 
+// errOwnerBanned refuses a restore while the listing's owner is banned (A-652e): a banned vendor keeps the vendor role,
+// so sellerIsVendorLocked does not refuse it. Only an administrator's restore can meet it (a banned account cannot sign in).
+var errOwnerBanned = fail(409, "This listing's owner is banned, so it cannot be restored while the ban lasts. Nothing was changed.")
+
+// ownerBannedLocked reports whether the listing's owner is banned. Call it after sellerIsVendorLocked, whose share lock
+// on the owner's account row keeps the answer until the transaction ends: a ban waits for it, or committed first.
+func ownerBannedLocked(c *actionCtx, productID string) (bool, error) {
+	var banned bool
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT u.banned_at IS NOT NULL FROM products p JOIN users u ON u.id=p.vendor_id WHERE p.id=$1", productID).Scan(&banned)
+	return banned, err
+}
+
 const sellerNotVendor = "The seller of this listing is no longer a vendor, so it accepts no new orders."
 const sellerSuspended = "The seller of this listing is suspended, so it accepts no new orders. Existing orders continue."
 const sellerClosed = "The seller's account is closed, so this listing accepts no new orders. Existing orders continue."

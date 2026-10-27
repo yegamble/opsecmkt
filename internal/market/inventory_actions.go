@@ -249,6 +249,12 @@ func listingArchiveAction(c *actionCtx, archive bool) (actionResult, error) {
 			}
 			return actionResult{}, err
 		}
+		if banned, err := ownerBannedLocked(c, l.ID); err != nil || banned {
+			if err == nil {
+				err = errOwnerBanned
+			}
+			return actionResult{}, err
+		}
 	}
 	if _, err = c.Tx.ExecContext(c.Ctx(), `UPDATE products SET archived=$2,archived_at=CASE WHEN $2 THEN now() END,private_expired_at=NULL,updated=now() WHERE id=$1`, l.ID, archive); err != nil {
 		return actionResult{}, err
@@ -272,7 +278,8 @@ const minTakedownReason, maxTakedownReason = 10, 500
 // edit page. A takedown archives the listing with the administrator's reason (10–500 characters after trimming,
 // stored unencrypted in products.admin_archive_reason and shown to the vendor, never on public pages). The vendor
 // can still edit it but not restore it, and it is not delivered automatically while taken down (autoDeliveryHook).
-// Only this restore clears the reason, and like any restore it needs the owner to still be a vendor. The
+// Only this restore clears the reason, and like any restore it needs the owner to still be a vendor; it also
+// needs the owner not to be banned (A-652e). The
 // administrator confirms with their own password (and authenticator code when enrolled); both accounts are
 // audited, with the reason, and the vendor gets a link-free notification.
 func adminListingAction(c *actionCtx) (actionResult, error) {
@@ -338,6 +345,12 @@ func adminListingAction(c *actionCtx) (actionResult, error) {
 			if ok, err := sellerIsVendorLocked(c, id); err != nil || !ok {
 				if err == nil {
 					err = fail(409, "This listing's owner is no longer a vendor or is closing their account, so it cannot be restored. Nothing was changed.")
+				}
+				return actionResult{}, err
+			}
+			if banned, err := ownerBannedLocked(c, id); err != nil || banned {
+				if err == nil {
+					err = errOwnerBanned
 				}
 				return actionResult{}, err
 			}
