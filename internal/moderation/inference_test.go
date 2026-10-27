@@ -212,7 +212,7 @@ func TestLocalModelRejectsRemoteAndUnpinnedConfiguration(t *testing.T) {
 	changed = cfg
 	changed.PromptVersion = "unreviewed-v2"
 	cases = append(cases, changed)
-	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3"} {
+	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3", "moderation-v4", "moderation-v5"} {
 		changed = cfg
 		changed.PromptVersion = retired
 		cases = append(cases, changed)
@@ -331,7 +331,8 @@ func TestCompletionTruncationMetadataFailsClosed(t *testing.T) {
 				model, _ = scriptedRuntime(t, fakePromptTokens, a, b)
 				d := evaluateWith(t, model)
 				if tc.ok {
-					if d.Disposition != AutoApply || d.FailureClass != "" {
+					// A clean model result is still a proposal for a human (A-684).
+					if d.Disposition != QueueHuman || d.FailureClass != "" || !slices.Equal(d.ReasonCodes, []string{"NO_FINDING"}) {
 						t.Fatalf("well-formed completion did not reach the clean path: %+v", d)
 					}
 					return
@@ -341,6 +342,50 @@ func TestCompletionTruncationMetadataFailsClosed(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// LLM94-1: each completion asks for at most 256 tokens. A measured Stage A or
+// Stage B reply is under 100 tokens once the canary is short, so a generation
+// that reaches the limit is malformed and goes to human review.
+func TestCompletionAtPredictLimitFailsClosed(t *testing.T) {
+	if modelPredictTokens > 256 || modelPredictTokens < 128 {
+		t.Fatalf("modelPredictTokens = %d, want 128 through 256", modelPredictTokens)
+	}
+	in := normalizedOrdinary(t)
+	var predicted []int
+	var mu sync.Mutex
+	limit := map[string]any{"stop_type": "limit", "tokens_predicted": modelPredictTokens}
+	for stage := 1; stage <= 2; stage++ {
+		// Even complete-looking JSON is refused when the runtime stopped at the limit.
+		replies := []map[string]any{completionReply(cleanStageA(in), nil), completionReply(cleanStageB(in), nil)}
+		replies[stage-1] = completionReply(map[int]any{1: cleanStageA(in), 2: cleanStageB(in)}[stage], limit)
+		n := 0
+		_, model := localModelFixture(t, withTokenizer(fakePromptTokens, func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				NPredict int `json:"n_predict"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			predicted = append(predicted, req.NPredict)
+			reply := replies[min(n, 1)]
+			n++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(reply)
+		}))
+		if _, err := model.Propose(t.Context(), in); !errors.Is(err, ErrInvalidOutput) {
+			t.Fatalf("stage %d: generation stopped at n_predict was trusted: %v", stage, err)
+		}
+		mu.Lock()
+		n = 0
+		mu.Unlock()
+		if d := evaluateWith(t, model); d.Disposition == AutoApply || d.FailureClass != "invalid_output" || !slices.Contains(d.ReasonCodes, "MODEL_FAILURE") {
+			t.Fatalf("stage %d: limit stop not routed to human review: %+v", stage, d)
+		}
+	}
+	if len(predicted) == 0 || slices.ContainsFunc(predicted, func(n int) bool { return n != modelPredictTokens }) {
+		t.Fatalf("requests asked for n_predict %v, want %d", predicted, modelPredictTokens)
 	}
 }
 

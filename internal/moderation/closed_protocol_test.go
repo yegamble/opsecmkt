@@ -7,7 +7,9 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -75,7 +77,7 @@ func TestCustomModelCannotPersistFreeProse(t *testing.T) {
 }
 
 func TestOldPromptPinAndDraftReplyAreRefused(t *testing.T) {
-	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3", "moderation-v4"} {
+	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3", "moderation-v4", "moderation-v5"} {
 		cfg := DefaultConfig()
 		cfg.PromptVersion = retired
 		if _, err := (Engine{Config: cfg}).Evaluate(t.Context(), ordinaryInput()); err == nil {
@@ -87,8 +89,8 @@ func TestOldPromptPinAndDraftReplyAreRefused(t *testing.T) {
 			t.Errorf("local adapter accepted legacy prompt pin %s", retired)
 		}
 	}
-	if PromptVersion != "moderation-v5" {
-		t.Fatalf("prompt version %s, want moderation-v5", PromptVersion)
+	if PromptVersion != "moderation-v6" {
+		t.Fatalf("prompt version %s, want moderation-v6", PromptVersion)
 	}
 	in := protocolInput()
 	p := protocolProposal(in)
@@ -157,7 +159,7 @@ func TestModelCannotAssertSystemCodes(t *testing.T) {
 			t.Fatalf("Stage A code %s cannot survive into the final proposal", code)
 		}
 	}
-	for _, owned := range []string{"MODEL_ABSENT", "MODEL_NOT_USED", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "SLA_EXPIRED", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "POLICY_BOUNDARY", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "NOVEL_CASE", "INPUT_TRUNCATED", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE"} {
+	for _, owned := range []string{"MODEL_ABSENT", "MODEL_NOT_USED", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "SLA_EXPIRED", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "POLICY_BOUNDARY", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "NOVEL_CASE", "INPUT_TRUNCATED", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "EXTERNAL_DESTINATION"} {
 		if !slices.Contains(system, owned) {
 			t.Fatalf("Go-owned code %s is on the model allowlist", owned)
 		}
@@ -219,7 +221,7 @@ func TestModelCannotAssertSystemCodes(t *testing.T) {
 		if err != nil || d.FailureClass != "invalid_output" || d.Disposition == AutoApply {
 			t.Errorf("custom adapter asserted Go-owned %s: %+v, %v", code, d, err)
 		}
-		if slices.Contains([]string{"MODEL_ABSENT", "MODEL_NOT_USED", "CANARY_MISMATCH", "SLA_EXPIRED", "POLICY_BOUNDARY"}, code) && slices.Contains(d.ReasonCodes, code) {
+		if slices.Contains([]string{"MODEL_ABSENT", "MODEL_NOT_USED", "CANARY_MISMATCH", "SLA_EXPIRED", "POLICY_BOUNDARY", "EXTERNAL_DESTINATION"}, code) && slices.Contains(d.ReasonCodes, code) {
 			t.Errorf("model-asserted %s reached the audit record: %v", code, d.ReasonCodes)
 		}
 	}
@@ -316,9 +318,9 @@ func TestListingAndUploadNeverReachModel(t *testing.T) {
 	if seen := requests(); len(seen) != 0 {
 		t.Fatalf("local adapter sent %d listing/upload requests", len(seen))
 	}
-	// Reviews still reach the model.
+	// Reviews still reach the model; its clean result queues for a human (A-684).
 	d, err := (Engine{Config: enabled, Model: counting}).Evaluate(t.Context(), reviewInput())
-	if err != nil || calls.Load() != 1 || d.Disposition != AutoApply || slices.Contains(d.ReasonCodes, "MODEL_NOT_USED") {
+	if err != nil || calls.Load() != 1 || d.Disposition != QueueHuman || !slices.Equal(d.ReasonCodes, []string{"NO_FINDING"}) {
 		t.Fatalf("review did not reach the model: %d calls, %+v %v", calls.Load(), d, err)
 	}
 	// MODEL_NOT_USED is Go-owned, rendered by Go and a protocol code name.
@@ -416,6 +418,147 @@ func TestPromptsCarryNoIdentityOrBehaviourData(t *testing.T) {
 		}
 		if keys := slices.Sorted(maps.Keys(view)); !slices.Equal(keys, stageBKeys) {
 			t.Errorf("%s: Stage B keys changed: %v", kind, keys)
+		}
+	}
+}
+
+// LLM94-1: roots ending in an unbounded `ws` let llama.cpp generate newlines
+// until n_predict, so every completion stopped at the limit. Each root must end
+// at "}" and every repetition, whitespace included, must be bounded: the
+// language is finite and only end-of-sequence can follow the closing brace.
+func TestGrammarsTerminateAtRoot(t *testing.T) {
+	in := protocolInput()
+	canary := CanaryFor(in.InputHash)
+	aliases := evidenceAliases(len(in.Context.EvidenceIDs))
+	for name, grammar := range map[string]string{
+		"stage A template": stageAGrammar, "proposal template": proposalGrammar,
+		"stage A": stageAGrammarFor(canary, aliases), "proposal": proposalGrammarFor(canary, aliases),
+		"stage A, 32 aliases": stageAGrammarFor(canary, evidenceAliases(MaxEvidenceIDs)), "proposal, no aliases": proposalGrammarFor(canary, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if root := strings.TrimSpace(ruleLine(t, grammar, "root")); !strings.HasSuffix(root, `"}"`) {
+				t.Errorf("root does not end at the closing brace: %s", root)
+			}
+			if ws := ruleLine(t, grammar, "ws"); ws != `ws ::= [ \t\n]{0,4}` {
+				t.Errorf("whitespace is not bounded: %s", ws)
+			}
+			if strings.ContainsAny(strings.TrimSuffix(grammar, "\n"), "*+") {
+				t.Errorf("grammar text has an unbounded repetition")
+			}
+			if strings.Contains(grammar, "{{") {
+				return // a template; the substituted grammars are parsed below
+			}
+			if rule := parseGBNF(t, grammar).unbounded(); rule != "" {
+				t.Errorf("rule %s repeats without a bound", rule)
+			}
+		})
+	}
+	// Struct encodings keep the grammar's field order (a map would sort keys).
+	cleanA, _ := json.Marshal(cleanStageA(in))
+	cleanB, _ := json.Marshal(modelProposal{ItemID: modelItemAlias, Action: ActionNoAction, Confidence: .95, ReasonCodes: []string{"NO_FINDING"}, EvidenceIDs: aliases, Canary: canary})
+	for name, tc := range map[string]struct {
+		grammar gbnfGrammar
+		clean   string
+	}{"stage A": {parseGBNF(t, stageAGrammarFor(canary, aliases)), string(cleanA)}, "proposal": {parseGBNF(t, proposalGrammarFor(canary, aliases)), string(cleanB)}} {
+		if !tc.grammar.accepts(tc.clean) {
+			t.Fatalf("%s grammar refuses the canonical clean reply %s", name, tc.clean)
+		}
+		if spaced := strings.ReplaceAll(strings.ReplaceAll(tc.clean, ",", " ,\n "), ":", " : "); !tc.grammar.accepts(spaced) {
+			t.Errorf("%s grammar refuses bounded whitespace: %s", name, spaced)
+		}
+		for _, tail := range []string{"\n", " ", "\t", "\r", "}", " \n"} {
+			if tc.grammar.accepts(tc.clean + tail) {
+				t.Errorf("%s grammar continues past the closing brace with %q", name, tail)
+			}
+		}
+		if tc.grammar.accepts(strings.Replace(tc.clean, ":", ":     ", 1)) {
+			t.Errorf("%s grammar accepts five whitespace characters in a row", name)
+		}
+		if tc.grammar.accepts(strings.Replace(tc.clean, canary, "moderation-"+strings.Repeat("0", 32), 1)) {
+			t.Errorf("%s grammar accepts another canary", name)
+		}
+	}
+}
+
+// LLM94-7: the grammar forces the canary into every completion. Ten ASCII
+// characters cost at most ten tokens in a vocabulary holding every ASCII byte
+// (BPE merges only shorten that); Go still refuses a mismatch.
+func TestCanaryIsShortAndChecked(t *testing.T) {
+	format := regexp.MustCompile(`^m-[0-9a-f]{8}$`)
+	seen := map[string]bool{}
+	for i := range 64 {
+		hash := digest([]byte(strconv.Itoa(i)))
+		canary := CanaryFor(hash)
+		if !format.MatchString(canary) || len(canary) > 10 || canary != CanaryFor(hash) {
+			t.Fatalf("canary %q is not a stable m- plus 8 hex value", canary)
+		}
+		seen[canary] = true
+	}
+	if len(seen) != 64 {
+		t.Fatalf("distinct inputs share canaries: %d of 64", len(seen))
+	}
+	in := protocolInput()
+	canary := CanaryFor(in.InputHash)
+	for _, wrong := range []string{"m-00000000", CanaryFor(strings.Repeat("b", 64)), "moderation-" + strings.Repeat("a", 32), strings.ToUpper(canary), canary + "0"} {
+		raw, _ := json.Marshal(extractedFindings{Findings: []codedFinding{{ReasonCode: "NO_FINDING", EvidenceIDs: []string{"E1"}}}, Canary: wrong})
+		if _, err := decodeFindings(raw, in, canary); !errors.Is(err, ErrCanaryMismatch) {
+			t.Errorf("Stage A accepted canary %q: %v", wrong, err)
+		}
+		wire := strings.Replace(string(proposalWireBytes(protocolProposal(in), in)), `"`+canary+`"`, `"`+wrong+`"`, 1)
+		if _, err := DecodeProposal([]byte(wire), in, canary); !errors.Is(err, ErrCanaryMismatch) {
+			t.Errorf("Stage B accepted canary %q: %v", wrong, err)
+		}
+	}
+}
+
+// LLM94-8: each grammar offers every reason code once, in one fixed-order
+// optional slot, so neither can emit a code twice; Go still refuses duplicates.
+func TestGrammarsCannotRepeatReasonCode(t *testing.T) {
+	in := protocolInput()
+	canary := CanaryFor(in.InputHash)
+	aliases := evidenceAliases(len(in.Context.EvidenceIDs))
+	stageA := parseGBNF(t, stageAGrammarFor(canary, aliases))
+	findings := func(codes ...string) string {
+		list := []codedFinding{}
+		for _, code := range codes {
+			list = append(list, codedFinding{ReasonCode: code, EvidenceIDs: aliases})
+		}
+		raw, _ := json.Marshal(extractedFindings{Findings: list, Canary: canary})
+		return string(raw)
+	}
+	codes := findingCodes(stageAReasons())
+	for _, accepted := range [][]string{nil, {"NO_FINDING"}, codes, {codes[0], codes[len(codes)-1]}, {codes[2]}} {
+		if !stageA.accepts(findings(accepted...)) {
+			t.Errorf("Stage A grammar refuses %v", accepted)
+		}
+	}
+	for _, code := range codes {
+		if stageA.accepts(findings(code, code)) {
+			t.Errorf("Stage A grammar repeats %s", code)
+		}
+		if _, err := decodeFindings([]byte(findings(code, code)), in, canary); !errors.Is(err, ErrInvalidOutput) {
+			t.Errorf("Go accepted a repeated Stage A %s: %v", code, err)
+		}
+	}
+	if stageA.accepts(findings(codes[1], codes[0])) || stageA.accepts(findings("NO_FINDING", "NO_FINDING")) || stageA.accepts(findings("NO_FINDING", codes[0])) {
+		t.Error("Stage A grammar accepts codes out of their fixed order or beside NO_FINDING")
+	}
+
+	proposal := parseGBNF(t, proposalGrammarFor(canary, aliases))
+	wire := func(codes ...string) string {
+		raw, _ := json.Marshal(modelProposal{ItemID: modelItemAlias, Action: ActionNoAction, Confidence: .95, ReasonCodes: append([]string{}, codes...), EvidenceIDs: aliases, Canary: canary})
+		return string(raw)
+	}
+	model := findingCodes(ModelReasonCodes())
+	if !proposal.accepts(wire("NO_FINDING")) || !proposal.accepts(wire(model...)) || !proposal.accepts(wire(model[1], model[4])) || proposal.accepts(wire()) || proposal.accepts(wire(model[1], model[0])) {
+		t.Error("proposal grammar refuses an ordered subset, or accepts an empty or reordered list")
+	}
+	for _, code := range model {
+		if proposal.accepts(wire(code, code)) {
+			t.Errorf("proposal grammar repeats %s", code)
+		}
+		if _, err := DecodeProposal([]byte(wire(code, code)), in, canary); !errors.Is(err, ErrInvalidOutput) {
+			t.Errorf("Go accepted a repeated Stage B %s: %v", code, err)
 		}
 	}
 }

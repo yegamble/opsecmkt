@@ -46,9 +46,12 @@ var errKindNotModelled = errors.New("moderation: this item kind is never sent to
 // context shift discards earlier tokens, including the fixed instructions.
 // The slack covers special tokens counted differently by older /tokenize builds.
 // TestLauncherContextSizeMatchesTokenBudget keeps --ctx-size and this budget equal.
+// Measured replies were about 83 (Stage A) and 92 (Stage B) tokens with the
+// older 43-character canary; a generation that reaches modelPredictTokens is
+// malformed and goes to human review (TestCompletionAtPredictLimitFailsClosed).
 const (
 	modelContextTokens     = 4096
-	modelPredictTokens     = 1536
+	modelPredictTokens     = 256
 	modelSpecialTokenSlack = 8
 	maxTokenizeReply       = 64 << 10
 )
@@ -376,12 +379,40 @@ func findingCodes(codes []string) []string {
 
 func stageAGrammarFor(canary string, aliases []string) string {
 	codes := findingCodes(stageAReasons())
-	return strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{NO_FINDING}}", grammarLiteral("NO_FINDING"), "{{REASONS}}", grammarEnums(codes), "{{MORE}}", strconv.Itoa(len(codes)-1), "{{EVIDENCE_ARRAY}}", grammarEvidenceArray(aliases)).Replace(stageAGrammar)
+	findings := make([]string, len(codes))
+	for i, code := range codes {
+		findings[i] = `"{" ws "\"reason_code\"" ws ":" ws ` + grammarLiteral(code) + ` ws "," ws "\"evidence_ids\"" ws ":" ws evidence-ids ws "}"`
+	}
+	return strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{NO_FINDING}}", grammarLiteral("NO_FINDING"), "{{FINDING_LIST}}", grammarOrderedList("finding-list", findings), "{{EVIDENCE_ARRAY}}", grammarEvidenceArray(aliases)).Replace(stageAGrammar)
 }
 
 func proposalGrammarFor(canary string, aliases []string) string {
 	codes := findingCodes(ModelReasonCodes())
-	return strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{ITEM_ID}}", grammarLiteral(modelItemAlias), "{{ACTIONS}}", grammarEnums(ModelActions()), "{{NO_FINDING}}", grammarLiteral("NO_FINDING"), "{{REASONS}}", grammarEnums(codes), "{{MORE}}", strconv.Itoa(len(codes)-1), "{{EVIDENCE_ARRAY}}", grammarEvidenceArray(aliases)).Replace(proposalGrammar)
+	literals := make([]string, len(codes))
+	for i, code := range codes {
+		literals[i] = grammarLiteral(code)
+	}
+	return strings.NewReplacer("{{CANARY}}", grammarLiteral(canary), "{{ITEM_ID}}", grammarLiteral(modelItemAlias), "{{ACTIONS}}", grammarEnums(ModelActions()), "{{NO_FINDING}}", grammarLiteral("NO_FINDING"), "{{REASON_LIST}}", grammarOrderedList("reason-list", literals), "{{EVIDENCE_ARRAY}}", grammarEvidenceArray(aliases)).Replace(proposalGrammar)
+}
+
+// grammarOrderedList writes rule name as a non-empty, comma-separated list of
+// items, each at most once and in the given order: name-k starts at item k and
+// may continue only with a later item. A grammar-constrained model therefore
+// cannot repeat a reason code, which Go refuses (LLM94-8).
+func grammarOrderedList(name string, items []string) string {
+	starts := make([]string, len(items))
+	for i := range items {
+		starts[i] = name + "-" + strconv.Itoa(i+1)
+	}
+	rules := []string{name + " ::= " + strings.Join(starts, " | ")}
+	for i, item := range items {
+		rule := starts[i] + " ::= " + item
+		if i+1 < len(items) {
+			rule += ` (ws "," ws (` + strings.Join(starts[i+1:], " | ") + `))?`
+		}
+		rules = append(rules, rule)
+	}
+	return strings.Join(rules, "\n")
 }
 
 func grammarLiteral(value string) string { return strconv.Quote(strconv.Quote(value)) }
@@ -395,13 +426,17 @@ func grammarEnums(values []string) string {
 }
 
 // Both stages may emit only this request's finite evidence identifiers. Empty
-// contexts permit only []; arrays are bounded at decoding and again in Go.
+// contexts permit only []; an array holds at most as many entries as there are
+// aliases (Go refuses a repeated alias) and is bounded again at decoding.
 func grammarEvidenceArray(values []string) string {
 	if len(values) == 0 {
 		return `"[" ws "]"`
 	}
 	identifiers := grammarEnums(values)
-	return `"[" ws ((` + identifiers + `) (ws "," ws (` + identifiers + `)){0,31})? ws "]"`
+	if len(values) == 1 {
+		return `"[" ws (` + identifiers + `)? ws "]"`
+	}
+	return `"[" ws ((` + identifiers + `) (ws "," ws (` + identifiers + `)){0,` + strconv.Itoa(min(len(values), MaxEvidenceIDs)-1) + `})? ws "]"`
 }
 
 // complete counts the prompt with the runtime's own tokenizer, refuses one that

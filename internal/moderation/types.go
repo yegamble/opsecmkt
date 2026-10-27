@@ -11,8 +11,8 @@ import (
 )
 
 // PromptVersion names the prompts, grammars, allowlists and request limits.
-// v1 through v4 pins are refused; their stored decisions remain readable.
-const PromptVersion = "moderation-v5"
+// v1 through v5 pins are refused; their stored decisions remain readable.
+const PromptVersion = "moderation-v6"
 
 const (
 	ActionNoAction       = "NO_ACTION"
@@ -39,7 +39,7 @@ func ModelActions() []string {
 // ReasonCodes is the complete vocabulary of stored decisions, including codes
 // that only Go may add. Use ModelReasonCodes for what a model may assert.
 func ReasonCodes() []string {
-	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_NOT_USED", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED"}
+	return []string{"SPAM_TEMPLATE", "SCAM_TEMPLATE", "DUPLICATE_TEXT", "DUPLICATE_IMAGE", "PRICE_OUTLIER", "INCOMPLETE_LISTING", "INVALID_FIELDS", "ORDER_STATE_VIOLATION", "TIMER_DUE", "ABUSE_RATE", "INJECTION_SUSPECTED", "UNICODE_MIXED_SCRIPT", "ZERO_WIDTH_OBFUSCATION", "OFF_PLATFORM_CONTACT", "INPUT_TRUNCATED", "DETERMINISTIC_CONFLICT", "LOW_CONFIDENCE", "NEW_ACTOR", "MONEY_INVOLVED", "NOVEL_CASE", "MODEL_ABSENT", "MODEL_NOT_USED", "MODEL_FAILURE", "INVALID_OUTPUT", "CANARY_MISMATCH", "NO_FINDING", "HUMAN_REVIEW", "POLICY_BOUNDARY", "SLA_EXPIRED", "EXTERNAL_DESTINATION"}
 }
 
 // ModelReasonCodes is the final-proposal allowlist: content observations a
@@ -180,8 +180,9 @@ type Decision struct {
 }
 
 // CanaryFor detects protocol mismatches; it is not a secret, authentication
-// token, or proof that a prompt injection was contained.
+// token, or proof that a prompt injection was contained. The grammar forces it
+// into every completion, so it is ten ASCII characters: at most ten tokens.
 func CanaryFor(inputHash string) string {
-	h := sha256.Sum256([]byte("moderation-canary-v2:" + inputHash))
-	return "moderation-" + hex.EncodeToString(h[:16])
+	h := sha256.Sum256([]byte("moderation-canary-v3:" + inputHash))
+	return "m-" + hex.EncodeToString(h[:4])
 }

@@ -15,6 +15,33 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Moderation model proposals always wait for a human (moderation-v6, A-684)
+
+No migration. The moderation protocol is now `moderation-v6`, and the controller refuses v1–v5 pins. **If you start
+`moderation-worker` with `--prompt-version moderation-v5`, change it to `moderation-v6`** (or drop the flag, which
+defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Without `--model`
+nothing else changes.
+
+With `--model` on:
+
+- A model result is never `AUTO_APPLY`. A clean, confident `NO_ACTION`/`NO_FINDING` classification of a review,
+  dispute or payment flag now waits in the human queue like any other proposal, so expect more queued proposals and
+  plan review staffing (and `--max-pending`) accordingly. No evaluation yet shows that a model's judgments or its
+  stated confidence are fit to clear an item; an opt-in gated on a measured evaluation is separate work (A-692).
+  Stored `AUTO_APPLY` decisions keep their bytes and still show as automatic history.
+- Both grammars now end at the closing brace and allow at most four whitespace characters in a row. The earlier
+  grammars ended in unbounded whitespace, so on llama.cpp b1-9ff0d7e90 every completion ran to its output limit and
+  every modelled item became `MODEL_FAILURE`. Each completion now asks for at most 256 tokens (was 1536); a prompt may
+  therefore use up to 3832 of the launcher's 4096 tokens. Re-run your selected runtime's checks after upgrading.
+- The canary is `m-` plus 8 hex characters (was `moderation-` plus 32), at most 10 tokens per completion.
+- Each grammar lists every reason code once, in allowlist order, so a model can no longer repeat one (Go still refuses
+  a repeat).
+
+Whether or not `--model` is on, an item with a recognised external destination (onion, I2P, Telegram, Session,
+SimpleX, XMPP, Monero or checksum-valid Bitcoin address) now records the Go-only reason code `EXTERNAL_DESTINATION`
+("a recognised external contact or payment destination") beside `HUMAN_REVIEW`, so such a listing no longer looks
+identical to a clean one in the queue. Routing and risk scores are unchanged; no model can assert the code.
+
 ## A market with a Monero escrow fee can release again (A-681)
 
 **Fix** (A-681). No migration and no new setting. On a market with `ESCROW_XMR_FEE_BPS` set, a Monero escrow release
@@ -166,8 +193,9 @@ paid until the ban is lifted.
 
 ## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
 
-No migration. The moderation protocol is now `moderation-v5`, and the controller refuses v1–v4 pins. **If you start
-`moderation-worker` with `--prompt-version moderation-v4`, change it to `moderation-v5`** (or drop the flag, which
+No migration. The moderation protocol became `moderation-v5` (the current pin is `moderation-v6`; see A-684 above),
+and the controller refused v1–v4 pins. **If you start
+`moderation-worker` with `--prompt-version moderation-v4`, change it to the current version** (or drop the flag, which
 defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Grammars and model
 reason codes are unchanged, so earlier native grammar checks still apply.
 
@@ -545,7 +573,7 @@ launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
 and human review. Stored v1/v2 decisions keep their bytes and still render.
 
 The `moderation-v4` protocol refused v1, v2 and v3 pins; the current pin is
-`moderation-v5` (see the section above). Prompt
+`moderation-v6` (see A-684 above). Prompt
 data now writes `[` and `]` inside JSON strings as `\u005b` and `\u005d` (same JSON
 meaning), because llama.cpp's `/completion` parses special tokens in the prompt
 and bracket-spelled control tokens such as `[INST]` in vendor text could

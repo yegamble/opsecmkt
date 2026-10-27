@@ -62,7 +62,7 @@ facts increase uncertainty.
 | Injection suspicion or a high-impact proposal | `ESCALATE_ADMIN` | `HOLD` |
 | Money, punitive action, insufficient actor age, low confidence, conflicting or missing evidence | `QUEUE_HUMAN` or `ESCALATE_ADMIN`, according to impact | `HOLD` |
 | Model missing, timeout, invalid output, failed canary or failed reference checks | Durable human review; suspicious output escalates | `HOLD` |
-| Validated, explicitly enumerated benign result | `AUTO_APPLY` only where the application has an independently implemented benign executor | No new action |
+| Validated, explicitly enumerated benign result | `AUTO_APPLY` only where the application has an independently implemented benign executor and a measured evaluation supports it; moderation-v6 has neither for model proposals, so they route `QUEUE_HUMAN` | No new action |
 | Expired or otherwise unusable proposal | `HOLD` | `HOLD` |
 | Stale content during processing | `HOLD`; preserve `ESCALATE_ADMIN` for an existing high-risk/injection signal | `HOLD` |
 
@@ -91,9 +91,14 @@ authority. No dead-man punitive or money action is introduced.
    lengths, evidence references and exact reserved canary token. Grammar
    constraints limit sampling syntax; they do not establish correctness.
    Truncation, interruption or a runtime failure can still return incomplete
-   output, which Go must reject. Both current templates passed a pinned native
-   upstream parser check (moderation-v3: 25 cases, 6 accepted and 19 rejected,
-   plus an independent 22-case rebuild); see the [validation evidence](evidence/moderation-agent-validation.md).
+   output, which Go must reject. A grammar must also terminate: each root ends
+   at the closing brace and every repetition, whitespace included, is bounded,
+   so only end-of-sequence can follow `}`. The moderation-v3 to v5 templates
+   passed a pinned native parser check (25 cases plus an independent 22-case
+   rebuild) yet ended in unbounded whitespace, and on a real runtime every
+   completion ran to its output limit: a parser check shows acceptance, not
+   termination. The moderation-v6 templates passed 35 cases on the same parser,
+   including refusal of anything after `}`; see the [validation evidence](evidence/moderation-agent-validation.md).
    The selected deployed runtime's behavior remains an operator acceptance check.
 6. Recheck deterministic facts against the current database before recording or
    applying a result. Stale entity revisions must not mutate a newer entity.
