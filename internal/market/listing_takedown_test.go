@@ -336,3 +336,35 @@ func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
 		t.Fatalf("restored listing not delivered automatically: %s", x.state(again))
 	}
 }
+
+// A-652e: a banned vendor keeps the vendor role, so the restore also checks the ban. While the owner is banned the
+// restore of a taken-down listing is refused (409) and nothing changes: the listing stays archived with its takedown
+// reason, the vendor gets no notice and no audit row is written. Once the ban is lifted the restore works again.
+func TestAdminRestoreRefusedForBannedVendor(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("trb_admin", "admin")
+	vendorID, _ := e.user("trb_vendor", "vendor")
+	p := e.product(vendorID, "physical")
+	edit := "/listing-edit?id=" + p
+	take := takedownForm(t, e.body("GET", edit, admin, nil, 200), "takedown", p)
+	e.check(e.do("POST", "/admin/listing", admin, withField(take, "reason", takedownReason)), 303)
+	agExpect(e, "/admin/ban", admin, banForm("ban", "trb_vendor", testBanReason), 303, "")
+
+	restore := takedownForm(t, e.body("GET", edit, admin, nil, 200), "restore", p)
+	audits, notes := agInt(e, "SELECT count(*) FROM audit_events"), agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", vendorID)
+	agExpect(e, "/admin/listing", admin, restore, 409, "banned")
+	if archived, reason := takenDown(e, p); !archived || reason != takedownReason {
+		t.Fatalf("a refused restore changed the listing: archived=%v reason=%q", archived, reason)
+	}
+	if agInt(e, "SELECT count(*) FROM audit_events") != audits || agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", vendorID) != notes {
+		t.Fatal("a refused restore wrote an audit row or a notice")
+	}
+	mustNotContain(t, e.body("GET", "/", randomToken(), nil, 200), `href="/product?id=`+p)
+
+	agExpect(e, "/admin/ban", admin, banForm("unban", "trb_vendor", testLiftReason), 303, "")
+	restore = takedownForm(t, e.body("GET", edit, admin, nil, 200), "restore", p)
+	e.check(e.do("POST", "/admin/listing", admin, restore), 303)
+	if archived, reason := takenDown(e, p); archived || reason != "" {
+		t.Fatalf("restore after the ban was lifted: archived=%v reason=%q", archived, reason)
+	}
+}

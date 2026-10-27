@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"html"
 	"net/url"
 	"strconv"
@@ -642,4 +643,59 @@ func TestBanUnbanEditHeldInHoldMode(t *testing.T) {
 	if reviewState(e, e.postListing(vendor, "New lantern after the ban")) != "pending" {
 		t.Fatal("the vendor's new listing after a ban and its lifting skipped review")
 	}
+}
+
+// A-652e: after a ban every listing of the vendor stays archived and out of the public catalogue, whatever staff or
+// the moderation worker do next: approving the vendor's pending listing is refused (it is archived), the restore of
+// its taken-down listing is refused (the owner is banned), so is an administrator's plain restore of a listing the ban
+// archived, and one moderation worker pass over its queued listings changes no listing.
+func TestBanListingsStayArchived(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("bsa_admin", "admin")
+	_, moderator := e.user("bsa_mod", "moderator")
+	vendorID, vendor := e.user("bsa_vendor", "vendor")
+	if err := SetModerationEnabled(context.Background(), e.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	titles := []string{"Banned active lamp", "Banned taken-down lamp", "Banned pending lamp"}
+	active := e.postListing(vendor, titles[0])
+	taken := e.postListing(vendor, titles[1])
+	setListingReviewMode(e, "hold")
+	pending := e.postListing(vendor, titles[2])
+	if reviewState(e, active) != "approved" || reviewState(e, pending) != "pending" {
+		t.Fatal("fixture review states")
+	}
+	take := takedownForm(t, e.body("GET", "/listing-edit?id="+taken, admin, nil, 200), "takedown", taken)
+	e.check(e.do("POST", "/admin/listing", admin, withField(take, "reason", takedownReason)), 303)
+	catalog := e.body("GET", "/", randomToken(), nil, 200)
+	mustContain(t, catalog, titles[0])
+	approve := formOn(t, e.body("GET", "/moderator", moderator, nil, 200), "/moderator/listing-review", `name="id" value="`+pending+`"`, `name="action" value="approve"`)
+	approve.Set("password", testPassword)
+	agExpect(e, "/admin/ban", admin, banForm("ban", "bsa_vendor", testBanReason), 303, "")
+
+	stayArchived := func(after string) {
+		t.Helper()
+		if n := agInt(e, "SELECT count(*) FROM products WHERE vendor_id=$1 AND NOT archived", vendorID); n != 0 {
+			t.Fatalf("after %s: %d listing(s) of the banned vendor are not archived", after, n)
+		}
+		mustNotContain(t, e.body("GET", "/", randomToken(), nil, 200), titles...)
+	}
+	stayArchived("the ban")
+	agExpect(e, "/moderator/listing-review", moderator, approve, 409, "not awaiting review")
+	stayArchived("a staff approval")
+	if reviewState(e, pending) != "pending" {
+		t.Fatal("a refused approval changed the review state")
+	}
+	agExpect(e, "/admin/listing", admin, takedownForm(t, e.body("GET", "/listing-edit?id="+taken, admin, nil, 200), "restore", taken), 409, "banned")
+	stayArchived("an administrator's restore")
+	agExpect(e, "/listings/restore", admin, form("id", active), 409, "banned")
+	stayArchived("an administrator's plain restore of a listing the ban archived")
+	if _, reason := takenDown(e, taken); reason != takedownReason {
+		t.Fatalf("takedown reason after a refused restore: %q", reason)
+	}
+	n, err := moderationTestWorker(e).Pass(context.Background(), 50)
+	if err != nil || n == 0 {
+		t.Fatalf("moderation pass: %d job(s), %v", n, err)
+	}
+	stayArchived("a moderation worker pass")
 }
