@@ -262,9 +262,14 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 		if banned, err := orderVendorBanned(ctx, c.Tx, o.ID); err != nil {
 			return actionResult{}, err
 		} else if banned {
+			// PAY90-3: the hold can end in a refund to the buyer (A-652f), so the note no longer says it cannot be undone.
+			days, err := holdRefundDaysShown(ctx, c.Tx)
+			if err != nil {
+				return actionResult{}, err
+			}
 			notice = "escrow-xmr-held"
-			detail = "The buyer confirmed receipt (Monero escrow). Your account is closed, so the market holds the release of the escrowed coins: it builds and sends nothing while the account is banned."
-			note = "Receipt confirmed by the buyer (Monero escrow): the order is completed. " + xmrHeldNote + " This cannot be undone."
+			detail = "The buyer confirmed receipt (Monero escrow). Your account is closed, so the market holds the release of the escrowed coins: it builds and sends nothing while the account is banned. " + holdRefundLater(days)
+			note = "Receipt confirmed by the buyer (Monero escrow): the order is completed. " + xmrHeldNote + " " + holdRefundLater(days)
 		}
 		ctx = withNoticeDetail(withConfirmReceipt(ctx), o.ID, stateCompleted, detail)
 		if _, err = c.A.transition(ctx, c.Tx, o.ID, stateShipped, stateCompleted, c.User, note); err != nil {

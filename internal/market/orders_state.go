@@ -32,10 +32,16 @@ const (
 	// admin_ban_orders.go). actorRoles never returns it: transition adds it only for the order and administrator that
 	// banOrdersAction marked (withBanRefund), so /orders/cancel, the order page and every other path cannot use it.
 	roleBanRefund = "ban_refund"
+	// roleHoldRefund is an administrator's refund of a release held for a banned vendor once the hold has lasted
+	// ban_hold_refund_days (A-652f, escrow_xmr_hold_refund.go): the one edge out of completed and resolved. As with
+	// roleBanRefund, actorRoles never returns it: transition adds it only for the order and administrator that
+	// holdRefundAction marked (withHoldRefund).
+	roleHoldRefund = "hold_refund"
 )
 
-// transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing. The buyer's
-// paid -> cancelled is escrowOnly (the no-ship cancel, P2-R5).
+// transitions[from][to] lists the actor roles allowed to make that move. Terminal states map to nothing, except the
+// marked staff edge roleHoldRefund from completed and resolved to cancelled (A-652f). The buyer's paid -> cancelled is
+// escrowOnly (the no-ship cancel, P2-R5).
 var transitions = map[string]map[string][]string{
 	stateDraft:           {stateAwaitingPayment: {roleBuyer}, stateCancelled: {roleBuyer}},
 	stateAwaitingPayment: {statePaid: {roleSystem}, stateCancelled: {roleBuyer, roleVendor, roleSystem, roleBanRefund}}, // system: payment window expired
@@ -43,8 +49,8 @@ var transitions = map[string]map[string][]string{
 	stateShipped:         {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
 	stateDelivered:       {stateCompleted: {roleBuyer, roleSystem}, stateDisputed: {roleBuyer, roleVendor}},           // system: escrowOnly
 	stateDisputed:        {stateResolved: {roleModerator}, stateCompleted: {roleBuyer}, stateCancelled: {roleVendor}}, // A-166: party concessions use only /disputes/concede.
-	stateCompleted:       {},
-	stateResolved:        {},
+	stateCompleted:       {stateCancelled: {roleHoldRefund}},
+	stateResolved:        {stateCancelled: {roleHoldRefund}},
 	stateCancelled:       {},
 }
 
@@ -87,13 +93,24 @@ func withBanRefund(ctx context.Context, orderID, actorID string) context.Context
 	return context.WithValue(ctx, banRefundKey{}, banRefund{orderID, actorID})
 }
 
-// transitionRoles is actorRoles plus roleBanRefund for the marked cancellation (withBanRefund) of a Monero escrow order
-// by an administrator who is not party to it.
+type holdRefundKey struct{}
+
+// withHoldRefund marks one order's cancellation by administrator actorID as the refund of a release held for a banned
+// vendor (roleHoldRefund). Only holdRefundAction sets it, after its own checks.
+func withHoldRefund(ctx context.Context, orderID, actorID string) context.Context {
+	return context.WithValue(ctx, holdRefundKey{}, banRefund{orderID, actorID})
+}
+
+// transitionRoles is actorRoles plus roleBanRefund or roleHoldRefund for the marked cancellation (withBanRefund,
+// withHoldRefund) of a Monero escrow order by an administrator who is not party to it.
 func transitionRoles(ctx context.Context, o *Order, actor *User, to string) []string {
 	roles := actorRoles(o, actor)
-	if m, ok := ctx.Value(banRefundKey{}).(banRefund); ok && actor != nil && actor.Role == "admin" && m.orderID == o.ID && m.actorID == actor.ID &&
-		to == stateCancelled && o.xmrEscrow() && slices.Equal(roles, []string{roleModerator}) {
+	staff := actor != nil && actor.Role == "admin" && to == stateCancelled && o.xmrEscrow() && slices.Equal(roles, []string{roleModerator})
+	if m, ok := ctx.Value(banRefundKey{}).(banRefund); ok && staff && m.orderID == o.ID && m.actorID == actor.ID {
 		roles = append(roles, roleBanRefund)
+	}
+	if m, ok := ctx.Value(holdRefundKey{}).(banRefund); ok && staff && m.orderID == o.ID && m.actorID == actor.ID {
+		roles = append(roles, roleHoldRefund)
 	}
 	return roles
 }

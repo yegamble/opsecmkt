@@ -379,7 +379,12 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 		if _, err = tx.ExecContext(ctx, "UPDATE payments SET "+claim+"=NULL,updated=now() WHERE "+claim+"=$1", liveID); err != nil {
 			return err
 		}
-		notes = append(notes, "The release to the vendor built when the order was shipped is cancelled: it was not final, and any signature on it no longer counts.")
+		note := "The release to the vendor built when the order was shipped is cancelled: it was not final, and any signature on it no longer counts."
+		if _, ok := ctx.Value(holdRefundKey{}).(banRefund); ok {
+			// A-652f: the release held for the banned vendor (a claim or the request at shipment), never built.
+			note = "The release to the vendor, held while the vendor's account is closed, is cancelled: the market never built or sent it."
+		}
+		notes = append(notes, note)
 	}
 	if n > 0 {
 		note := "Escrow refund requested: the market builds a transaction returning the escrowed " + amount(sum, 8) + " BTC, less the network fee, to the buyer's refund address given at checkout; the buyer or the vendor then signs it on the order page. Nothing is sent yet."

@@ -117,7 +117,10 @@ func staffReviewer(ctx context.Context, a *App, o *Order, u *User) (bool, error)
 		return true, nil
 	}
 	var flagged bool
-	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM disputes WHERE order_id=$1) OR EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged) OR "+escrowStaffAlert("$1"), o.ID).Scan(&flagged)
+	// A-652f: an administrator also reads a banned vendor's finished Monero escrow order whose release was never sent
+	// (holdRefundOrderSQL), to refund a held release.
+	err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM disputes WHERE order_id=$1) OR EXISTS(SELECT 1 FROM payments WHERE order_id=$1 AND flagged) OR "+escrowStaffAlert("$1")+
+		" OR $2='admin' AND EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=$1 AND "+holdRefundOrderSQL+")", o.ID, u.Role).Scan(&flagged)
 	return flagged, err
 }
 

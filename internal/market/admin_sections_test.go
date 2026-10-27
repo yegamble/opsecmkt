@@ -21,7 +21,7 @@ var adminPanelSection = map[string]string{
 	"getting-started": "/admin", "admin-sections": "/admin",
 	"user-directory": "/admin/users", "assign-role": "/admin/users", "reset-factors": "/admin/users", "suspend": "/admin/users", "ban": "/admin/users", "staff-roster": "/admin/users",
 	"vendors": "/admin/vendors", "vendor-policy": "/admin/vendors", "vendor-queue": "/admin/vendors", "vendor-verified": "/admin/vendors",
-	"payment-providers": "/admin/payments", "xmr-escrow-node": "/admin/payments", "escrow-release-days": "/admin/payments",
+	"payment-providers": "/admin/payments", "xmr-escrow-node": "/admin/payments", "escrow-release-days": "/admin/payments", "ban-hold-refund-days": "/admin/payments",
 	"xmr-escrow-recovery": "/admin/payments", "payment-intake": "/admin/payments", "escrow-readiness": "/admin/payments",
 	"access": "/admin/security", "sign-in-protection": "/admin/security", "paused-handles-heading": "/admin/security",
 	"branding": "/admin/site", "staff-contact": "/admin/site",
@@ -191,6 +191,7 @@ var adminRedirectsCoveredElsewhere = map[string]string{
 
 	"/admin/escrow-xmr-settled-by-hand": "TestXMREscrowSettledByHand: /moderator, because the order page may no longer be readable once its alert clears",
 	"/admin/ban-orders":                 "TestBanOrdersRefundsUnpaidAndUnshipped: the banned account's page (/admin/users?handle=…#ban-orders), the only page holding its form",
+	"/admin/escrow-xmr-hold-refund":     "TestHoldRefundAfterNDays: the banned vendor's account page (/admin/users?handle=…#ban-orders), because the cancelled order's page may no longer be readable",
 }
 
 // A-542: every admin post that succeeds returns to the section holding its form, with its notice's fragment, and a
@@ -229,6 +230,7 @@ func TestAdminActionRedirectsToSection(t *testing.T) {
 		{"/admin/suspend", url.Values{"action": {"suspend"}, "handle": {"redirect_suspend"}}, "/admin/users#suspend"},
 		{"/admin/ban", url.Values{"action": {"ban"}, "handle": {"redirect_ban"}, "reason": {"Redirect check reason."}}, "/admin/users#ban"},
 		{"/admin/payment-intake", url.Values{"currency": {"XMR"}, "enabled": {"false"}}, "/admin/payments#payment-intake"},
+		{"/admin/ban-hold-refund-days", url.Values{"hold_refund_days": {"120"}}, "/admin/payments#ban-hold-refund-days"},
 		{"/admin/access", url.Values{"site_access": {"public"}, "registrations": {"closed"}}, "/admin/security#access"},
 		{"/admin/pgp-access", url.Values{"allow_login_without_pgp": {"true"}}, "/admin/security#pgp-access"},
 		{"/admin/captcha", url.Values{"captcha_required": {"true"}}, "/admin/security"},
