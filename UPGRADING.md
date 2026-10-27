@@ -129,8 +129,8 @@ needed* notice for the order, and the order page says the release is held. Refun
 a release already built or sent before the ban is sent and followed as before, and no other address is ever paid.
 Lifting the ban is the only step: the next pass builds and sends the release. A release already requested for a vendor
 banned before the upgrade is held from the first pass on the new build. A later administrator action, one order at a
-time, is to refund a release held for a long time to the order's buyer refund address instead (A-652f); it is not
-available yet.
+time, is to refund a release held for a long time to the order's buyer refund address instead (A-652f, see
+above).
 
 Migration 149 replaces the body of the database function `escrow_market_may_sign` (migration 081), which the trigger
 `xmr_settlements_market_fits` (migration 084) reads before a Monero settlement's transaction is stored, so that for a
