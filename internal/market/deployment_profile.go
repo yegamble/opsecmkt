@@ -5,6 +5,9 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // CheckDeploymentProfile enforces the production service contract before opening
@@ -72,6 +75,37 @@ func CheckDeploymentProfile(getenv func(string) string) error {
 		}
 	}
 	return nil
+}
+
+// DatabaseTransportVerified reports whether every host a PostgreSQL DSN can connect to is a Unix socket, a loopback
+// address, or reached with sslmode=verify-full (A-682). It reads the DSN as the driver does, so a key/value DSN,
+// PGSSLMODE and every fallback host (multiple hosts, or the plaintext retry of sslmode=prefer and allow) count.
+// verify-full is the only mode with certificate and host-name verification; the driver sets no other mode up without
+// InsecureSkipVerify. Unlike separateHost, a single-label host name is remote here: it can resolve anywhere. The
+// production profile (CheckDeploymentProfile) keeps its own, URL-only check. It opens no connection.
+func DatabaseTransportVerified(dsn string) bool {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return false
+	}
+	hosts := append([]*pgconn.FallbackConfig{{Host: cfg.Host, Port: cfg.Port, TLSConfig: cfg.TLSConfig}}, cfg.Fallbacks...)
+	for _, h := range hosts {
+		if strings.HasPrefix(h.Host, "/") || loopbackHost(profileHost(h.Host)) {
+			continue
+		}
+		if h.TLSConfig == nil || h.TLSConfig.InsecureSkipVerify || h.TLSConfig.ServerName == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func loopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func profileHost(host string) string {

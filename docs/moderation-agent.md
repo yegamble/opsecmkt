@@ -16,7 +16,24 @@ for ordinary application startup.
 
 Prepare a private, one-line database URL file owned by the controller service
 account with mode `0600`. Keep it out of prompts, shell history and inference
-mounts. Run the separately supervised controller from a clean environment:
+mounts. The controller has the application's database authority, so a remote
+database must use certificate and host-name verification, as the application's
+production profile requires:
+
+```text
+postgres://moderation@db.internal.example:5432/market?sslmode=verify-full&sslrootcert=/secure/moderation/postgres-ca.pem
+```
+
+Before connecting, the controller refuses any DSN whose host, or any fallback
+host, is neither a Unix socket (`host=/run/postgresql`) nor a loopback address
+unless it uses `sslmode=verify-full`, with `moderation-worker: remote database
+requires sslmode=verify-full`. This does not depend on `OPSECMKT_PROFILE`, which
+`env -i` drops. `require`, `verify-ca`, `prefer`, `allow` and a missing
+`sslmode` are refused for a remote host: they either send the startup message in
+plaintext or accept any certificate. Name the host as it appears in the server
+certificate, and keep the CA file readable only by the controller account.
+
+Run the separately supervised controller from a clean environment:
 
 ```sh
 env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
@@ -39,7 +56,11 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --disable --database-url-file /secure/moderation/database-url
 ```
 
-This preserves existing jobs, proposals and evidence. Do not delete tables or
+This preserves existing jobs, proposals and evidence. Turning capture on or off
+writes one audit row without an actor, "Moderation capture enabled by host
+command" or "Moderation capture disabled by host command", only when the stored
+setting changes: restarting a worker while capture is already on, or a repeated
+`--disable`, writes none. Do not delete tables or
 rerun setup to clear a queue. `--replay` revisits eligible legacy snapshots;
 completed metadata-only jobs are skipped and their count is reported. They
 cannot be reinterpreted as empty content or as a newer source revision. An
@@ -68,6 +89,56 @@ The worker reads only its selected database and optional escalation-signing
 files. It does not import the application's other `_FILE` secrets. The trusted
 controller still has database authority; process/file permissions must prevent
 the model from obtaining it.
+
+## Supervise the controller
+
+Capture keeps queueing jobs in marketplace transactions whether or not a worker
+runs, so run the long-lived controller under a supervisor. A failed pass, for
+example while PostgreSQL restarts, does not end it: it logs
+`moderation-worker: pass unavailable; durable jobs preserved; retrying in 5s`
+and retries after 5 seconds, doubling after each further failure up to the pass
+interval or 5 minutes, whichever is shorter. The first pass after reconnecting
+records the failure class **Database unavailable** and the outage's start (the
+controller's clock) and end (the database's) on the panel. The worker cannot
+tell causes apart, so any failed pass is recorded this way; outside a programming
+error, a failed pass is a database or connection failure. Jobs and leases are durable throughout. `--once` still exits
+with an error when its pass fails, and configuration errors (flags, a refused
+database transport, a missing migration, an unreachable database at startup)
+exit at once; the supervisor restarts the process.
+
+A systemd unit, for example `/etc/systemd/system/opsecmkt-moderation.service`:
+
+```ini
+[Unit]
+Description=OPSEC Market moderation controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=opsecmkt-moderation
+Group=opsecmkt-moderation
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin /opt/opsecmkt/opsecmkt moderation-worker --enabled --database-url-file /secure/moderation/database-url
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Adjust the account, paths and any model options to your installation, then
+`systemctl daemon-reload` and `systemctl enable --now opsecmkt-moderation`.
+Every start runs `--enabled`, so stop and disable the unit
+(`systemctl disable --now opsecmkt-moderation`) before running `--disable`;
+otherwise the next restart turns capture on again (and audits it).
+
+The private panel shows **Capture: on** or **Capture: off** from the stored
+setting and the stored pass interval. While capture is on and the last pass is
+older than three intervals plus five minutes, it and the private `/admin`
+overview show "No pass for N minutes; the worker may have stopped." (or "No pass
+reported yet" before the first one). A pass that spends longer than that margin
+in model calls can show it briefly. Capture off shows the local model as not in
+use rather than absent, and no warning.
 
 ## Optional local inference
 
@@ -448,7 +519,10 @@ controller logs `moderation-worker: stored moderation budget is higher; flag
 ignored (--max-records)` (or `--max-reserved-bytes`) and starts with the stored
 value, instead of lowering it or exiting below the allocations made since. A
 higher flag still raises it. `--max-pending` is applied as given, never below the
-active jobs. A no-flag restart can drain prepaid legacy work even when
+active jobs. A flag that changes the stored limits writes one audit row without
+an actor, "Moderation limits changed from max-pending 256, max-records 4096,
+max-reserved-bytes 268435456 to max-pending 300, max-records 4096,
+max-reserved-bytes 268435456 by host command"; flags that change nothing write none. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
 
@@ -628,8 +702,10 @@ rows remain unchanged.
 ## Review and service inventory
 
 On the private administrator connection, open `/admin/moderation`. Ordinary
-moderators and public ingress cannot reach this queue. It shows bounded health
-classes, prompt and weights pins, last pass, job/proposal/escalation counts and
+moderators and public ingress cannot reach this queue. It shows the capture
+state, bounded health classes, prompt and weights pins, last pass, pass interval,
+the last database outage the worker recovered from, a stopped-worker warning
+([supervision](#supervise-the-controller)), job/proposal/escalation counts and
 injection-suspicion counts. Endpoint identities and raw transport errors are
 omitted. Current status is the last worker observation, not live runtime
 attestation. **Accept**, **Dismiss** and **Hold** annotate a proposal only; the

@@ -110,6 +110,13 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 	if err != nil {
 		return errors.New("moderation-worker: database configuration invalid")
 	}
+	// The worker holds the application's database authority and runs from a clean environment, so the production
+	// profile's DSN check (OPSECMKT_PROFILE) does not reach it: refuse an unverified remote connection here, before
+	// the first dial (A-682).
+	if !market.DatabaseTransportVerified(dsn) {
+		db.Close()
+		return errors.New("moderation-worker: remote database requires sslmode=verify-full")
+	}
 	defer db.Close()
 	db.SetMaxOpenConns(3)
 	db.SetMaxIdleConns(2)
@@ -125,9 +132,10 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		fmt.Fprintln(out, "moderation-worker: enqueueing disabled; durable jobs preserved")
 		return nil
 	}
-	// Migration 146 provides the backfill sweep every pass runs.
+	// Migration 146 provides the backfill sweep every pass runs, and 152 the status columns every pass writes (without
+	// them each pass would fail and be retried rather than report the missing upgrade).
 	var migrated bool
-	if err = db.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=146)`).Scan(&migrated); err != nil || !migrated {
+	if err = db.QueryRowContext(checkCtx, `SELECT count(*)=2 FROM schema_migrations WHERE version IN (146,152)`).Scan(&migrated); err != nil || !migrated {
 		return errors.New("moderation-worker: application migrations required before enabling queue")
 	}
 	cfg := moderation.DefaultConfig()
@@ -139,7 +147,7 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 	cfg.ConfidenceFloor = *confidence
 	cfg.NewActorDays = *newActorDays
 	cfg.AbuseThreshold = *abuseThreshold
-	w := market.ModerationWorker{DB: db, Engine: moderation.Engine{Config: cfg}, Lease: 2 * time.Minute}
+	w := market.ModerationWorker{DB: db, Engine: moderation.Engine{Config: cfg}, Lease: 2 * time.Minute, Interval: *interval}
 	if (*recipientPath == "") != (*signingPath == "") {
 		return errors.New("moderation-worker: escalation recipient and signing key must both be set")
 	}
@@ -181,26 +189,52 @@ func runModerationWorker(ctx context.Context, args []string, out io.Writer) erro
 		}
 		fmt.Fprintf(out, "moderation-worker: replay queued=%d skipped_metadata_only=%d\n", queued, skipped)
 	}
+	// A failed pass (a database restart or outage) is retried with a bounded backoff rather than ending the worker,
+	// which would leave capture enqueueing with nothing processing it (A-683). Every job stays durable; the first
+	// pass after the outage records it as db_unavailable. Configuration errors above still exit.
+	var backoff time.Duration
 	for {
 		processed, passErr := w.Pass(ctx, *batch)
+		wait := *interval
 		if passErr != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return errors.New("moderation-worker: pass unavailable; durable jobs preserved")
+			if *once {
+				return errors.New("moderation-worker: pass unavailable; durable jobs preserved")
+			}
+			backoff = moderationWorkerBackoff(backoff, *interval)
+			wait = backoff
+			fmt.Fprintf(out, "moderation-worker: pass unavailable; durable jobs preserved; retrying in %s\n", backoff)
+		} else {
+			backoff = 0
+			fmt.Fprintf(out, "moderation-worker: processed=%d\n", processed)
+			if *once {
+				return nil
+			}
 		}
-		fmt.Fprintf(out, "moderation-worker: processed=%d\n", processed)
-		if *once {
+		if moderationWorkerSleep(ctx, wait) != nil {
 			return nil
-		}
-		timer := time.NewTimer(*interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil
-		case <-timer.C:
 		}
 	}
+}
+
+// moderationWorkerSleep waits d or until ctx ends (tests replace it).
+var moderationWorkerSleep = func(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// moderationWorkerBackoff is the wait after a failed pass: 5 seconds, doubling with each consecutive failure, never
+// more than the pass interval or 5 minutes, so a recovered database is used again within one interval.
+func moderationWorkerBackoff(previous, interval time.Duration) time.Duration {
+	return min(max(2*previous, 5*time.Second), interval, 5*time.Minute)
 }
 
 // applyModerationCapacityFlags stores the explicitly named limits. Restarting a controller preserves the stored
@@ -219,6 +253,7 @@ func applyModerationCapacityFlags(ctx context.Context, db *sql.DB, limits market
 	if err = tx.QueryRowContext(ctx, `SELECT max_pending,max_records,max_bytes FROM moderation_capacity WHERE singleton FOR UPDATE`).Scan(&current.MaxPending, &current.MaxRecords, &current.MaxBytes); err != nil {
 		return errors.New("moderation-worker: capacity configuration unavailable")
 	}
+	stored := current
 	if named["max-pending"] {
 		current.MaxPending = limits.MaxPending
 	}
@@ -239,10 +274,21 @@ func applyModerationCapacityFlags(ctx context.Context, db *sql.DB, limits market
 	if err = market.ConfigureModerationLimits(ctx, tx, current); err != nil {
 		return errors.New("moderation-worker: capacity configuration unavailable or below existing allocations")
 	}
+	// A-687: a change made by host command is audited without an actor, as -set-role is (admin_role.go); flags that
+	// leave the stored limits as they were write nothing.
+	if current != stored {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(action) VALUES($1)`, "Moderation limits changed from "+moderationLimitsText(stored)+" to "+moderationLimitsText(current)+" by host command"); err != nil {
+			return errors.New("moderation-worker: capacity configuration unavailable")
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return errors.New("moderation-worker: capacity configuration unavailable")
 	}
 	return nil
+}
+
+func moderationLimitsText(v market.ModerationLimits) string {
+	return fmt.Sprintf("max-pending %d, max-records %d, max-reserved-bytes %d", v.MaxPending, v.MaxRecords, v.MaxBytes)
 }
 
 // Read only the role's explicitly selected secret. Never import application,

@@ -304,8 +304,8 @@ func TestModerationMigrationsAfterMain128(t *testing.T) {
 	}
 	var mainAfter613 []migration
 	for _, m := range list {
-		// 148 (A-647) builds on 134 and 146, so that database lacks it too.
-		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 && m.Version != 146 && m.Version != 148 {
+		// 148 (A-647) builds on 134 and 146, and 152 (A-683) on 125's worker status, so that database lacks them too.
+		if m.Version != 125 && m.Version != 126 && m.Version != 127 && m.Version != 134 && m.Version != 146 && m.Version != 148 && m.Version != 152 {
 			mainAfter613 = append(mainAfter613, m)
 		}
 	}

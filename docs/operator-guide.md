@@ -703,9 +703,16 @@ the private administrator ingress when one is configured. Bookmarks to an old
 
 The optional [moderation controller](moderation-agent.md) and local model are
 off by default. The Admin overview on private administrator ingress links to `/admin/moderation`, available only
-on the private administrator connection; it shows job/review/escalation counts,
-injection-suspicion counts, prompt/weights pins, last pass and bounded failure
-classes. These are worker observations, not proof of model or host integrity.
+on the private administrator connection; it shows **Capture: on** or **Capture: off**,
+job/review/escalation counts, injection-suspicion counts, prompt/weights pins,
+last pass, pass interval, the last database outage the worker recovered from and
+bounded failure classes. These are worker observations, not proof of model or host integrity.
+While capture is on and the last pass is older than three pass intervals plus five
+minutes, the panel and the private Admin overview say "No pass for N minutes; the
+worker may have stopped.": capture keeps queueing jobs without a worker, so check
+the controller's supervisor ([supervision](moderation-agent.md#supervise-the-controller)).
+The controller retries failed passes itself, refuses a remote database without
+`sslmode=verify-full`, and audits capture and limit changes made by host command.
 Its review queue lists escalations (such as disputes, payment flags and injection
 suspicions) first and then the soonest deadline; proposals past their deadline
 are on HOLD under **Deadline passed**, and the kind and disposition filters work

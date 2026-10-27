@@ -30,6 +30,13 @@ type ModerationWorker struct {
 	ModelFailure       string
 	lastFailure        string
 	observedModelState string
+
+	// Interval is the controller's pass interval, stored with the status so the private panel can tell a stopped
+	// worker from a waiting one (A-683). Zero records no interval; the panel then assumes the one-minute default.
+	Interval time.Duration
+	// outageFrom is when the first of the current run of failed passes began; the next status write records the
+	// outage (db_unavailable) and clears it.
+	outageFrom time.Time
 }
 
 type moderationJob struct {
@@ -98,12 +105,27 @@ func SetModerationEnabled(ctx context.Context, db *sql.DB, enabled bool) error {
 			return err
 		}
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE settings SET value=$1 WHERE key='moderation_enabled'`, strconv.FormatBool(enabled))
+	var stored string
+	err = tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='moderation_enabled' FOR UPDATE`).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("moderation migration required")
+	}
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return errors.New("moderation migration required")
+	if stored != strconv.FormatBool(enabled) {
+		if _, err = tx.ExecContext(ctx, `UPDATE settings SET value=$1 WHERE key='moderation_enabled'`, strconv.FormatBool(enabled)); err != nil {
+			return err
+		}
+		// A-687: the worker's host command, audited without an actor as -set-role is (admin_role.go). A restart
+		// while capture is already on, or a repeated --disable, changes nothing and writes no row.
+		action := "Moderation capture disabled by host command"
+		if enabled {
+			action = "Moderation capture enabled by host command"
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(action) VALUES($1)`, action); err != nil {
+			return err
+		}
 	}
 	if !enabled {
 		if _, err = tx.ExecContext(ctx, `UPDATE moderation_worker_status SET present=false,model_state='disabled',failure_class='',last_pass=now() WHERE singleton`); err != nil {
@@ -159,6 +181,14 @@ func (w *ModerationWorker) Pass(ctx context.Context, limit int) (int, error) {
 		}
 		w.WorkerID = hex.EncodeToString(b[:])
 	}
+	count, err := w.pass(ctx, limit)
+	if err != nil && ctx.Err() == nil && w.outageFrom.IsZero() {
+		w.outageFrom = time.Now()
+	}
+	return count, err
+}
+
+func (w *ModerationWorker) pass(ctx context.Context, limit int) (int, error) {
 	// Capture the current revision of targets whose capture was refused, before
 	// claiming work, in its own short transaction.
 	sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -201,12 +231,25 @@ func (w *ModerationWorker) Pass(ctx context.Context, limit int) (int, error) {
 		failure = w.ModelFailure
 		state = "failed"
 	}
+	// The first pass after failed ones reports the outage (A-683): the model state is current again, the failure
+	// class says the database was unavailable, and its start (this worker's clock) and end are kept until the next.
+	var outage sql.NullTime
+	if !w.outageFrom.IsZero() {
+		failure, outage = "db_unavailable", sql.NullTime{Time: w.outageFrom, Valid: true}
+	}
+	var interval sql.NullInt64
+	if w.Interval >= 10*time.Second && w.Interval <= time.Hour {
+		interval = sql.NullInt64{Int64: int64(w.Interval / time.Second), Valid: true}
+	}
 	statusCtx, statusCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer statusCancel()
-	_, err = w.DB.ExecContext(statusCtx, `UPDATE moderation_worker_status SET present=true,model_state=$1,prompt_version=$2,model_id=$3,weights_hash=$4,last_pass=now(),failure_class=$5 WHERE singleton`, state, w.Engine.Config.PromptVersion, w.Engine.Config.ModelID, w.Engine.Config.WeightsHash, failure)
+	_, err = w.DB.ExecContext(statusCtx, `UPDATE moderation_worker_status SET present=true,model_state=$1,prompt_version=$2,model_id=$3,weights_hash=$4,last_pass=now(),failure_class=$5,
+	 pass_interval_seconds=$6,db_outage_from=COALESCE($7,db_outage_from),db_outage_until=CASE WHEN $7::timestamptz IS NULL THEN db_outage_until ELSE now() END WHERE singleton`,
+		state, w.Engine.Config.PromptVersion, w.Engine.Config.ModelID, w.Engine.Config.WeightsHash, failure, interval, outage)
 	if err != nil {
 		return count, errors.New("moderation status unavailable")
 	}
+	w.outageFrom = time.Time{}
 	return count, nil
 }
 
