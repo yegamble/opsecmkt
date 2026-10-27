@@ -667,3 +667,59 @@ test('Vendor bond in XMR (A-547): the non-refundable terms before the one-time a
     sql("UPDATE settings SET value='0' WHERE key='vendor_bond_xmr'");
   }
 });
+
+// A-652f: the end of a ban hold. The vendor is banned after shipping, the buyer confirms receipt (the help says the
+// buyer may still be refunded), the release is held, and once the hold has lasted the period (90 days, moved back
+// through SQL) an administrator who is not a party refunds the order's escrow to the buyer's refund address from the
+// order page, with a reason and the password. The release is never built; the refund is sent. This bans xmr_vendor, so
+// it runs last.
+test('Monero escrow held release of a banned vendor (A-652f): refunded to the buyer from the order page after the period', async ({ browser, baseURL, request }, info) => {
+  const admin = await signIn(browser, baseURL, 'xmr_admin', password);
+  const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);
+  const vendor = await signIn(browser, baseURL, 'xmr_vendor', vendorPassword);
+  const order = await funded(buyer, request, physicalTitle);
+  const claimTo = await ship(vendor, request, order.url);
+
+  await admin.goto('/admin/users');
+  const ban = admin.getByRole('region', { name: 'Ban or unban an account' });
+  await typeInto(admin, ban.getByLabel('Account handle'), 'xmr_vendor');
+  await check(admin, ban.getByRole('radio', { name: /^Ban:/ }));
+  await typeInto(admin, ban.getByLabel('Reason', { exact: true }), 'Sold goods it never had; account closed.');
+  await typeInto(admin, ban.getByLabel('Current password'), password);
+  expect(await pressSubmit(admin, ban.getByRole('button', { name: 'Ban or unban' }))).toBe(303);
+
+  await buyer.goto(order.url);
+  const confirm = buyer.locator('#xmr-escrow-confirm');
+  await expect(confirm).toContainText('If the account is still closed 90 days later, an administrator may refund the coins to your refund address instead.');
+  await typeInto(buyer, confirm.getByLabel('Current password'), buyerPassword);
+  expect(await pressSubmit(buyer, confirm.getByRole('button', { name: 'Confirm receipt' }))).toBe(303);
+  await expect(badge(buyer)).toHaveText('Completed');
+  await reloadUntil(buyer, async () => { await expect(settlementStatus(buyer)).toContainText("The vendor's account is closed, so the market holds this release", { timeout: 500 }); });
+
+  await admin.goto(order.url);
+  const hold = admin.locator('#hold-refund');
+  await expect(hold).toContainText('held for less than 90 days');
+  await expect(hold.locator('form')).toHaveCount(0);
+  const id = orderID(order.url);
+  sql(`UPDATE users SET banned_at=banned_at-interval '91 days' WHERE handle='xmr_vendor'; UPDATE order_events SET created=created-interval '91 days' WHERE order_id='${id}'`);
+  await admin.goto(order.url);
+  await expect(admin.locator('main')).toContainText('refund the held release to the buyer under');
+  await expect(hold).toContainText('even though the order completed');
+  await shot(admin, info, 'h01-hold-refund-form');
+  const form = hold.locator('form[action="/admin/escrow-xmr-hold-refund"]');
+  await typeInto(admin, form.getByLabel(/^Reason/), 'The vendor stayed banned for the whole hold period; the buyer is refunded.');
+  await typeInto(admin, form.getByLabel('Current password'), password);
+  expect(await pressSubmit(admin, form.getByRole('button', { name: `Refund ${xmr(price)} fakechain XMR to the buyer` }))).toBe(303);
+  await expect(admin).toHaveURL(/\/admin\/users\?handle=xmr_vendor#ban-orders$/);
+  await expect(admin.getByRole('status').filter({ hasText: 'Held release refunded.' })).toBeVisible();
+  await shot(admin, info, 'h02-hold-refunded');
+
+  await buyer.goto(order.url);
+  await expect(badge(buyer)).toHaveText('Cancelled');
+  await expect(settlement(buyer, 'Release to the vendor').getByRole('status').first())
+    .toHaveText("Superseded: the vendor's account stayed closed while this release was held, so an administrator refunded the buyer instead. It was never built or sent.");
+  const tx = await sentAndConfirmed(buyer, request, 'Refund to the buyer', info, 'h03-hold-refund');
+  const outputs = await paid(request, tx);
+  expect(outputs).toContain(`${order.refund} ${price - fee}`);
+  expect(outputs.some(o => o.startsWith(`${claimTo} `))).toBeFalsy();
+});

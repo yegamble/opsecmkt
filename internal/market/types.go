@@ -386,6 +386,9 @@ type PageData struct {
 	// XMRSettlementActions: the administrator's settlement forms the order page offers, named for the staff help
 	// ("re-request it or mark it settled by hand"; xmrSettlementActions, A-613).
 	XMRSettlementActions string
+	// HoldRefund: order page, for a non-party administrator, a banned vendor's held release and its refund to the buyer
+	// (escrow_xmr_hold_refund.go, A-652f)
+	HoldRefund *HoldRefundView
 
 	// P4 Inventory (uses Product.Archived)
 	Listing   *ListingView
@@ -438,6 +441,8 @@ type PageData struct {
 	EscrowSigner *EscrowSignerView
 	// EscrowReleaseDays: /admin while ESCROW_BTC is on, the release deadline length in force and its form (escrow_release_admin.go)
 	EscrowReleaseDays *EscrowReleaseDaysView
+	// BanHoldRefundDays: /admin, the held-release refund period for banned vendors and its form (A-652f)
+	BanHoldRefundDays *BanHoldRefundDaysView
 	// XMRFee: /admin, the Monero escrow market fee set on the server, read-only (escrow_xmr_fee.go, A-550)
 	XMRFee *XMRFeeView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
@@ -784,10 +789,12 @@ type EscrowCosignerView struct{ Who, Key string }
 
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
-// VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d).
+// VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d), and
+// then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f).
 type EscrowDeadlineView struct {
 	At, Left                     string
 	Due, Rechecked, VendorClosed bool
+	HoldRefundDays               int
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
@@ -977,6 +984,8 @@ type XMREscrowOrderView struct {
 	// WindowPassed: Open, CancelAfter has passed and no deposit waits for confirmations: the watcher has not acted yet
 	// (its daemon not synced or not readable; A-449, as EscrowOrderView's QA4W1-5)
 	WindowPassed bool
+	// holdRefunded: the order was cancelled from completed or resolved by an administrator's held-release refund (A-652f)
+	holdRefunded bool
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot
