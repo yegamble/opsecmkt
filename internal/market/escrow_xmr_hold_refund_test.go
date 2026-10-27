@@ -101,6 +101,12 @@ func (x *xmrEscrowEnv) checkHoldRefunded(order, adminID, from string) {
 	if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND from_state=$2 AND to_state='cancelled' AND actor_id=$3 AND note=$4", order, from, adminID, holdRefundNote); n != 1 {
 		x.t.Fatalf("order %s: %d hold refund events: %q", shortID(order), n, x.events(order))
 	}
+	// The buyer's audit row says what the notification says: no administrator handle and no reason.
+	buyerRows := agStrings(x.t, x.testEnv, "SELECT action FROM audit_events WHERE user_id=$1 AND strpos(action,$2)>0", x.partyOf(order, roleBuyer), "Order "+shortID(order)+" refunded")
+	if len(buyerRows) != 1 || !strings.Contains(buyerRows[0], "to your refund address given at checkout") || strings.Contains(buyerRows[0], holdRefundTestReason) ||
+		strings.Contains(buyerRows[0], agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", adminID)) {
+		x.t.Fatalf("buyer audit rows of %s: %q", shortID(order), buyerRows)
+	}
 	for _, role := range []string{roleBuyer, roleVendor} {
 		uid := x.partyOf(order, role)
 		if n := agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE user_id=$1 AND order_id=$2 AND strpos(body,$3)>0", uid, order,
@@ -232,6 +238,81 @@ func TestHoldRefundResolvedForVendor(t *testing.T) {
 	if got := agStr(x.testEnv, "SELECT outcome FROM disputes WHERE order_id=$1", order); got != "release" {
 		t.Fatalf("the recorded decision changed to %q", got)
 	}
+	// Reputation: a held-release refund, and still a dispute decided for the vendor (its status is unchanged).
+	if f, err := vendorReputationFigures(context.Background(), x.DB, x.vendor); err != nil || f.HeldRefunds != 1 || f.DecidedRelease != 1 || f.Completed() != 0 {
+		t.Fatalf("figures after the refund of an order decided for the vendor: %+v %v", f, err)
+	}
+}
+
+// Owner decision 2026-10-26 (A-652f fix round 1): an order whose dispute was decided for the vendor before it was
+// shipped has no release request; it is refunded the same way. The hold begins at the later of the ban and the
+// decision; it is refused before the period and once the ban is lifted. A release that a claim commits while the
+// refund waits for the order row (the claim locks the order first) changes the digest: 409, nothing changed.
+func TestHoldRefundResolvedBeforeShipping(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	adminID, admin := x.user("hr_rbs_"+randomToken()[:6], "admin")
+	phys := x.physical(x.vendor)
+	order, _ := x.paidXMRPhysical(phys)
+	raced, _ := x.paidXMRPhysical(phys)
+	x.banVendor(admin)
+	agExec(x.testEnv, "UPDATE users SET banned_at=banned_at-interval '200 days' WHERE id=$1", x.vendor) // banned long before the decision
+	for _, o := range []string{order, raced} {
+		x.disputeAndResolve(o, "release")
+		if x.state(o) != stateResolved || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", o) != 0 {
+			t.Fatalf("fixture %s: %s %v", shortID(o), x.state(o), x.xmrSettlements(o))
+		}
+	}
+	x.mustPoll()
+	// The hold began at the decision, not the ban: refused, and the page says from when.
+	mustContain(t, x.orderPage(order, admin), `id="hold-refund"`, "the vendor cannot claim the coins in this escrow", "held for less than 90 days", "was decided for the vendor, whichever is later")
+	agExpect(x.testEnv, "/admin/escrow-xmr-hold-refund", admin, x.holdRefundPost(order), 409, "held for less than 90 days")
+	agExec(x.testEnv, "UPDATE order_events SET created=created-interval '89 days' WHERE order_id=ANY($1)", []string{order, raced})
+	agExpect(x.testEnv, "/admin/escrow-xmr-hold-refund", admin, x.holdRefundPost(order), 409, "held for less than 90 days")
+	agExec(x.testEnv, "UPDATE order_events SET created=created-interval '2 days' WHERE order_id=ANY($1)", []string{order, raced})
+	f := x.holdRefundForm(admin, order)
+	// Refused once the ban is lifted (no pass runs in between; the vendor would claim then).
+	x.unbanVendor(admin)
+	agExpect(x.testEnv, "/admin/escrow-xmr-hold-refund", admin, f, 409, "The vendor's account is not banned")
+	x.banVendor(admin)
+	agExec(x.testEnv, "UPDATE users SET banned_at=banned_at-interval '200 days' WHERE id=$1", x.vendor)
+	if x.state(order) != stateResolved || x.liveOutcomes(order) != 0 {
+		t.Fatal("a refused hold refund changed the order")
+	}
+	x.check(x.do("POST", "/admin/escrow-xmr-hold-refund", admin, x.holdRefundForm(admin, order)), 303)
+	x.checkHoldRefunded(order, adminID, stateResolved)
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='release'", order); n != 0 {
+		t.Fatalf("%d release rows", n)
+	}
+	if got := agStr(x.testEnv, "SELECT outcome FROM disputes WHERE order_id=$1", raced); got != "release" {
+		t.Fatalf("outcome %q", got)
+	}
+
+	// A claim that holds the order row (partyOrderLocked) and inserts a release commits while the refund waits.
+	g := x.holdRefundForm(admin, raced)
+	tx, err := x.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", raced); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2)", raced, testXMRAddr("claim "+raced, true)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() { done <- x.do("POST", "/admin/escrow-xmr-hold-refund", admin, g).Code }()
+	x.waitForLockWaits(1)
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != 409 {
+		t.Fatalf("the refund after a release was claimed meanwhile: %d", code)
+	}
+	if x.state(raced) != stateResolved || x.settlementOf(raced, "release").State != "requested" || x.liveOutcomes(raced) != 1 {
+		t.Fatal("the refused refund changed the raced order")
+	}
 }
 
 // Owner decision 2026-10-26: a completed digital order of a banned vendor with no release row (the vendor never
@@ -249,8 +330,17 @@ func TestHoldRefundUnclaimedDigital(t *testing.T) {
 	x.mustPoll()
 	page := x.orderPage(order, admin)
 	mustContain(t, page, "the vendor cannot claim the coins in this escrow", "because its vendor's account is closed and the coins in its escrow were never sent", "held for less than 90 days")
-	if strings.Contains(page, "Its digital delivery") {
-		t.Fatal("the reviewer sees the delivery")
+	// The administrator's read shows no delivery content (the listing's automatic delivery) and not the buyer's refund
+	// address; order correspondence is for the parties only. A moderator and an unrelated account cannot read it.
+	if strings.Contains(page, "XC-1234") || strings.Contains(page, x.refundAddressOf(order)) || strings.Contains(page, `id="order-messages"`) {
+		t.Fatal("the administrator's read of the held order shows its delivery, refund address or correspondence")
+	}
+	_, moderator := x.user("hr_digmod_"+randomToken()[:6], "moderator")
+	_, stranger := x.user("hr_digx_"+randomToken()[:6], "buyer")
+	for _, sess := range []string{moderator, stranger} {
+		if w := x.do("GET", "/order?id="+order, sess, nil); w.Code != 404 {
+			t.Fatalf("a moderator or unrelated account reads the held order: %d", w.Code)
+		}
 	}
 	mustContain(t, banOrdersRow(t, x.banOrdersPage(admin, handle), order), `href="/order?id=`+order+`"`)
 	x.ageHold(order, 91)

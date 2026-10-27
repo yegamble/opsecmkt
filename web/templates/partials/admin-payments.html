@@ -26,7 +26,7 @@
 </form>{{end}}{{with $.BanHoldRefundDays}}
 <h3 id="ban-hold-refund-days">Held releases of banned vendors</h3>{{with $.NoticeIn "ban-hold-refund-days"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
-<p>In force: <strong>{{.Days}} days</strong>. A release to a vendor whose account is banned is held. Once it has been held this long with the ban still in place (counted from the ban, or from when the order completed or its dispute was decided, whichever is later; a new ban starts again), an administrator who is not a party may refund that order's escrow to the buyer's refund address given at checkout instead, one order at a time from its order page. That includes orders the buyer confirmed and completed digital orders the vendor never claimed. Nobody else is ever paid.</p>
+<p>In force: <strong>{{.Days}} days</strong>. A release to a vendor whose account is banned is held. Once it has been held this long with the ban still in place (counted from the ban, or from when the order completed or its dispute was decided, whichever is later; a new ban starts again), an administrator who is not a party may refund that order's escrow to the buyer's refund address given at checkout instead, one order at a time from its order page. That includes orders the buyer confirmed, orders decided for the vendor (also before shipment) and completed digital orders the vendor never claimed. Nobody else is ever paid.</p>
 <form class="stack" method="post" action="/admin/ban-hold-refund-days">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/ban-hold-refund-days"}}">

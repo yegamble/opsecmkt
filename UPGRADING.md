@@ -21,8 +21,8 @@ existing documented operations workflow.
 used to stay held until the ban was lifted. Now, once it has been held for a period with the ban in place, an
 administrator who is not a party to the order can refund the order to the refund address the buyer gave at checkout
 instead, one order at a time, from its order page (*Refund the held release to the buyer*: a 20–5000 character reason,
-password and authenticator code). This applies even to orders the buyer confirmed, to orders decided for the vendor, and
-to completed digital orders the vendor never claimed. The period is the new setting **Held releases of banned vendors**
+password and authenticator code). This applies even to orders the buyer confirmed, to orders decided for the vendor (also those
+decided before shipment, with no release request), and to completed digital orders the vendor never claimed. The period is the new setting **Held releases of banned vendors**
 under *Admin → Payments* (`ban_hold_refund_days`: 30 to 3650 days, default 90 when never saved, audited), counted from
 the ban or from when the order completed or its dispute was decided, whichever is later; a new ban starts it again.
 Nothing is refunded until an administrator submits the form; no other address is ever paid, and a release that was

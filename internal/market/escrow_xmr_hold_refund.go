@@ -20,13 +20,15 @@ import (
 // into a refund to the order's pinned buyer refund address (escrows.refund_address) by an administrator who is not a
 // party, one order at a time, on the order page (POST /admin/escrow-xmr-hold-refund: password and authenticator code,
 // a reason of 20–5000 characters, a receipt nonce). This applies to an order the buyer confirmed, one completed at its
-// release deadline and one decided (or conceded) for the vendor, and also to a completed digital order whose vendor
-// never claimed (no release row at all). Nobody new is paid: the order moves completed (or resolved) -> cancelled on
-// the staff edge roleHoldRefund, which only this action marks (withHoldRefund), and escrowSettleTerminal then
-// supersedes the requested release and inserts exactly one refund to escrows.refund_address. No settlement kind,
-// output role or insert site is added (TestNoForfeitSettlementKind).
+// release deadline and one decided (or conceded) for the vendor, and also, with no release row at all, to a completed
+// digital order whose vendor never claimed and to one whose dispute was decided (or conceded) for the vendor before any
+// release was requested (a physical order disputed before it was shipped). Nobody new is paid: the order moves
+// completed (or resolved) -> cancelled on the staff edge roleHoldRefund, which only this action marks (withHoldRefund),
+// and escrowSettleTerminal then supersedes the requested release (if any) and inserts exactly one refund to
+// escrows.refund_address. No settlement kind, output role or insert site is added (TestNoForfeitSettlementKind).
 //
-// The hold began at GREATEST(users.banned_at, the order's move into its current state): lifting the ban ends the hold
+// The hold began at GREATEST(users.banned_at, the order's move into its current state: its completion, or the dispute's
+// decision or concession): lifting the ban ends the hold
 // (the watcher then builds the release), and a new ban starts the clock again. The days are an administrator setting
 // (banHoldRefundDaysSetting: 30 to 3650, default 90; password step-up; audited old -> new).
 //
@@ -36,15 +38,21 @@ import (
 // message locks its order before a partner's account (FOR SHARE, which does not conflict with this one); neither is a
 // cycle with this order: this action takes only a completed or resolved order, which a ban never locks (it locks shipped
 // orders only), and a ban or unban takes no order lock after the account row except the ban's NOWAIT pass over shipped
-// orders. The watcher locks the order and then the settlement (storeXMRBuilt), the same order as here.
+// orders. The watcher locks the order and then the settlement (storeXMRBuilt), the same order as here. Where there is no
+// release, none can appear meanwhile: every path that inserts one (the vendor's claim, insertXMRRelease after
+// partyOrderLocked; an administrator's re-request, of a failed release with a transaction, which is refused here anyway)
+// first locks the order row FOR NO KEY UPDATE, which waits for this FOR UPDATE and then finds the order cancelled
+// (settlementFits refuses a release); one that committed first is read after the lock and changes the digest (409). A
+// banned vendor has no session to claim with, and xmr_settlements_one_outcome refuses a second live outcome besides.
 //
-// Under those locks: the order is a Monero escrow order, completed, or resolved for the vendor; the vendor is banned and
-// has been for the days; the live release is requested, was never built and supersedes nothing, and no release of the
-// order ever had a transaction (a release that may be on the network, or a re-request of one, is never superseded); or
-// there is no release at all and the order is a completed digital one; no deposit was spent outside the market and no
-// settlement of the order was spent by another transaction (external); something is counted; the restore gate is clear
-// and a restore's sweep of the escrow wallets has completed. The form states a digest of the release, the order's state,
-// the counted sum and when the hold began; any change refuses it (409). Every refusal says "Nothing was changed".
+// Under those locks: the order is a Monero escrow order, completed, or resolved for the vendor; the vendor is banned
+// and has been for the days; the live release is requested, was never built and supersedes nothing, and no release of
+// the order ever had a transaction (a release that may be on the network, or a re-request of one, is never superseded);
+// or there is no release row at all and the order is a completed digital one or was decided for the vendor; no deposit
+// was spent outside the market and no settlement of the order was spent by another transaction (external); something is
+// counted; the restore gate is clear and a restore's sweep of the escrow wallets has completed. The form states a
+// digest of the release, the order's state, the counted sum and when the hold began; any change refuses it (409). Every
+// refusal says "Nothing was changed".
 //
 // Afterwards a deposit that arrives late, or one left out, goes to the stray-refund path as for any cancelled order;
 // both parties are notified (transition) and the order history records it; the administrator's and the vendor's
@@ -75,7 +83,7 @@ var (
 	errHoldRefundState     = fail(409, "Only a completed Monero escrow order, or one whose dispute was decided for the vendor, whose release to a banned vendor is held, can be refunded here. Nothing was changed.")
 	errHoldRefundNotBanned = fail(409, "The vendor's account is not banned, so the release is not held: the market builds and sends it as usual. Nothing was changed.")
 	errHoldRefundOnNetwork = fail(409, "The release to the vendor is not a held request: it was built or may be on the network (built, relayed, confirmed, spent by another transaction, failed with a transaction, or a re-request of one), or it failed, so it is never replaced by a refund. Nothing was changed.")
-	errHoldRefundNoRelease = fail(409, "This order has no release to the vendor: only a completed digital order whose vendor never claimed is refunded without one. Nothing was changed.")
+	errHoldRefundNoRelease = fail(409, "This order has no release to the vendor: only a completed digital order whose vendor never claimed, or an order whose dispute was decided for the vendor before any release was requested, is refunded without one. Nothing was changed.")
 	errHoldRefundSpent     = fail(409, "A deposit of this escrow was spent outside the market, or a settlement's coins were spent by another transaction: settle it with the operator. Nothing was changed.")
 	errHoldRefundNothing   = fail(409, "Nothing is counted in this order's escrow, so there is nothing to refund. Nothing was changed.")
 	errHoldRefundStale     = fail(409, "This order's release or escrow changed since the page was shown. Reload the order page and review it again. Nothing was changed.")
@@ -220,7 +228,15 @@ func readHoldRefund(ctx context.Context, q rowQuerier, order string, days int) (
 // or a completed digital one never claimed. The order page shows the section for those only.
 func (r *holdRefundRow) held() bool {
 	return r.banned && (r.state == stateCompleted || r.state == stateResolved && r.outcome == "release") && !r.liveRefund && !r.everBuilt &&
-		(r.release != 0 && r.releaseState == "requested" && !r.releaseBuilt && !r.releaseReRequest || r.release == 0 && !r.anyRelease && r.state == stateCompleted && r.kind == "digital")
+		(r.release != 0 && r.releaseState == "requested" && !r.releaseBuilt && !r.releaseReRequest || r.release == 0 && r.unrequested())
+}
+
+// unrequested reports whether r, an order with no live release, never had one and is one of the two kinds refunded
+// without a release: a completed digital order whose vendor never claimed (owner decision 2026-10-26), or one whose
+// dispute was decided (or conceded) for the vendor before any release was requested, as a physical order disputed
+// before it was shipped (owner decision 2026-10-26, A-652f fix round 1).
+func (r *holdRefundRow) unrequested() bool {
+	return !r.anyRelease && (r.outcome == "release" || r.state == stateCompleted && r.kind == "digital")
 }
 
 // refusal is why r cannot be refunded now (nil when it can), each message ending "Nothing was changed."
@@ -232,7 +248,7 @@ func (r *holdRefundRow) refusal(days int) error {
 		return errHoldRefundNotBanned
 	case r.everBuilt || r.release != 0 && (r.releaseState != "requested" || r.releaseBuilt || r.releaseReRequest):
 		return errHoldRefundOnNetwork
-	case r.release == 0 && (r.anyRelease || r.state != stateCompleted || r.kind != "digital"):
+	case r.release == 0 && !r.unrequested():
 		return errHoldRefundNoRelease
 	case r.spent:
 		return errHoldRefundSpent
@@ -340,13 +356,19 @@ func holdRefundAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		short, sum := shortID(order), c.A.escrowAmount(&Order{Currency: "XMR"}, r.sum)
-		release := "no release was ever requested (the vendor never claimed)"
+		release := "no release was ever requested"
 		if r.release != 0 {
 			release = "release " + strconv.FormatInt(r.release, 10) + " superseded"
 		}
 		summary := "order " + short + " (" + stateLabel(r.state) + " -> Cancelled, Monero escrow); " + release + "; refund of " + sum +
 			" requested to the buyer's refund address; held since " + utcFrom(r.heldSince) + " (" + strconv.Itoa(days) + "-day period); reason: " + reason
 		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", vendor, "Held release refunded to the buyer by administrator "+c.User.Handle+": "+summary); err != nil {
+			return actionResult{}, err
+		}
+		// The buyer's row says what the notification says, and no more: no administrator, period or reason (those are
+		// on the administrator's and the vendor's rows, as a ban's reason is on the banned account's).
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", buyer,
+			"Order "+short+" refunded: the vendor's account stayed closed while the release to the vendor was held, so an administrator cancelled the order and requested a refund of "+sum+" to your refund address given at checkout"); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: adminUserURL(r.vendor), Notice: "hold-refund", Audit: "Refunded the held release of " + r.vendor + "'s " + summary}, nil
