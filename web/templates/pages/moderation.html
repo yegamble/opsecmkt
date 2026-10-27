@@ -4,9 +4,12 @@
 <p><a class="text-link" href="/admin">Administration</a> · <a class="text-link" href="/moderator">Existing dispute and takedown workflows</a> · <a class="text-link" href="/admin/moderation/offline">Offline signed review</a></p>
 {{with .Moderation}}
 <section class="panel" aria-labelledby="moderation-status"><h2 id="moderation-status">Worker status</h2>
+{{if .CaptureOn}}<p>Capture: on. Supported content changes queue moderation jobs in their transaction, whether or not a worker is running.</p>{{else}}<p>Capture: off. No new jobs are queued; existing jobs, proposals and evidence are kept.</p>{{end}}
+{{with .Stale}}<div class="alert" role="status" id="moderation-worker-stale"><strong>{{.}}</strong> Captured jobs wait until it runs again. Check the controller's supervisor and log.</div>{{end}}
 <dl><dt>Local model</dt><dd>{{.ModelState}}</dd><dt>Prompt revision</dt><dd>{{.PromptVersion}}</dd>
 <dt>Weights digest</dt><dd class="fingerprint mono">{{.WeightsHash}}</dd><dt>Last pass (UTC)</dt><dd>{{if .LastPass}}{{.LastPass}}{{else}}No completed pass reported{{end}}</dd>
-<dt>Failure class</dt><dd>{{.Failure}}</dd><dt>Pending jobs</dt><dd>{{.Jobs}}</dd><dt>Unreviewed proposals</dt><dd>{{.Pending}}</dd>
+<dt>Pass interval</dt><dd>{{if .PassInterval}}{{.PassInterval}}{{else}}Not reported{{end}}</dd>
+<dt>Failure class</dt><dd>{{.Failure}}</dd>{{if .LastOutage}}<dt>Last database outage (UTC)</dt><dd>{{.LastOutage}}</dd>{{end}}<dt>Pending jobs</dt><dd>{{.Jobs}}</dd><dt>Unreviewed proposals</dt><dd>{{.Pending}}</dd>
 <dt>Unreviewed escalations</dt><dd>{{.Escalations}}</dd><dt>Recorded injection suspicions</dt><dd>{{.InjectionCount}}</dd></dl>
 <p class="help">Model availability does not establish correctness. Read the original evidence before any binding action.</p></section>
 {{with .Capacity}}<section class="panel" aria-labelledby="moderation-capacity"><h2 id="moderation-capacity">Capture capacity</h2>

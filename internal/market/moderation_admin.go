@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -32,6 +33,11 @@ type ModerationAdminView struct {
 	PreviousURL, NextURL                                      string
 	Reviewed                                                  bool
 	Capacity                                                  *ModerationCapacityView
+
+	// CaptureOn is settings.moderation_enabled; Stale is moderationWorkerStale's warning; PassInterval and LastOutage
+	// are the worker's stored interval and its last recovered database outage (migration 152, A-683).
+	CaptureOn                       bool
+	Stale, PassInterval, LastOutage string
 }
 
 type ModerationCapacityView struct {
@@ -61,7 +67,13 @@ type ModerationSuggestionView struct {
 func init() {
 	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 		d.PrivateModerationAccess = !a.preview && a.adminSocket != "" && privateAdminIngress(ctx) && d.User != nil && d.User.Role == "admin"
-		return nil
+		d.ModerationWorkerStale = ""
+		if !d.PrivateModerationAccess || a.db == nil || d.AdminSection != "" {
+			return nil
+		}
+		var err error
+		_, d.ModerationWorkerStale, err = moderationWorkerStale(ctx, a.db)
+		return err
 	})
 	registerPage("admin/moderation", pageSpec{Protected: true, Roles: []string{"admin"}})
 	registerLoader("admin/moderation", loadModerationAdmin)
@@ -69,6 +81,29 @@ func init() {
 	registerAction(moderationReviewPath, actionSpec{Roles: []string{"admin"}, OwnTx: true,
 		ConfirmedFormNonce: true, OneAtATime: true, ReceiptAuthorize: moderationReviewAuthorize,
 		Run: moderationReviewAction})
+}
+
+// moderationWorkerStale reports whether capture is on and, while it is, the fixed warning once the worker's last pass
+// is older than three of its stored pass intervals (one minute when none is stored) plus a five-minute margin for a
+// pass's own work, or when no pass was ever reported (A-683). Capture enqueues without a worker, so a stopped one is
+// otherwise invisible. Ages use the database's clock, as last_pass does. One plain read, no lock.
+func moderationWorkerStale(ctx context.Context, db *sql.DB) (bool, string, error) {
+	var capture, passed, stale bool
+	var minutes int64
+	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value='true' FROM settings WHERE key='moderation_enabled'),false),
+	 s.last_pass IS NOT NULL,COALESCE(floor(extract(epoch FROM now()-s.last_pass)/60),0)::bigint,
+	 COALESCE(now()-s.last_pass>make_interval(secs=>3*COALESCE(s.pass_interval_seconds,60)+300),true)
+	 FROM moderation_worker_status s WHERE s.singleton`).Scan(&capture, &passed, &minutes, &stale)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil || !capture || !stale {
+		return capture, "", err
+	}
+	if !passed {
+		return true, "No pass reported yet; the worker may have stopped.", nil
+	}
+	return true, "No pass for " + strconv.FormatInt(minutes, 10) + " minutes; the worker may have stopped.", nil
 }
 
 func moderationPrivateRoute(path string) bool {
@@ -98,13 +133,27 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	}
 	v := &ModerationAdminView{Page: page, Reviewed: r.URL.Query().Get("state") == "reviewed"}
 	var state, failure, prompt, weights string
-	var last sql.NullTime
-	err = a.db.QueryRowContext(ctx, `SELECT model_state,prompt_version,weights_hash,last_pass,failure_class
-	 FROM moderation_worker_status WHERE singleton`).Scan(&state, &prompt, &weights, &last, &failure)
+	var last, outageFrom, outageUntil sql.NullTime
+	var interval sql.NullInt64
+	err = a.db.QueryRowContext(ctx, `SELECT model_state,prompt_version,weights_hash,last_pass,failure_class,pass_interval_seconds,db_outage_from,db_outage_until
+	 FROM moderation_worker_status WHERE singleton`).Scan(&state, &prompt, &weights, &last, &failure, &interval, &outageFrom, &outageUntil)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
+	if v.CaptureOn, v.Stale, err = moderationWorkerStale(ctx, a.db); err != nil {
+		return err
+	}
 	v.ModelState = moderationModelState(state)
+	if !v.CaptureOn {
+		// Capture off is not a missing model: no worker is expected to run (A-683).
+		v.ModelState = "Not in use while capture is off"
+	}
+	if interval.Valid {
+		v.PassInterval = strconv.FormatInt(interval.Int64, 10) + " seconds"
+	}
+	if outageFrom.Valid && outageUntil.Valid {
+		v.LastOutage = outageFrom.Time.UTC().Format(time.RFC3339) + " until " + outageUntil.Time.UTC().Format(time.RFC3339)
+	}
 	v.Failure = moderationFailureLabel(failure)
 	if moderationRevisionPattern.MatchString(prompt) {
 		v.PromptVersion = prompt

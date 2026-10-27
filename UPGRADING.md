@@ -15,6 +15,31 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## The moderation controller requires a verified remote database and survives outages (migration 152, A-682, A-683, A-687)
+
+Only installations that run the optional `moderation-worker` are affected. Upgrade the application first: migration
+152 adds three nullable columns to `moderation_worker_status` (the pass interval and the last database outage); a
+controller on the new build exits with `moderation-worker: application migrations required before enabling queue`
+until the application has applied it, and an older controller keeps working against the upgraded database.
+
+- **Action required for a remote database** (A-682). The controller now refuses to start, with
+  `moderation-worker: remote database requires sslmode=verify-full`, when its DSN reaches a host that is not a loopback
+  address or a Unix socket without `sslmode=verify-full`, whatever `OPSECMKT_PROFILE` says. Before restarting it on the
+  new build, add `sslmode=verify-full&sslrootcert=/path/to/database-ca.pem` to the private DSN file (the host name must
+  match the server certificate). A loopback or Unix-socket DSN is unchanged. See
+  [Enable the controller](docs/moderation-agent.md#enable-the-controller-without-a-model).
+- **Behaviour change** (A-683). A failed pass, such as a PostgreSQL restart, no longer ends the controller: it logs
+  `moderation-worker: pass unavailable; durable jobs preserved; retrying in 5s` and retries with a backoff of at most
+  the pass interval or 5 minutes; the first pass after reconnecting records **Database unavailable** with the outage's
+  times. `--once` still exits on a failed pass. Keep the controller under a supervisor with `Restart=on-failure` for
+  the exits that remain ([example unit](docs/moderation-agent.md#supervise-the-controller)), and stop that unit before
+  running `--disable`, or its next start enables capture again. The private panel now shows **Capture: on/off** and,
+  while capture is on, "No pass for N minutes; the worker may have stopped." past three intervals plus five minutes;
+  the private `/admin` overview shows the same sentence.
+- **New audit rows** (A-687). Turning capture on or off, and changing limits by `--max-pending`, `--max-records` or
+  `--max-reserved-bytes`, now write one audit row without an actor ("… by host command"), only when the stored value
+  changes. Existing audit rows are unchanged.
+
 ## A market with a Monero escrow fee can release again (A-681)
 
 **Fix** (A-681). No migration and no new setting. On a market with `ESCROW_XMR_FEE_BPS` set, a Monero escrow release
