@@ -962,7 +962,10 @@ class WalletRPC:
             self.chain.built[tx.metadata] = tx
         else:
             self.chain.submit(tx)
-        return {'amount': sum(amounts), 'amounts_by_dest': {'amounts': amounts}, 'fee': fee, 'multisig_txset': '',
+        # amounts_by_dest in the order wallet2 paid the destinations: the first, then the others from the last back
+        # (create_transactions_2 moves the last into each paid one's place; A-681, seen on the fakechain).
+        paid = amounts[:1] + amounts[:0:-1]
+        return {'amount': sum(amounts), 'amounts_by_dest': {'amounts': paid}, 'fee': fee, 'multisig_txset': '',
                 'spent_key_images': {'key_images': list(tx.inputs)}, 'tx_blob': tx.blob.hex() if p.get('get_tx_hex') else '', 'tx_hash': tx.hash,
                 'tx_key': keccak256(b'tx key' + tx.blob).hex() if p.get('get_tx_key') else '',
                 'tx_metadata': tx.metadata if p.get('get_tx_metadata') else '', 'unsigned_txset': '', 'weight': tx.weight}

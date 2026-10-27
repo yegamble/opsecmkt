@@ -15,6 +15,16 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A market with a Monero escrow fee can release again (A-681)
+
+**Fix** (A-681). No migration and no new setting. On a market with `ESCROW_XMR_FEE_BPS` set, a Monero escrow release
+that pays the market fee and returns a buyer's overpayment (three outputs) could not be built. monero-wallet-rpc 0.18.5.1
+lists the built amounts in the order it paid them, not the order asked, and the market refused the build as a mismatch.
+The release stayed *requested* (wait *build-mismatch*) with staff told, and no coins moved. The market now requires
+the vendor's output first and matches the other outputs by amount. Releases waiting that way are built on the next
+watcher pass after the upgrade, to the plan they always had; nothing needs re-requesting. Markets without a fee
+(the default) and releases with two outputs were not affected.
+
 ## A missing escrow wallet that the records say still holds coins is not destroyed (A-672)
 
 **Behaviour change** (A-672). No migration and no new setting. Confirming the destruction of a missing Monero escrow

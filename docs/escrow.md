@@ -454,15 +454,22 @@ wallet takes an order again and no settlement is relayed until an administrator 
       release is recorded sent with its deposit claim and one order note (none saying a transaction the market did not
       make spent the coins), and it confirms. Added with A-566; run locally on wr-a566 fakechain nodes set up as CI's job,
       its CI evidence is the `escrow-xmr-regtest` job once merged.
-  21. `TestXMREscrowRegtestFeeAndReturn` (A-673): the only leg whose app charges a market fee (`ESCROW_XMR_FEE_BPS=250`,
-      `ESCROW_XMR_FEE_ADDRESS` a subaddress of the funder's wallet; every other leg runs without one). A digital order is
-      funded with its price and 0.002 XMR more; its release is the first transaction a real wallet-rpc builds with three
-      destinations and the network fee taken from the first (`subtract_fee_from_outputs [0]`). It must pass
-      `checkXMRBuild` and migration 150's plan rules with one `transfer` call, store exactly the claimant, `market_fee`
-      and `buyer_return` outputs, and, once confirmed, the funder's `get_transfers` must list the fee address receiving
-      `marketFeeSats(price, 250)`, the refund address the excess and the claim address the input total less the network
-      fee, the fee and the excess. Added with A-673 and not run outside CI: its first real run is the
-      `escrow-xmr-regtest` job.
+  21. `TestXMREscrowRegtestFeeAndReturn` (A-673, A-681): releases that return an overpayment, in two cases. In each a
+      digital order is funded with its price and 0.002 XMR more, and the network fee comes from the claimant's output
+      (`subtract_fee_from_outputs [0]`). *fee and return* is the only case whose app charges a market fee
+      (`ESCROW_XMR_FEE_BPS=250`, `ESCROW_XMR_FEE_ADDRESS` a subaddress of the funder's wallet; every other leg runs
+      without one): its release has three destinations. *return only* has no fee: two destinations, the claim address
+      and the buyer's return. Each release must pass `checkXMRBuild` and migration 150's plan rules with one `transfer`
+      call and store exactly the planned outputs. Once it is confirmed, the funder's `get_transfers` must list:
+      - the fee address receiving `marketFeeSats(price, 250)`;
+      - the refund address receiving the excess;
+      - the claim address receiving the input total less the network fee, the fee and the excess.
+
+      Its first CI run (40545579717, A-673 only) found that monero-wallet-rpc 0.18.5.1 lists `amounts_by_dest` in the
+      order it paid the destinations, not the order asked: [claimant, buyer_return, market_fee] for
+      [claimant, market_fee, buyer_return]. `checkXMRBuild` compared them by position and refused the build, so a market
+      with a fee could not release (A-681). It now requires the claimant's output first, after the fee, and matches the
+      other outputs by amount. The leg's evidence after A-681 is the `escrow-xmr-regtest` CI job.
 
   Every settlement the daemon holds is decoded (RingCT type 6, 16 ring members per input, a fee above zero, the stored one,
   within `ESCROW_XMR_MAX_FEE`). Each leg puts the watcher's clock in a month of its own, so the legs may run again against

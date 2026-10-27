@@ -277,6 +277,12 @@ class EscrowBehaviourTest(unittest.TestCase):
         built = refund([(to, 5_000_000_000), (back, 4_000_000_000)])['result']
         self.assertEqual(refund([(to, built['fee']), (back, 4_000_000_000)])['error'], {'code': -46, 'message': 'destination amount is zero'})
         self.assertEqual(refund([(to, built['fee'] + 10_000), (back, 4_000_000_000)])['result']['amounts_by_dest']['amounts'], [10_000, 4_000_000_000])
+        # A-681: three destinations come back in wallet2's order, the first then the others from the last back, as
+        # [claimant, market_fee, buyer_return] came back [claimant, buyer_return, market_fee] on the fakechain.
+        third = self.n.control('/test/xmr/address', {'label': 'third'})['address']
+        built = refund([(to, 5_000_000_000), (back, 4_000_000_000), (third, 2_000_000_000)])['result']
+        self.assertEqual(built['amounts_by_dest']['amounts'], [5_000_000_000 - built['fee'], 2_000_000_000, 4_000_000_000])
+        self.assertEqual(built['amount'], sum(built['amounts_by_dest']['amounts']))
         # The built weight: 659 more per input (2166 and 2825 for two and three inputs of a 1507 build on the fakechain).
         self.assertEqual([xmr.tx_weight(n, 2) for n in (1, 2, 3)], [1562, 2221, 2880])
 
