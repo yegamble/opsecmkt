@@ -5,13 +5,19 @@ shells with stub `gh`, `go` and `git` programs or a throwaway git repository: a 
 --prerelease, a plain tag is not, and the notes lead with the test-network warning and carry the reproducibility
 wording and the Go version; a manual dispatch builds under the fixed dry-run tag and can never reach
 `gh release create`; a tag whose commit is not on main is refused, and so is a checkout without main (fail closed).
+The image scan (A-708) reads the OCI layout unpacked from the very opsecmkt.oci.tar that is gzip'd and published:
+Trivy's --input opens a Docker archive tar or an OCI layout directory, never an OCI tar. The unpack step runs against
+BuildKit-shaped archives built here, and packaging refuses an archive that changed after its scan.
 docs/ci-cd.md must say the same things.
 """
 from pathlib import Path
+import hashlib
+import json
 import os
 import re
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -297,6 +303,135 @@ class ReleaseWorkflowShapeTest(unittest.TestCase):
                      'version prints'):
             self.assertTrue(text in release, 'docs/ci-cd.md "Release a tested version" lacks %r' % text)
         self.assertTrue('Only the release job, which runs for tag pushes alone, receives `contents: write`' in CI_CD)
+
+
+UNPACK = 'Unpack the release OCI archive for scanning'
+SCAN = 'Scan the actual release OCI archive'
+PACKAGE = 'Package checksums and build record'
+LAYOUT = '${{ runner.temp }}/opsecmkt-oci'
+OCI_INDEX = 'application/vnd.oci.image.index.v1+json'
+OCI_MANIFEST = 'application/vnd.oci.image.manifest.v1+json'
+
+
+def write_blob(layout, data, media_type, **extra):
+    if not isinstance(data, bytes):
+        data = json.dumps(data).encode()
+    digest = hashlib.sha256(data).hexdigest()
+    blobs = layout / 'blobs' / 'sha256'
+    blobs.mkdir(parents=True, exist_ok=True)
+    (blobs / digest).write_bytes(data)
+    return dict({'mediaType': media_type, 'digest': 'sha256:' + digest, 'size': len(data)}, **extra)
+
+
+def buildkit_archive(path, order=('image', 'attestation'), os_name='linux', arch='amd64'):
+    """An OCI archive shaped like docker/build-push-action's type=oci output with provenance and an SBOM:
+    index.json -> one image index (named by the tag) -> the platform image manifest, then its attestation manifest."""
+    with tempfile.TemporaryDirectory() as work:
+        layout = Path(work)
+        (layout / 'oci-layout').write_text('{"imageLayoutVersion":"1.0.0"}')
+        children = {}
+        for kind, config in (('image', {'os': os_name, 'architecture': arch, 'rootfs': {'type': 'layers'}}),
+                             ('attestation', {'os': 'unknown', 'architecture': 'unknown'})):
+            layer = write_blob(layout, kind.encode() + b' layer', 'application/vnd.oci.image.layer.v1.tar+gzip')
+            manifest = {'schemaVersion': 2, 'mediaType': OCI_MANIFEST, 'layers': [layer],
+                        'config': write_blob(layout, config, 'application/vnd.oci.image.config.v1+json')}
+            platform = {'os': config['os'], 'architecture': config['architecture']}
+            children[kind] = write_blob(layout, manifest, OCI_MANIFEST, platform=platform)
+        child = write_blob(layout, {'schemaVersion': 2, 'mediaType': OCI_INDEX,
+                                    'manifests': [children[kind] for kind in order]}, OCI_INDEX,
+                           annotations={'org.opencontainers.image.ref.name': DRY_RUN_TAG})
+        (layout / 'index.json').write_text(json.dumps({'schemaVersion': 2, 'mediaType': OCI_INDEX, 'manifests': [child]}))
+        with tarfile.open(path, 'w') as archive:
+            for entry in sorted(layout.iterdir()):
+                archive.add(entry, arcname=entry.name)
+
+
+class ReleaseScanTest(unittest.TestCase):
+    """A-708: the scan reads the published archive in a form Trivy v0.76 opens, and nothing else is published."""
+
+    def test_the_scan_reads_the_layout_unpacked_from_the_published_archive(self):
+        package = job('package')
+        build = package.index('docker/build-push-action@')
+        self.assertIn('outputs: type=oci,dest=opsecmkt.oci.tar\n', package)
+        self.assertLess(build, package.index('- name: ' + UNPACK))
+        self.assertLess(package.index('- name: ' + UNPACK), package.index('- name: ' + SCAN))
+        unpack = shell_of(step_named(UNPACK))
+        self.assertIn('layout="$RUNNER_TEMP/opsecmkt-oci"', unpack)
+        self.assertIn('tar -xf opsecmkt.oci.tar -C "$layout"', unpack)
+        self.assertIn('sha256sum opsecmkt.oci.tar > "$RUNNER_TEMP/scanned-oci.sha256"', unpack)
+        scan = step_named(SCAN)
+        self.assertIn('image-archive: %s\n' % LAYOUT, scan)
+        self.assertNotIn('image-archive: opsecmkt.oci.tar', WORKFLOW)
+        packaging = shell_of(step_named(PACKAGE))
+        self.assertLess(packaging.index('sha256sum --check --strict "$RUNNER_TEMP/scanned-oci.sha256"'),
+                        packaging.index('gzip -n opsecmkt.oci.tar'))
+        self.assertIn('sha256sum opsecmkt.oci.tar.gz build.json opsecmkt-linux-* verify-audit-* > SHA256SUMS', packaging)
+
+    def test_the_scan_action_still_rejects_fixable_high_and_critical(self):
+        action = (REPOSITORY / '.github' / 'actions' / 'scan-image' / 'action.yml').read_text()
+        self.assertIn('OCI layout directory', action)
+        self.assertIn('input: ${{ inputs.image-archive }}', action)
+        self.assertIn('--exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL', action)
+        self.assertIn('trivy image "${args[@]}" --input "$IMAGE_ARCHIVE"', action)
+
+    def unpack(self, work, **archive):
+        workspace, temp = work / 'workspace', work / 'temp'
+        workspace.mkdir()
+        temp.mkdir()
+        buildkit_archive(workspace / 'opsecmkt.oci.tar', **archive)
+        env = dict(os.environ, RUNNER_TEMP=str(temp))
+        result = subprocess.run(['bash', '-e', '-c', shell_of(step_named(UNPACK))], cwd=workspace, env=env,
+                                capture_output=True, text=True)
+        return result, workspace, temp
+
+    def test_a_buildkit_archive_unpacks_to_the_layout_trivy_opens(self):
+        with tempfile.TemporaryDirectory() as work:
+            result, workspace, temp = self.unpack(Path(work))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in ('oci-layout', 'index.json', 'blobs'):
+                self.assertTrue((temp / 'opsecmkt-oci' / name).exists(), name)
+            recorded = (temp / 'scanned-oci.sha256').read_text().split()
+            self.assertEqual(recorded, [hashlib.sha256((workspace / 'opsecmkt.oci.tar').read_bytes()).hexdigest(),
+                                        'opsecmkt.oci.tar'])
+            self.assertIn('linux/amd64', result.stdout)
+
+    def test_a_layout_that_would_scan_the_wrong_manifest_is_refused(self):
+        # Trivy v0.76 follows the first descriptor of each index; an attestation there would scan no packages.
+        for archive in ({'order': ('attestation', 'image')}, {'order': ()}, {'arch': 'arm64'}):
+            with self.subTest(**archive), tempfile.TemporaryDirectory() as work:
+                result, _, _ = self.unpack(Path(work), **archive)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('release OCI layout', result.stderr)
+
+    def package(self, change_after_scan):
+        with tempfile.TemporaryDirectory() as work:
+            result, workspace, temp = self.unpack(Path(work))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if change_after_scan:
+                with open(workspace / 'opsecmkt.oci.tar', 'ab') as archive:
+                    archive.write(b'\0' * 512)
+            for name in ('opsecmkt-linux-amd64', 'verify-audit-linux-amd64'):
+                (workspace / name).write_text(name)
+            env = dict(os.environ, RUNNER_TEMP=str(temp), RELEASE_TAG=DRY_RUN_TAG, GITHUB_REPOSITORY='o/r',
+                       GITHUB_SHA='0' * 40, GITHUB_SERVER_URL='https://github.invalid', GITHUB_RUN_ID='1')
+            result = subprocess.run(['bash', '-e', '-c', shell_of(step_named(PACKAGE))], cwd=workspace, env=env,
+                                    capture_output=True, text=True)
+            return result, sorted(path.name for path in workspace.iterdir()), (workspace / 'SHA256SUMS')
+
+    def test_packaging_publishes_the_scanned_archive_and_refuses_a_changed_one(self):
+        result, files, sums = self.package(change_after_scan=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('opsecmkt.oci.tar.gz', files)
+        self.assertNotIn('opsecmkt.oci.tar', files)
+        result, files, _ = self.package(change_after_scan=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('opsecmkt.oci.tar.gz', files)
+        self.assertNotIn('SHA256SUMS', files)
+
+    def test_ci_cd_doc_describes_the_scanned_layout(self):
+        for text in ('Trivy `--input` opens a Docker archive or an OCI layout directory',
+                     'the same `opsecmkt.oci.tar` that is then compressed', 'checksum'):
+            self.assertTrue(text in CI_CD, 'docs/ci-cd.md lacks %r' % text)
 
 
 if __name__ == '__main__':

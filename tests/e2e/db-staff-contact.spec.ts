@@ -82,6 +82,14 @@ test('administrator publishes a staff contact that every promised page shows as 
     await expect(contact).toHaveText(`Contact the market staff: ${hostile}.`);
     await expect(contact.locator('b, a')).toHaveCount(0);
     await noOverflow(visitor);
+    // A-703: with the CAPTCHA off (this suite's setting), /login names the contact for someone locked out, once, and
+    // says no one can reset a lost password.
+    await visitor.goto('/login');
+    const lockedOut = visitor.locator('p.staff-contact');
+    await expect(lockedOut).toHaveText(`Locked out or reporting a stolen account? Contact the market staff: ${hostile}. Have ready your account's handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key.`);
+    await expect(lockedOut.locator('b, a')).toHaveCount(0);
+    await expect(visitor.locator('#signin-password-help')).toHaveText('There is no password reset. No one, including the market staff, can reset a lost password; only the operator on the server can, and only for an administrator account.');
+    await noOverflow(visitor);
     await buyer.goto('/notifications');
     const notice = buyer.locator('article', { hasText: 'Your XMR payout address was changed' });
     await expect(notice.locator('.staff-contact')).toHaveText(`Contact the market staff: ${hostile}.`);

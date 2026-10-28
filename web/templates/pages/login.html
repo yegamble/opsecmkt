@@ -7,10 +7,10 @@
 <form class="stack" method="post" action="/login">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{with .Next}}<input type="hidden" name="next" value="{{.}}">{{end}}<label>Handle<input name="handle"{{with .FormHandle}} value="{{.}}"{{end}} required minlength="3" maxlength="32" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="your_handle">
 </label>
-<label>Password<input type="password" name="password" required autocomplete="current-password">
-</label><label>Authenticator code (if you use one)<input name="rescue_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" aria-describedby="signin-code-help">
+<label>Password<input type="password" name="password" required autocomplete="current-password" aria-describedby="signin-password-help">
+</label><span class="help" id="signin-password-help">There is no password reset. No one, including the market staff, can reset a lost password; only the operator on the server can, and only for an administrator account.</span><label>Authenticator code (if you use one)<input name="rescue_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" aria-describedby="signin-code-help">
 </label><span class="help" id="signin-code-help">Enter it now to skip the verification step. If sign-in for your handle is paused after failed passwords, your password with your current six-digit authenticator code still signs you in. Without an authenticator app, leave this blank to see why sign-in is refused.</span>{{template "auth-captcha" .}}<button class="primary" type="submit">Sign in <span class="action-icon">↗</span></button>
-</form>{{if and .Access (not .Access.RegistrationOpen)}}<p class="form-footer">New registrations are closed. Existing members can still sign in.</p>{{else}}<p class="form-footer">New here? <a href="/register{{with .Next}}?next={{.}}{{end}}">Create an account</a>
+</form>{{if not (and .Captcha .Captcha.ID)}}<p class="help staff-contact">Locked out or reporting a stolen account? {{template "staff-contact" .}} {{.StaffContactSignedOut}}</p>{{end}}{{if and .Access (not .Access.RegistrationOpen)}}<p class="form-footer">New registrations are closed. Existing members can still sign in.</p>{{else}}<p class="form-footer">New here? <a href="/register{{with .Next}}?next={{.}}{{end}}">Create an account</a>
 </p>{{end}}</div>
 <p class="muted help">Keep your account credentials private. An account is not an anonymity guarantee.</p>
 </div>

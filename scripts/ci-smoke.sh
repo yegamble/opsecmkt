@@ -70,24 +70,38 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # app's 30-day signature age gate passes on any calendar day with the default SCANNER_MAX_SIGNATURE_AGE_DAYS.
 # This proves the upload path against real clamd, not detection quality: no production signature is loaded.
 scanner_prepare() {
-  local image
+  local image header re
   image=$("${compose[@]}" config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["clamd"]["image"])')
   docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
-  # sigtool --build packs every daily.* file of its working directory, needs a COPYING file and reads the
-  # builder name from standard input; nothing is signed and nothing leaves the container but daily.cud.
+  # sigtool --build packs every daily.* file of its working directory and needs a COPYING file; nothing is
+  # signed and nothing leaves the container but daily.cud.
   docker run --rm -i --network none --read-only --tmpfs /build --user clamav --cap-drop ALL \
     --security-opt no-new-privileges:true --entrypoint bash "$image" -c '
       set -e
       cd /build
       cat > daily.ndb
       echo "OPSEC Market CI test signature; not for scanning anything else." > COPYING
-      # ClamAV 1.5.4 retries a 00-prefixed MD5 once, reading the builder again with scanf.
-      # Two whitespace-separated answers cover both attempts without a producer process.
-      sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build <<< "ci ci" >&2
+      # ClamAV 1.5 refuses a tar.gz MD5 that starts with 00 (1.1 to 1.4 cannot verify it) and retries once, but
+      # within the same second it packs the same bytes again (A-708). The builder name, given in SIGNDUSER so
+      # nothing is read from standard input, is packed in daily.info: a new name gives a new MD5. Only that
+      # refusal is retried, at most six builds (tests/test_ci_smoke_clamav.py, with a stub sigtool).
+      for attempt in 1 2 3 4 5 6; do
+        if out=$(SIGNDUSER=ci$attempt sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build < /dev/null 2>&1); then
+          echo "$out" >&2
+          break
+        fi
+        echo "$out" >&2
+        [[ $out == *"MD5 starts with 00"* && $attempt -lt 6 ]] || exit 1
+      done
       sigtool --info daily.cud >&2
       cat daily.cud' < deploy/testdata/clamav-test.ndb > "$work/clamav/daily.cud"
   chmod 0755 "$work/clamav"
   chmod 0644 "$work/clamav/daily.cud"
+  # The pinned image's real sigtool wrote the header: ClamAV-VDB:<date>:<version 1>:<1 signature>:<flevel>:<MD5,
+  # not 00-prefixed>:X (unsigned):<a retry builder name>:<build time>, padded with spaces to 512 bytes.
+  header=$(head -c 512 "$work/clamav/daily.cud")
+  re='^ClamAV-VDB:[^:]+:1:1:[0-9]+:([0-9a-f]{32}):X:ci[1-6]:[0-9]+ *$'
+  [[ $header =~ $re && ${BASH_REMATCH[1]} != 00* ]] || fail "unexpected test signature database header: $header"
   echo "scanner: $image with deploy/testdata/clamav-test.ndb as its only signature database (an unsigned daily.cud)"
 }
 
