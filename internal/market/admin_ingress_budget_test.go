@@ -79,7 +79,7 @@ func adminIngressClasses() map[string]chan struct{} {
 func TestPublicListenerCannotPauseAdminIngressSignIn(t *testing.T) {
 	e := newTestApp(t)
 	e.A.adminSocket = "/run/market-admin/http.sock"
-	id, _ := e.user("onion_admin", "admin")
+	id, _ := e.factorlessStaff("onion_admin", "admin") // its only factor is the TOTP enabled below
 	agEnableTOTP(e, id)
 	login := func(private bool, password, code string, extra ...*http.Cookie) *httptest.ResponseRecorder {
 		t.Helper()

@@ -338,7 +338,7 @@ func TestBanAdminBuyerMessageDeadlockIsBusy(t *testing.T) {
 	x.mustPoll()
 	order, admin, _ := x.shippedXMR(x.physical(x.vendor))
 	adminID := x.partyOf(order, roleBuyer)
-	agExec(x.testEnv, "UPDATE users SET role='admin' WHERE id=$1", adminID) // the order's buyer is an administrator
+	agExec(x.testEnv, "UPDATE users SET role='admin',pgp_2fa=true WHERE id=$1", adminID) // the order's buyer is an administrator
 	x.forceDeadline(order, "release_at=now()-interval '1 minute'")
 	handle := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.vendor)
 	// Everything a ban would change: the account, its sessions, listings and handle reservation, the audit trail,

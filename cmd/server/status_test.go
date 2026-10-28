@@ -102,6 +102,23 @@ func TestStatusFlagPrintsNoSecrets(t *testing.T) {
 	}
 	check(fmt.Sprintf("installed=true schema=%03d", latest))
 
+	// A-706: active staff without a second factor are counted on stderr (never by handle); the stdout line the
+	// installer parses is unchanged. Suspended staff and staff with TOTP or PGP sign-in are not counted.
+	for _, q := range []string{
+		"INSERT INTO " + schema + ".users(id,handle,password_hash,role) VALUES('s1','status_factorless_admin','x','admin'),('s2','status_factorless_mod','x','moderator'),('s3','status_suspended_mod','x','moderator'),('s4','status_totp_mod','x','moderator'),('s5','status_buyer','x','buyer')",
+		"UPDATE " + schema + ".users SET suspended_at=now() WHERE id='s3'",
+		"UPDATE " + schema + ".users SET totp_enabled=true WHERE id='s4'",
+	} {
+		if _, err = admin.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := runServer(t, []string{"DATABASE_URL=" + dsn, "SETUP_TOKEN=" + setupToken, "APP_SECRET_KEY="}, "-status")
+	if want := fmt.Sprintf("installed=true schema=%03d keyroot=setup_token\n", latest); code != 0 || stdout != want ||
+		!strings.HasPrefix(stderr, "warning: 2 active staff account(s) have no second factor and cannot take staff actions") || strings.Contains(stderr, "status_") {
+		t.Fatalf("factor-less staff: exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
+
 	// A wrong password against the real server: a class, never the URL or the password tried.
 	if password != "" {
 		wrong := *u

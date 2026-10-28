@@ -134,7 +134,7 @@ func main() {
 		return
 	}
 	if *statusFlag {
-		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Getenv, os.Stdout); err != nil {
+		if err := status(context.Background(), os.Getenv("DATABASE_URL"), os.Getenv, os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, "status:", err)
 			os.Exit(1)
 		}

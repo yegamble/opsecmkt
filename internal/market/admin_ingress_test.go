@@ -82,6 +82,7 @@ func TestPrivateAdminIngressSessionsAndSharedStaffRoutes(t *testing.T) {
 	if w := request(false, "GET", "/account", buyer, nil); w.Code != 200 {
 		t.Fatalf("public buyer lost account access: status=%d", w.Code)
 	}
+	agExec(e, "UPDATE users SET pgp_2fa=false WHERE handle='admin_user'") // a password-only sign-in (staffFixtureFactor)
 	for _, private := range []bool{false, true} {
 		w := request(private, "POST", "/login", randomToken(), url.Values{"handle": {"admin_user"}, "password": {testPassword}})
 		if private && (w.Code != 303 || e.cookie(w, "session") == "") {

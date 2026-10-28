@@ -15,6 +15,29 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Staff need a second factor before staff actions (A-706)
+
+No migration and no configuration change, but **existing moderators and administrators without a second factor
+must enrol one before they can act**. Every staff-only form (the actions only moderators and administrators may
+post: role changes, suspensions, bans, factor resets, settings, dispute resolution, listing and payment review,
+ticket assignment, image takedown, staff uploads and the like) is now refused with 403 and nothing changed while
+the acting account has neither an authenticator (TOTP) nor PGP sign-in turned on. The refusal links to `/totp` and
+`/pgp`. Strict PGP sign-in policy alone does not count: turn on PGP sign-in for the account (one confirmed form on
+`/pgp`); saving a new PGP key turns PGP sign-in off until the key is verified and it is turned on again. Forms
+buyers and vendors can also post (support-ticket replies, listings, messages, order steps) are not gated, even for
+staff.
+
+Before or right after upgrading, have each administrator and moderator enrol (`/totp`, or verify a key and turn on
+PGP sign-in on `/pgp`). The staff roster (*Admin → Users*) now has a *Second factor* column, the overview's
+*Users* link and checklist say how many staff lack one and whether you do, and `-status` prints the count on
+stderr (`warning: N active staff account(s) have no second factor ...`); its stdout line is unchanged.
+
+The change adds no lockout: enrolment, `/account`, the password change, sign-out and every page stay available
+without a factor, and so do the host commands (`-set-role`, `-bootstrap-admin`, `-reset-admin-password`,
+`-reset-admin-factors`, the restore gate). A new market's first administrator, created by `/setup` or
+`-bootstrap-admin`, enrols on `/totp` (the overview's first checklist step) before the first staff change. After
+`-reset-admin-factors` the administrator signs in with the password, re-enrols and can act again.
+
 ## A refused production start says why (serve --check-startup, A-694)
 
 No migration and no configuration change. The production app container keeps no logs (logging driver `none`), so

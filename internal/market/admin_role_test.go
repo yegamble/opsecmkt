@@ -152,7 +152,8 @@ func TestSetRole(t *testing.T) {
 	if want := []string{"Role changed from admin to buyer by host command", "Staff avatar removed when the role changed"}; !slices.Equal(e.audits(rootID), want) {
 		t.Fatalf("root audit %q, want %q", e.audits(rootID), want)
 	}
-	// It can sign in again with its password, as a buyer.
+	// It can sign in again with its password, as a buyer (without the fixture's PGP sign-in, staffFixtureFactor).
+	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", rootID)
 	if code, loc := loginStatus(e, "root_admin", testPassword); code != 303 || loc != "/" {
 		t.Fatalf("demoted administrator sign-in: %d %q", code, loc)
 	}

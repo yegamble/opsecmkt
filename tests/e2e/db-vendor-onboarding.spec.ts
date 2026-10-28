@@ -28,7 +28,7 @@ test('vendor sign-up under bond and approval, bond recorded, approved, then publ
   const admin = await signedIn(browser, baseURL, adminHandle, password, true, 320);
   const panel = admin.getByRole('region', { name: 'Vendor applications' });
   try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}'`);
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}'`);
     await admin.goto('/admin/vendors');
     await panel.getByLabel('Bond in XMR').fill('0.25');
     await panel.getByRole('radio', { name: /Manual/ }).check();

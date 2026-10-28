@@ -311,7 +311,29 @@ func (e *testEnv) setup() string {
 	e.t.Helper()
 	w := e.do("POST", "/setup", randomToken(), url.Values{"token": {testSetupToken}, "handle": {"admin_user"}, "password": {"a-long-test-password"}, "site_name": {"Integration Market"}})
 	e.check(w, 303)
-	return e.session(w)
+	session := e.session(w)
+	e.staffFixtureFactor(session)
+	return session
+}
+
+// staffFixtureFactor gives a fixture staff session's account the PGP sign-in factor A-706 requires before staff
+// actions: the shared fixture key (when none is saved), proved in this session, with PGP sign-in on. Tests of the
+// refusal itself use factorlessStaff; tests of the factor flows enrol or clear factors through the real forms.
+func (e *testEnv) staffFixtureFactor(session string) {
+	e.t.Helper()
+	var public string
+	if err := e.DB.QueryRow("SELECT u.pgp FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1", digest(session)).Scan(&public); err != nil {
+		e.t.Fatal(err)
+	}
+	if public == "" {
+		accountPGPFixture.once.Do(func() {
+			accountPGPFixture.key, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
+		})
+		e.pgpSession(session, accountPGPFixture.public)
+	}
+	if _, err := e.DB.Exec("UPDATE users SET pgp_verified_at=now(),pgp_2fa=true WHERE id=(SELECT user_id FROM sessions WHERE token_hash=$1)", digest(session)); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 var testHash = sync.OnceValue(func() string {
@@ -390,7 +412,8 @@ var accountPGPFixture struct {
 }
 
 // user represents an account that already completed PGP authentication in this
-// session. Requests still run the production authorization checks. Tests of missing
+// session; a moderator or administrator also has PGP sign-in on (staffFixtureFactor, A-706). Requests still run the
+// production authorization checks. Tests of missing
 // keys or proof use keylessUser, and changing a key requires explicit reauthentication.
 func (e *testEnv) user(handle, role string) (id, session string) {
 	e.t.Helper()
@@ -399,6 +422,9 @@ func (e *testEnv) user(handle, role string) (id, session string) {
 		accountPGPFixture.key, accountPGPFixture.public = testPGPKey(e.t, "commerce-fixture")
 	})
 	e.pgpSession(session, accountPGPFixture.public)
+	if role == "admin" || role == "moderator" {
+		e.staffFixtureFactor(session)
+	}
 	return id, session
 }
 

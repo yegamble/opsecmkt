@@ -80,6 +80,9 @@ func (d PageData) AdminSectionAlert(slug string) string {
 	var alerts []string
 	switch slug {
 	case "users":
+		if d.StaffWithoutFactor > 0 { // A-706: listed on the staff roster
+			alerts = append(alerts, strconv.Itoa(d.StaffWithoutFactor)+" staff account(s) have no second factor and cannot take staff actions.")
+		}
 		if d.BannedOpenEscrow > 0 { // A-652b, STAFF87-7: refund or follow them from each banned account's page
 			alerts = append(alerts, strconv.Itoa(d.BannedOpenEscrow)+" banned account(s) have open escrow orders.")
 		}

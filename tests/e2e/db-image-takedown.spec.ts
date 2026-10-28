@@ -55,7 +55,7 @@ test('moderator removes a photo from the desk; URL 404s; vendor sees the reason'
     // The roles and the listing in SQL (their forms are covered elsewhere); the photo through the upload route.
     const listing = randomBytes(32).toString('hex');
     const title = `Takedown ${uniqueHandle('listing')}`;
-    sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}'; UPDATE users SET role='moderator' WHERE handle='${moderatorHandle}';
+    sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}'; UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${moderatorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         SELECT '${listing}', id, '${title}', 'Seeded by db-image-takedown.spec.ts', 'Hardware', 'Worldwide', 'physical', 100000, 500000000000, 1 FROM users WHERE handle='${vendorHandle}';`);
     await vendor.goto(`/listing-edit?id=${listing}`);

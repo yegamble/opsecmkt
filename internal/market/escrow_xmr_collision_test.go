@@ -220,7 +220,7 @@ func TestXMREscrowCollisionStaffAlert(t *testing.T) {
 		}
 	}
 	// A moderator who is a party to the order (here its vendor) is refused too.
-	agExec(x.testEnv, "UPDATE users SET role='moderator' WHERE id=$1", x.vendor)
+	agExec(x.testEnv, "UPDATE users SET role='moderator',pgp_2fa=true WHERE id=$1", x.vendor)
 	if code, body := x.recordCollision(x.vendorSess, id, reason); code != 403 || !strings.Contains(body, "party") {
 		t.Fatalf("a staff party: %d %s", code, body)
 	}

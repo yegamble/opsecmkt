@@ -1,17 +1,13 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { expectNotice, setRole, signedIn } from './db-helpers';
+import { expectNotice, passwordSignIn, setRole, signedIn } from './db-helpers';
 
 // P4 Inventory: the shared administrator publishes its own uniquely named listing, edits it,
 // archives it (hidden from the catalog, closed to new drafts) and restores it, then edits a fresh
 // vendor's listing without seeing its automatic delivery content.
 test('edit, archive and restore a listing without client scripts', async ({ page, browser, baseURL }) => {
   const title = `Inventory ${uniqueHandle('item')}`;
-  await page.goto('/login');
-  await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
-  await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  await passwordSignIn(page, ADMIN.handle, ADMIN.password);
 
   await page.goto('/vendor-dashboard');
   await page.getByText('+ Publish a new listing', { exact: true }).click();

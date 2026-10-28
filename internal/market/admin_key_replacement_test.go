@@ -118,7 +118,7 @@ func TestAdminKeyReplacementAuditsOldAndNewFingerprint(t *testing.T) {
 	}
 
 	// The host command records OLD -> NEW for an administrator's replaced key.
-	hostID, _ := e.user("audit_key_host", "admin")
+	hostID, _ := e.factorlessStaff("audit_key_host", "admin")
 	agEnableTOTP(e, hostID)
 	hostOld := agStr(e, "SELECT pgp_fingerprint FROM users WHERE id=$1", hostID)
 	_, hostPublic := testPGPKey(t, "audit-key-host")

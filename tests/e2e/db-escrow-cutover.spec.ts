@@ -22,7 +22,7 @@ test('Monero-only intake, forged Bitcoin refusals and unavailable escrow work wi
     await seedPGPAccess(vendor);
     await seedPGPAccess(buyer);
     sql(`UPDATE settings SET value='false' WHERE key='payment_intake_XMR';
-      UPDATE users SET role='admin' WHERE handle='${adminHandle}';
+      UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
       UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,xmr,stock)
       SELECT '${product}',id,'${title}','Monero-only fixture','Digital','Worldwide','digital',500000000000,3 FROM users WHERE handle='${vendorHandle}';`);

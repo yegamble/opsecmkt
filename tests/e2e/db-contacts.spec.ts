@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { RECIPIENT_FINGERPRINT, saveEncryptionKey, setRole, seedPGPAccess } from './db-helpers';
+import { passwordSignIn, RECIPIENT_FINGERPRINT, saveEncryptionKey, setRole, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Contacts and vendor demotion against a real database: an administrator promotes a new account to
@@ -16,10 +16,14 @@ async function fits(page: Page, label: string) {
 async function signedIn(browser: Browser, baseURL: string | undefined, handle: string, password: string, register: boolean): Promise<Page> {
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 320, height: 800 } });
   const page = await context.newPage();
-  await page.goto(register ? '/register' : '/login');
+  if (!register) {
+    await passwordSignIn(page, handle, password); // lifts a staff account's A-706 fixture factor for the password step
+    return page;
+  }
+  await page.goto('/register');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: register ? 'Create account' : 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
   return page;
 }

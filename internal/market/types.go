@@ -6,6 +6,7 @@ type User struct {
 	ID, Handle, Role, PGP string
 	RetentionRestricted   bool   // only existing obligations and sign-in security while closure waits for funds
 	RetentionContinuity   bool   // sole administrator may appoint a replacement while closure waits
+	SecondFactor          bool   // session lookup only: TOTP or PGP sign-in is on (A-706's early staff-action check)
 	Factors               string // P1, PageData.FactorAccounts only: enrolled second factors, e.g. "TOTP and PGP sign-in"
 	Suspended             string // P1, PageData.SuspendedAccounts only: when the account was suspended
 	Avatar                string // A-189, vendor page and /canary staff list only: the avatar thumbnail on /img, "" when none may be shown
@@ -190,6 +191,10 @@ type PageData struct {
 
 	StaffRoster       []StaffRosterEntry
 	StaffRosterPaging *ActivityPaging
+	// A-706, administrators only: active staff accounts without TOTP or PGP sign-in, and whether this administrator
+	// is one of them (staff actions are refused until they enrol).
+	StaffWithoutFactor int
+	StaffFactorMissing bool
 
 	RecentServerErrors []ServerErrorEntry // administrator-only, volatile, no request contents
 
