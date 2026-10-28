@@ -389,6 +389,92 @@ func TestSignedOutRefusalsExplainHandleContactNeedsAccount(t *testing.T) {
 	mustNotContain(t, b, staffNewAccountLine, "requires PGP decryption at every sign-in")
 }
 
+// A-703: a members-only market redirects /canary to /login, so with the CAPTCHA off (no "Can't read the image?"
+// line) and registrations closed (/register shows only "Registration is closed") a signed-out visitor found no staff
+// contact anywhere. /login and the closed /register now name it with the signed-out lines (A-702); while
+// registrations are closed a handle contact is not offered as reachable "from a new account", there or in the
+// sign-in refusals. With the CAPTCHA shown, /login names the contact once, in the CAPTCHA's help.
+func TestStaffContactOnLoginWithoutCaptchaMembersOnly(t *testing.T) {
+	e := newTestApp(t)
+	e.user("a703staff", "moderator")
+	suspendedID, _ := e.user("a703_suspended", "buyer")
+	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", suspendedID)
+	agExec(e, "UPDATE settings SET value=CASE key WHEN 'site_access' THEN 'members' ELSE 'closed' END WHERE key IN ('site_access','registrations')")
+	const lockedOut = "Locked out or reporting a stolen account? "
+	const closedHandleLine = "That is a market handle, and new registrations are closed, so only an existing account can message it."
+	w := e.do("GET", "/canary", "", nil)
+	if w.Code != 303 || !strings.HasPrefix(w.Header().Get("Location"), "/login") {
+		t.Fatalf("members-only /canary: %d %q", w.Code, w.Header().Get("Location"))
+	}
+	pages := func() map[string]string {
+		t.Helper()
+		return map[string]string{
+			"/login":    html.UnescapeString(e.body("GET", "/login", randomToken(), nil, 200)),
+			"/register": html.UnescapeString(e.body("GET", "/register", randomToken(), nil, 403)),
+		}
+	}
+	once := func(name, b, want string) {
+		t.Helper()
+		if n := strings.Count(b, want); n != 1 {
+			t.Fatalf("%s names %q %d times", name, want, n)
+		}
+	}
+
+	for name, b := range pages() {
+		mustContain(t, b, lockedOut+askOperatorLine+" "+staffReadyLine)
+		mustNotContain(t, b, "Contact the market staff:", "captcha-image")
+		once(name, b, askOperatorLine)
+	}
+
+	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact','a703staff')")
+	for name, b := range pages() {
+		mustContain(t, b, lockedOut+"Contact the market staff: a703staff. "+closedHandleLine+" "+staffReadyLine)
+		mustNotContain(t, b, staffNewAccountLine, `href="/messages`, askOperatorLine)
+		once(name, b, "Contact the market staff:")
+	}
+	suspended := func() string {
+		t.Helper()
+		w := e.do("POST", "/login", randomToken(), form("handle", "a703_suspended", "password", testPassword))
+		if w.Code != 403 {
+			t.Fatalf("suspended sign-in: %d", w.Code)
+		}
+		// The sign-in form shown again with the refusal (A-514) carries the same contact, not "Ask the operator".
+		b := html.UnescapeString(w.Body.String())
+		mustContain(t, b, lockedOut+"Contact the market staff: ")
+		mustNotContain(t, b, askOperatorLine)
+		return refusalText(w.Body.String())
+	}
+	if got := suspended(); got != "This account is suspended. Contact the market staff: a703staff. "+closedHandleLine+" "+staffReadyLine {
+		t.Fatalf("suspended refusal with registrations closed: %q", got)
+	}
+
+	agExec(e, "UPDATE settings SET value=$1 WHERE key='staff_contact'", staffContactValue)
+	for name, b := range pages() {
+		mustContain(t, b, lockedOut+"Contact the market staff: "+staffContactValue+". "+staffReadyLine)
+		mustNotContain(t, b, closedHandleLine, staffNewAccountLine)
+		once(name, b, "Contact the market staff:")
+	}
+
+	// Registrations open again: a handle can be reached from a new account, and the open /register already names the
+	// contact (its vendor-application line).
+	agExec(e, "UPDATE settings SET value='open' WHERE key='registrations'")
+	agExec(e, "UPDATE settings SET value='a703staff' WHERE key='staff_contact'")
+	login := html.UnescapeString(e.body("GET", "/login", randomToken(), nil, 200))
+	mustContain(t, login, lockedOut+"Contact the market staff: a703staff. "+staffNewAccountLine+" "+staffReadyLine)
+	mustNotContain(t, login, closedHandleLine)
+	mustContain(t, html.UnescapeString(e.body("GET", "/register", randomToken(), nil, 200)), "Contact the market staff: a703staff.")
+	if got := suspended(); got != "This account is suspended. Contact the market staff: a703staff. "+staffNewAccountLine+" "+staffReadyLine {
+		t.Fatalf("suspended refusal with registrations open: %q", got)
+	}
+
+	// With the CAPTCHA shown, /login names the contact once: in the CAPTCHA's own help, not again below the form.
+	agExec(e, "UPDATE settings SET value='true' WHERE key='captcha_required'")
+	login = html.UnescapeString(e.body("GET", "/login", randomToken(), nil, 200))
+	mustContain(t, login, "captcha-image", captchaHelpLine+" Contact the market staff: a703staff.")
+	mustNotContain(t, login, lockedOut)
+	once("/login with the CAPTCHA", login, "Contact the market staff:")
+}
+
 // A-298: on the flagged-upload path (A-279) a staff contact that cannot be read leaves the contact line out rather
 // than guessing "Ask the operator", still answers 422 with the reference, and logs only the cause class: never the
 // raw database error (which names the relation) or the setting's value.

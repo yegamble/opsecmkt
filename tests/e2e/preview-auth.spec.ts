@@ -44,6 +44,10 @@ for (const path of ['/login', '/register']) {
       await expect(page.locator('#signin-code-help')).toContainText('If sign-in for your handle is paused after failed passwords, your password with your current six-digit authenticator code still signs you in.');
       await expect(page.locator('#signin-code-help')).toContainText('Without an authenticator app, leave this blank to see why sign-in is refused.');
     }
+    // A-703: no one, including the staff, can reset a lost password; said on /login, and before /register's button.
+    await expect(page.locator(path === '/login' ? '#signin-password-help' : '#password-help')).toContainText('There is no password reset. No one, including the market staff, can reset a lost password');
+    // With the CAPTCHA image shown, the contact is named once, in its help.
+    await expect(page.getByText('Locked out or reporting a stolen account?')).toHaveCount(0);
     if (path === '/register') {
       // A-512, A-544: selling needs an approved vendor application.
       await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an approved vendor application. Ask the operator of this market.');
