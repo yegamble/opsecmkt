@@ -252,7 +252,12 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		d.XMREscrowCheckout = v
 		return nil
 	}
-	if err != nil || !eligible {
+	if err != nil {
+		return err
+	}
+	if !eligible { // A-711: the buyer is told why, not shown nothing
+		v.Reason, err = checkoutIneligibleReason(ctx, a.db, o)
+		d.XMREscrowCheckout = v
 		return err
 	}
 	v.Total = amount(price, 12)

@@ -258,10 +258,13 @@ acceptance requirements, not a declaration of deployed verification:
   review form preselects no choice and its hold option says the proposal closes
   and marketplace state is kept; upload proposals link to the photo's listing,
   the evidence's order or the avatar's account page and to nothing once the image
-  is deleted; confidence is labelled model-stated and uncalibrated
+  is deleted; a review proposal links to the reviews on its listing, which a
+  non-party administrator opens (200) and finds the review with its Hide form,
+  not to the completed order staff cannot read (A-711); confidence is labelled
+  model-stated and uncalibrated
   (`TestModerationAdminQueueFiltersAndOrder`, `TestModerationAdminHoldLabel`,
-  `TestModerationAdminUploadTargetLinks`, `TestModerationTargetURLAllowlist`,
-  `TestModerationAdminConfidenceLabel`, A-685). The page is served only on the
+  `TestModerationAdminUploadTargetLinks`, `TestModerationAdminReviewTargetLink`,
+  `TestModerationTargetURLAllowlist`, `TestModerationAdminConfidenceLabel`, A-685). The page is served only on the
   private administrator socket, so no browser test covers it.
 - Administrator diagnostics expose only bounded review metadata and health
   classes, not runtime endpoints, credentials or raw transport errors. Verify
@@ -701,6 +704,9 @@ These checks require recorded implementation and workflow verification before ma
 - [x] Changing a vendor's role to buyer or moderator archives their active listings in the same transaction (audited for the administrator and the account); new drafts, payment requests and restores on listings whose owner is not a vendor or administrator are refused, while existing orders continue (`TestVendorDemotionArchivesListingsAndRefusesNewOrders`).
 - [x] An administrator takes down another vendor's listing only with a reason of 10–500 characters and their password (9 or 501 characters → 400; the plain archive → 400; other roles → 403; nothing changes on refusal); the takedown is audited on both accounts and notified to the vendor once, link-free; the vendor sees the reason on `/listing-edit` and the vendor desk card and never on public pages, can still edit, and gets 409 quoting the reason and the staff-contact line on restore (A-279); only the administrator's confirmed restore clears it, and it still requires the owner to be a vendor; a role-change archive never sets a reason (`TestAdminTakedownSurvivesVendorRestore`, `TestDemotionArchiveIsNotATakedown`, `db-listing-takedown.spec.ts`).
 - [x] A paid order on a taken-down digital listing is not delivered automatically: it stays paid with a history note and the vendor delivers by hand or cancels; after restore, automatic delivery resumes (`TestAdminTakedownStopsAutoDelivery`).
+- [x] A-711: a digital listing cannot be a reusable download without content: create, edit and the digital delivery method form refuse it (400) with the problem next to its field and nothing saved, and a listing made digital without content starts with manual delivery (`TestReusableModeRequiresContent`); a buyer's draft on a listing that cannot use escrow says why under the escrow checkout (`TestXMRCheckoutOfferStatesIneligibleReason`).
+- [x] A-711: a funded digital order whose automatic delivery cannot be made (reusable download blanked after checkout, listing taken down, reserved batch no longer available) stays paid with a history note, and its vendor gets one notice naming the cause and saying to deliver or cancel (`TestXMRReusableBlankedAfterCheckoutNotifiesVendor`, `TestAutoDeliveryFailureNotifiesVendor`).
+- [x] A-711: distinct digital units an order reserved and never delivered return to stock when its dispute ends in a refund (the vendor's concession or an administrator's refund decision); delivered units stay consumed, a decision for the vendor keeps them with the order, and the concession form says which applies (`TestDigitalUnitsReturnAfterDisputeRefund`).
 
 ### Listing review (MOD72-6, hold mode)
 

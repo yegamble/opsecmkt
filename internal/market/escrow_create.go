@@ -601,6 +601,38 @@ func escrowEligible(ctx context.Context, q rowQuerier, o *Order) (bool, int64, i
 	return !takenDown && (digital || o.Kind == "physical" && dispatch.Valid), total, int(dispatch.Int32), nil
 }
 
+// A-711: why escrowEligible refused a listing, for the buyer's checkout offer.
+const (
+	reusableUnavailableReason = "This listing's automatic delivery is not set up: its vendor has not saved the reusable download content, so it cannot be bought until they do. You can cancel this draft."
+	takenDownCheckoutReason   = "An administrator took this listing down, so it cannot be bought. You can cancel this draft."
+)
+
+// checkoutIneligibleReason says why escrowEligible refused o's listing, as the buyer's checkout offer tells them:
+// more precisely than the listing's escrowIneligibleReason where the listing row says.
+func checkoutIneligibleReason(ctx context.Context, q rowQuerier, o *Order) (string, error) {
+	var mode string
+	var takenDown bool
+	if err := q.QueryRowContext(ctx, "SELECT digital_delivery_mode,admin_archive_reason IS NOT NULL FROM products WHERE id=$1", o.ProductID).Scan(&mode, &takenDown); err != nil {
+		return "", err
+	}
+	switch {
+	case takenDown:
+		return takenDownCheckoutReason, nil
+	case o.Kind == "digital" && mode == "reusable": // blank content (the forms keep it within maxDeliveryChars)
+		return reusableUnavailableReason, nil
+	case o.Kind == "digital" && mode == "inventory":
+		_, err := availableDigitalBatch(ctx, q, o.ProductID, o.Units())
+		if refusal, ok := err.(*httpError); ok {
+			return refusal.Msg, nil
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	reason, _ := escrowIneligibleReason(o.Kind)
+	return reason + " You can cancel this draft.", nil
+}
+
 // builtEscrow is a checked escrow, not yet imported: its address, the bare-key descriptor with its checksum (what is
 // imported) and each party's child key with the party it belongs to. A shape-(b) escrow also has the order wallet's
 // sibling addresses and the ranged descriptors that cover them (checkPerOrderEscrow), imported with it.

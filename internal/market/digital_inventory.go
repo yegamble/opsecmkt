@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -18,6 +19,7 @@ type DigitalInventoryView struct {
 	Owner               bool
 	Available, Reserved int
 	Units               []DigitalInventoryUnit
+	ModeError           string // a refused method form's problem (digitalModeRefusal), shown next to the method field
 }
 
 func init() {
@@ -58,9 +60,12 @@ func digitalModeAction(c *actionCtx) (actionResult, error) {
 	if open != 0 {
 		return actionResult{}, fail(409, "Finish or cancel this listing's open orders before changing its digital delivery method.")
 	}
-	var existing string
-	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT digital_delivery_mode FROM products WHERE id=$1", l.ID).Scan(&existing); err != nil {
+	var existing, content string
+	if err = c.Tx.QueryRowContext(c.Ctx(), "SELECT digital_delivery_mode,delivery_content FROM products WHERE id=$1", l.ID).Scan(&existing, &content); err != nil {
 		return actionResult{}, err
+	}
+	if mode == "reusable" && strings.TrimSpace(content) == "" {
+		return actionResult{}, digitalModeRefusal(c, reusableModeNeedsContent)
 	}
 	if existing == "inventory" && mode != "inventory" {
 		var remaining int
@@ -83,6 +88,24 @@ func digitalModeAction(c *actionCtx) (actionResult, error) {
 		}
 	}
 	return actionResult{Redirect: "/listing-edit?id=" + l.ID + "#digital-inventory", Audit: "Changed digital delivery method for listing " + shortID(l.ID) + " to " + mode}, nil
+}
+
+// digitalModeRefusal answers a refused digital delivery method form with 400 and the listing's edit page again, after
+// the action's rollback: msg in its error alert and next to the method field (A-59). When the page cannot be loaded,
+// the shared refusal page says msg instead.
+func digitalModeRefusal(c *actionCtx, msg string) error {
+	return &httpError{Code: http.StatusBadRequest, Msg: msg, Render: func(w http.ResponseWriter) {
+		a := c.A
+		r := c.R.Clone(c.R.Context())
+		r.URL.RawQuery = url.Values{"id": {c.Form.Get("id")}}.Encode()
+		d := a.pageData(r, "listing-edit", c.Token, c.User)
+		if err := a.load(r, &d); err != nil || d.DigitalInventory == nil {
+			a.refuse(w, c.R, c.User, http.StatusBadRequest, msg)
+			return
+		}
+		d.DigitalInventory.ModeError, d.Error = msg, msg
+		a.renderStatus(w, c.R, d, http.StatusBadRequest)
+	}}
 }
 
 func digitalInventoryListing(c *actionCtx) (managedListing, error) {
@@ -353,6 +376,26 @@ func releaseDigitalUnits(ctx context.Context, tx *sql.Tx, o *Order) error {
 	return err
 }
 
+// releaseDisputedDigitalUnits returns to stock the distinct units of o, a digital order leaving a dispute for to, when
+// the dispute ends in a refund (cancelled by the vendor's concession, or resolved for the buyer) and no delivery was
+// recorded for the order (A-711). The listing row is locked only when such a unit exists.
+func releaseDisputedDigitalUnits(ctx context.Context, tx *sql.Tx, o *Order, to string) error {
+	var undelivered bool
+	var outcome string
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM digital_units WHERE order_id=$1 AND delivered_at IS NULL)
+		AND NOT EXISTS(SELECT 1 FROM deliveries WHERE order_id=$1),COALESCE((SELECT outcome FROM disputes WHERE order_id=$1),'')`, o.ID).Scan(&undelivered, &outcome); err != nil {
+		return err
+	}
+	if !undelivered || to == stateResolved && outcome != "refund" {
+		return nil
+	}
+	// As for a cancellation (stockHook): a checkout of the same listing may hold its row while it waits on the escrow node.
+	if err := waitForWalletLocks(ctx, tx); err != nil {
+		return err
+	}
+	return releaseDigitalUnits(ctx, tx, o)
+}
+
 func reservedDigitalBatch(ctx context.Context, tx *sql.Tx, o *Order) (string, error) {
 	units := o.Units()
 	rows, err := tx.QueryContext(ctx, `SELECT content FROM digital_units WHERE order_id=$1 ORDER BY created,id FOR UPDATE`, o.ID)
@@ -360,4 +403,14 @@ func reservedDigitalBatch(ctx context.Context, tx *sql.Tx, o *Order) (string, er
 		return "", err
 	}
 	return scanDigitalBatch(rows, units)
+}
+
+// notDeliveredAutomatically keeps a paid order paid when its automatic delivery cannot be made: note goes in its
+// history and the vendor is told why (cause) and that they deliver by hand or cancel (A-711).
+func notDeliveredAutomatically(ctx context.Context, tx *sql.Tx, o *Order, note, cause string) error {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note); err != nil {
+		return err
+	}
+	_, err := insertNotification(ctx, tx, o.VendorID, "Order "+shortID(o.ID)+" is paid but was not delivered automatically: "+cause+". Deliver it by hand from the order page, or cancel it and refund the buyer.", o.ID)
+	return err
 }

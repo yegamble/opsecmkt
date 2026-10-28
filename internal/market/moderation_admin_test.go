@@ -505,27 +505,78 @@ func TestModerationAdminUploadTargetLinks(t *testing.T) {
 	}
 }
 
+// A-711 (moderation dead end): a review proposal links to the review's listing, which an administrator who is not a
+// party to the completed order opens (200) and finds the review with its Hide form; the order itself is not theirs to
+// read (404), which is where the link used to go.
+func TestModerationAdminReviewTargetLink(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("review_link_admin", "admin")
+	vendor, _ := e.user("review_link_vendor", "vendor")
+	buyer, _ := e.user("review_link_buyer", "buyer")
+	product := e.product(vendor, "physical")
+	order := e.order(buyer, product, "XMR", stateCompleted)
+	if err := SetModerationEnabled(t.Context(), e.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	review := randomToken()
+	agExec(e, `INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,2,'Review text the moderation link leads to')`, review, order, product, buyer)
+	if _, err := moderationTestWorker(e).Pass(t.Context(), 20); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := e.DB.QueryRow(`SELECT id FROM moderation_suggestions WHERE kind='review' AND target_id=$1`, review).Scan(&id); err != nil {
+		t.Fatalf("no proposal for the review: %v", err)
+	}
+	// The snapshot may be gone (retention); the job's metadata keeps the listing.
+	agExec(e, `UPDATE moderation_jobs SET snapshot='{}'::jsonb WHERE kind='review' AND target_id=$1`, review)
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	page := privateHostRequest(e, "GET", "/admin/moderation?kind=review", admin, nil, true)
+	e.check(page, 200)
+	body := page.Body.String()
+	start := strings.Index(body, `<p class="fingerprint mono">`+id+`</p>`)
+	if start < 0 {
+		t.Fatalf("proposal %s not listed", id)
+	}
+	item := body[start:]
+	item = item[:strings.Index(item, "</article>")]
+	link := "/product?id=" + product + "#reviews-title"
+	mustContain(t, item, `<a class="text-link" href="`+link+`">Open current source evidence</a>`)
+	mustNotContain(t, item, "/order?id=")
+	// The link is followed on the private administrator ingress the queue is served on; a browser never sends the fragment.
+	followed := privateHostRequest(e, "GET", strings.TrimSuffix(link, "#reviews-title"), admin, nil, true)
+	e.check(followed, 200)
+	mustContain(t, followed.Body.String(), `id="reviews-title"`, "Review text the moderation link leads to", `action="/admin/review"`,
+		`name="review_id" value="`+review+`"`, "Hide this review")
+	e.check(privateHostRequest(e, "GET", "/order?id="+order, admin, nil, true), 404)
+}
+
 func TestModerationTargetURLAllowlist(t *testing.T) {
 	ok := strings.Repeat("a", 32)
 	for _, c := range []struct {
-		kind, id, order string
-		img             moderationImageRef
-		want            string
+		kind, id, order, product string
+		img                      moderationImageRef
+		want                     string
 	}{
-		{"listing", ok, "", moderationImageRef{}, "/product?id=" + ok},
-		{"upload", ok, "", moderationImageRef{Kind: "photo", Product: "p1"}, "/product?id=p1"},
-		{"upload", ok, "", moderationImageRef{Kind: "evidence", Order: "o1"}, "/order?id=o1"},
-		{"upload", ok, "", moderationImageRef{Kind: "avatar", Handle: "some_buyer"}, "/admin/users?handle=some_buyer"},
-		{"upload", ok, "", moderationImageRef{}, ""},
-		{"upload", ok, "", moderationImageRef{Kind: "photo", Product: "p1&x=y"}, ""},
-		{"upload", ok, "", moderationImageRef{Kind: "evidence", Order: "../admin"}, ""},
-		{"upload", ok, "", moderationImageRef{Kind: "avatar", Handle: "a b"}, ""},
-		{"upload", ok, "", moderationImageRef{Kind: "photo", Order: "o1"}, ""},
-		{"upload", "../x", "", moderationImageRef{Kind: "photo", Product: "p1"}, ""},
-		{"dispute", ok, "o1", moderationImageRef{}, "/order?id=o1"},
+		{"listing", ok, "", "", moderationImageRef{}, "/product?id=" + ok},
+		{"upload", ok, "", "", moderationImageRef{Kind: "photo", Product: "p1"}, "/product?id=p1"},
+		{"upload", ok, "", "", moderationImageRef{Kind: "evidence", Order: "o1"}, "/order?id=o1"},
+		{"upload", ok, "", "", moderationImageRef{Kind: "avatar", Handle: "some_buyer"}, "/admin/users?handle=some_buyer"},
+		{"upload", ok, "", "", moderationImageRef{}, ""},
+		{"upload", ok, "", "", moderationImageRef{Kind: "photo", Product: "p1&x=y"}, ""},
+		{"upload", ok, "", "", moderationImageRef{Kind: "evidence", Order: "../admin"}, ""},
+		{"upload", ok, "", "", moderationImageRef{Kind: "avatar", Handle: "a b"}, ""},
+		{"upload", ok, "", "", moderationImageRef{Kind: "photo", Order: "o1"}, ""},
+		{"upload", "../x", "", "", moderationImageRef{Kind: "photo", Product: "p1"}, ""},
+		{"dispute", ok, "o1", "", moderationImageRef{}, "/order?id=o1"},
+		// A-711: a review is shown, with its Hide/Restore form, on its listing; staff cannot read a completed order.
+		{"review", ok, "o1", "p1", moderationImageRef{}, "/product?id=p1#reviews-title"},
+		{"review", ok, "o1", "", moderationImageRef{}, ""},
+		{"review", ok, "o1", "p1&x=y", moderationImageRef{}, ""},
+		{"review", ok, "o1", "../admin", moderationImageRef{}, ""},
+		{"payment_flag", ok, "o1", "p1", moderationImageRef{}, "/order?id=o1"},
 	} {
-		if got := moderationTargetURL(c.kind, c.id, c.order, c.img); got != c.want {
-			t.Errorf("moderationTargetURL(%q,%q,%q,%+v) = %q, want %q", c.kind, c.id, c.order, c.img, got, c.want)
+		if got := moderationTargetURL(c.kind, c.id, c.order, c.product, c.img); got != c.want {
+			t.Errorf("moderationTargetURL(%q,%q,%q,%q,%+v) = %q, want %q", c.kind, c.id, c.order, c.product, c.img, got, c.want)
 		}
 	}
 }
