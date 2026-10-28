@@ -14,7 +14,8 @@ import (
 // in the suspended sign-in refusal, as the lost-factors line on /challenge, under a notification that asks its
 // reader to contact the staff (the payout-address change notice among them), as "Can't read the image?" help beside
 // the CAPTCHA on /login and /register (with, A-517, what to do without the image), in the "Selling needs an
-// administrator to give your account the vendor role" line on /register, in the expired- and unreadable-key sign-in refusals (pgpKeyRefusal), and (A-279)
+// administrator to give your account the vendor role" line on /register, in the expired-, unreadable- and (strict
+// policy) missing-key sign-in refusals (pgpKeyRefusal, strictKeyRefusal), and (A-279)
 // with a taken-down listing on the vendor desk, its edit page and its restore refusal, with a photo the malware
 // scanner flagged, and on /totp after a sign-in with the last recovery code. When it is exactly
 // the handle of a moderator or administrator who is not suspended and whose key can receive encrypted messages
@@ -45,20 +46,67 @@ func staffContactSentence(contact string) string {
 	return "Contact the market staff: " + contact + "."
 }
 
-// staffContactRefusal reads the setting through q (the caller's transaction, when one is open) for a refusal.
-func staffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
+// A-702: a signed-out reader is usually locked out of an account and writing to staff to get back in. When the contact
+// is a bare handle they can still reach it from a new account; and they are told what staff will ask for, and what
+// staff never ask for, so a phishing "staff member" asking for a password or private key is recognisable.
+const (
+	staffContactNewAccount = "That is a market handle: you can message it from a new account once that account has a PGP key."
+	staffContactReady      = "Have ready your account's handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key."
+)
+
+// staffContactSignedOut is staffContactSentence for a reader who is not signed in: the sign-in refusals, and /challenge
+// (the "staff-contact" partial followed by PageData.StaffContactSignedOut).
+func staffContactSignedOut(contact string) string {
+	return staffContactSentence(contact) + " " + staffContactSignedOutLines(contact)
+}
+
+func staffContactSignedOutLines(contact string) string {
+	if staffContactNeedsAccount(contact) {
+		return staffContactNewAccount + " " + staffContactReady
+	}
+	return staffContactReady
+}
+
+// StaffContactSignedOut is what a page for a signed-out reader adds after the "staff-contact" partial (A-702).
+func (d PageData) StaffContactSignedOut() string {
+	if d.StaffContact == nil {
+		return staffContactSignedOutLines("")
+	}
+	return staffContactSignedOutLines(d.StaffContact.Text)
+}
+
+// staffContactSetting reads the setting through q (the caller's transaction, when one is open); "" while unset.
+func staffContactSetting(ctx context.Context, q rowQuerier) (string, error) {
 	var contact string
 	err := q.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", settingStaffContact).Scan(&contact)
 	if err != nil && err != sql.ErrNoRows {
 		return "", err
 	}
+	return contact, nil
+}
+
+// staffContactRefusal is the staff-contact sentence for a refusal to a signed-in reader ("" when it cannot be read).
+func staffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
+	contact, err := staffContactSetting(ctx, q)
+	if err != nil {
+		return "", err
+	}
 	return staffContactSentence(contact), nil
+}
+
+// signedOutStaffContactRefusal is the staff-contact lines for a sign-in refusal (staffContactSignedOut).
+func signedOutStaffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
+	contact, err := staffContactSetting(ctx, q)
+	if err != nil {
+		return "", err
+	}
+	return staffContactSignedOut(contact), nil
 }
 
 // suspendedRefusal refuses sign-in to an account an administrator suspended, or banned (A-546: closed, without the
 // reason). It is only returned once the password is correct, so it reveals nothing to someone who does not know it.
 func suspendedRefusal(ctx context.Context, q rowQuerier, banned bool) error {
-	contact, err := staffContactRefusal(ctx, q)
+	contact, err := signedOutStaffContactRefusal(ctx, q)
 	if err != nil {
 		return err
 	}

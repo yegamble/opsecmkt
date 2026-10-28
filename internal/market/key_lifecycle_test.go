@@ -605,6 +605,72 @@ func TestKeyExpirySweepRunsInBackground(t *testing.T) {
 	}
 }
 
+// TestStrictPolicyExpiryWarningNamesSignInLockout (A-702): on a market that requires PGP at every sign-in, a key close
+// to expiry is also a sign-in lockout date, so /account, /pgp and the expiry notice say so; an expired key says the
+// owner cannot sign in again until it is renewed. Browse-only copy is unchanged, and /account states the policy.
+func TestStrictPolicyExpiryWarningNamesSignInLockout(t *testing.T) {
+	e := newTestApp(t)
+	now := time.Now().Truncate(time.Second)
+	soonID, soonSess := e.user("a702_soon", "buyer")
+	soonKey := lifecycleKey(t, "a702_soon", now.Add(-time.Hour), 3600+10*86400, 0) // encryption stops in 10 days
+	e.setKey(soonID, armoredPublicKey(t, soonKey))
+	strictSoonID, _ := e.user("a702_soon_strict", "buyer") // given its expiring key once the policy is strict
+	expiredID, expiredSess := e.user("a702_expired", "buyer")
+	created := now.Add(-4 * time.Hour)
+	expiredKey := lifecycleKey(t, "a702_expired", created, 0, 0)
+	renewKey(t, expiredKey, created.Add(time.Hour), 3*3600-1800, 0) // expired an hour and a half ago
+	e.setKey(expiredID, armoredPublicKey(t, expiredKey))
+	day := utcDay(now.Add(-time.Hour).Add((3600+10*86400)*time.Second)) + " UTC"
+	soonLine := "This market requires PGP at every sign-in: after " + day + " you cannot sign in until staff restore your account. Renew before then."
+	const expiredLine = "This market requires PGP at every sign-in: you cannot sign in again until this key is renewed or replaced, and if this session ends first, staff must restore your account."
+	const strictPolicy, browsePolicy = "This market requires PGP decryption at every sign-in", "This market allows browse-only sign-in without PGP"
+	sweep := func() {
+		t.Helper()
+		if err := e.A.sweepKeyExpiry(context.Background(), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Browse-only (the test default): the A-155 warnings as before, no lockout line.
+	sweep()
+	for _, page := range []string{"/account", "/pgp"} {
+		b := html.UnescapeString(e.body("GET", page, soonSess, nil, 200))
+		mustContain(t, b, "Encryption to this key stops on "+day, keyRenewCommand)
+		mustNotContain(t, b, "requires PGP at every sign-in")
+		b = html.UnescapeString(e.body("GET", page, expiredSess, nil, 200))
+		mustContain(t, b, keyCannotEncrypt)
+		mustNotContain(t, b, "requires PGP at every sign-in", "PGP sign-in cannot send you a code")
+	}
+	mustContain(t, html.UnescapeString(e.body("GET", "/account", soonSess, nil, 200)), browsePolicy)
+	mustNotContain(t, e.body("GET", "/account", soonSess, nil, 200), strictPolicy)
+	if a152Notes(e, soonID, keyExpiryNoteSoon+day) != 1 || a152Notes(e, soonID, "requires PGP at every sign-in") != 0 {
+		t.Fatal("browse-only expiry notice missing or names a sign-in lockout")
+	}
+	if a152Notes(e, expiredID, keyExpiryNoteAfter) != 1 || a152Notes(e, expiredID, "requires PGP at every sign-in") != 0 {
+		t.Fatal("browse-only expired-key notice missing or names a sign-in lockout")
+	}
+
+	// Strict: the pages and a new notice name the lockout.
+	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+	e.setKey(strictSoonID, armoredPublicKey(t, lifecycleKey(t, "a702_soon_strict", now.Add(-time.Hour), 3600+10*86400, 0)))
+	agExec(e, "UPDATE users SET pgp_expiry_notice='' WHERE id=$1", expiredID)
+	sweep()
+	for _, page := range []string{"/account", "/pgp"} {
+		b := html.UnescapeString(e.body("GET", page, soonSess, nil, 200))
+		mustContain(t, b, "Encryption to this key stops on "+day, soonLine, keyRenewCommand)
+		b = html.UnescapeString(e.body("GET", page, expiredSess, nil, 200))
+		mustContain(t, b, keyCannotEncrypt, "PGP sign-in cannot send you a code", expiredLine)
+	}
+	mustContain(t, html.UnescapeString(e.body("GET", "/account", soonSess, nil, 200)), strictPolicy)
+	mustNotContain(t, e.body("GET", "/account", soonSess, nil, 200), browsePolicy)
+	if a152Notes(e, strictSoonID, keyExpiryNoteSoon+day) != 1 || a152Notes(e, strictSoonID, soonLine) != 1 {
+		t.Fatal("strict expiry notice does not name the sign-in lockout")
+	}
+	if a152Notes(e, expiredID, expiredLine) != 1 {
+		t.Fatal("strict expired-key notice does not name the sign-in lockout")
+	}
+}
+
 // TestExpiredKeySignInPointsToLostFactorHelp: after the key expires, /challenge/pgp says why and what the account
 // can still do: another method when one is enrolled, otherwise the administrator reset (for an administrator, only the
 // operator's -reset-admin-factors: the web reset refuses administrator targets); and A-225's warning shows where the

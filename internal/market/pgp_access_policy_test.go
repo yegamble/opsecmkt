@@ -150,7 +150,7 @@ func TestPGPStrictLoginCannotBeReplacedByTOTPOrRecovery(t *testing.T) {
 	assertPGPAccess(e, userID, token, false)
 
 	_, _ = e.keylessUser("access_nokey", "buyer")
-	agExpect(e, "/login", randomToken(), url.Values{"handle": {"access_nokey"}, "password": {testPassword}}, 409, "requires PGP authentication")
+	agExpect(e, "/login", randomToken(), url.Values{"handle": {"access_nokey"}, "password": {testPassword}}, 409, "requires PGP decryption at every sign-in")
 }
 
 func TestPGPPolicyRequiresAdministratorProofBeforeStrictLogin(t *testing.T) {
@@ -276,4 +276,40 @@ func TestPGPStrictPendingCodeDoesNotReviveWhenUnverifiedKeyIsRestored(t *testing
 	w = e.do("POST", "/challenge", anon, url.Values{"method": {"pgp"}, "pgp_code": {newCode}}, pending)
 	e.check(w, 303)
 	assertPGPAccess(e, userID, e.session(w), true)
+}
+
+// strictRecoveryLine is how a strict-policy refusal names replacement-key recovery (A-702).
+const strictRecoveryLine = "renew your key in your own PGP software (gpg --quick-set-expire keeps the same fingerprint) or, if its private key is lost or none is saved, make a new key, and send the public key to the market staff"
+
+// TestStrictLoginExpiredOrMissingKeyRefusalNamesStaffContact (A-702): on a market that requires PGP at every sign-in,
+// a correct password for an account without a usable key (none saved, or it expired) is refused with 409, no session
+// and no pending sign-in, and the refusal names replacement-key recovery and the configured staff contact (or the
+// operator while none is set), with what to have ready.
+func TestStrictLoginExpiredOrMissingKeyRefusalNamesStaffContact(t *testing.T) {
+	e := newTestApp(t)
+	e.keylessUser("a702_nokey", "buyer")
+	expiredID, _ := e.user("a702_expiredkey", "buyer")
+	created := time.Now().Add(-4 * time.Hour).Truncate(time.Second)
+	key := lifecycleKey(t, "a702_expiredkey", created, 0, 0)
+	renewKey(t, key, created.Add(time.Hour), 3*3600-1800, 0) // expired an hour and a half ago
+	e.setKey(expiredID, armoredPublicKey(t, key))
+	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+	refusal := func(handle string) string {
+		t.Helper()
+		w := e.do("POST", "/login", randomToken(), url.Values{"handle": {handle}, "password": {testPassword}})
+		if w.Code != 409 || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
+			t.Fatalf("strict sign-in of %s without a usable key: %d %q", handle, w.Code, w.Body.String())
+		}
+		return refusalText(w.Body.String())
+	}
+	for _, handle := range []string{"a702_nokey", "a702_expiredkey"} {
+		agExec(e, "DELETE FROM settings WHERE key='staff_contact'")
+		b := refusal(handle)
+		mustContain(t, b, "This market requires PGP decryption at every sign-in.", "cannot replace it", strictRecoveryLine, askOperatorLine+" "+staffReadyLine)
+		mustNotContain(t, b, "Contact the market staff:", "contact market staff for account recovery")
+		agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1)", staffContactValue)
+		b = refusal(handle)
+		mustContain(t, b, strictRecoveryLine, "Contact the market staff: "+staffContactValue+". "+staffReadyLine)
+		mustNotContain(t, b, askOperatorLine, staffNewAccountLine)
+	}
 }

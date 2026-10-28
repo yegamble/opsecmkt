@@ -60,8 +60,9 @@ test('challenge offers an authenticator code and a recovery code', async ({ page
   await expect(page.getByLabel('Recovery code')).toBeVisible();
   // A-154: a plain, unchecked checkbox turns TOTP off with the recovery code.
   await expect(page.getByLabel('I lost my authenticator — turn two-step sign-in off')).not.toBeChecked();
-  // A-119: someone who lost every factor is told who can help; with no staff contact set, the operator.
-  await expect(page.locator('.lost-factors')).toHaveText('Lost your authenticator and recovery codes? Only a market administrator can turn your second factors off, or, for an administrator account, the operator on the server. Ask the operator of this market.');
+  // A-119: someone who lost every factor is told who can help; with no staff contact set, the operator. A-702: what to
+  // have ready, and what staff never ask for.
+  await expect(page.locator('.lost-factors')).toHaveText('Lost your authenticator and recovery codes? Only a market administrator can turn your second factors off, or, for an administrator account, the operator on the server. Ask the operator of this market. Have ready your account\'s handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key.');
   await expect(page.locator('.lost-factors a')).toHaveCount(0);
   await noScriptsNoOverflow(page);
 });
