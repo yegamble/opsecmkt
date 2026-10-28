@@ -179,6 +179,64 @@ CI runs the leg in the container job for both database modes, after the plain sm
 use of a real clamd, not what ClamAV detects: no production signature is loaded, so it is no evidence about a
 production signature feed or its freshness.
 
+## Native deployment on a real Docker Engine
+
+```sh
+docker build -t opsecmkt:ci .
+docker build -t opsecmkt-tor:ci -f deploy/Dockerfile.tor deploy
+./scripts/test-native-deploy.sh    # APP_IMAGE=... TOR_IMAGE=... ./scripts/test-native-deploy.sh for other images
+```
+
+Requires Linux, Bash 4+, Docker with Compose v2, Go, Python 3 and curl; pulls the pinned `registry` and PostgreSQL
+images. The Go tests of `internal/operator` drive `opsecmkt deploy` with a fake `docker`; this script (A-697) runs the
+commands an operator runs, with a host binary built from the checkout (`go build ./cmd/server`), against the real
+engine, under a unique project name (`opsecmkt-native-PID`). Native deploy accepts only `IMAGE@sha256:DIGEST`
+references, so the script pushes both images to a registry container published on `127.0.0.1` only and uses the
+digests it serves; a second repository name of the same app image is the "second tag" a redeploy moves to. It checks:
+
+- `TestRenderInstallationsForDockerCompose` (run only with `OPSECMKT_RENDER_DIR`) writes the `compose.json` of a
+  development installation with every optional service (internal database, public and administrator Tor, clamd,
+  monerod and its wallet) and of two production installations (clearnet, and Tor with the private administrator
+  onion), with production storage stubbed as in the other production tests. `docker compose config --quiet` accepts
+  each, and each renders exactly its expected services. Their placeholder images are never pulled or run.
+- A one-off `docker compose run --rm --no-deps -T` of the app image with logging driver `none` (production's app
+  setting) still prints its output to the caller and leaves no container. That is the mechanism the start check uses;
+  the production start check itself is not run.
+- `deploy init --mode dev --exposure tor` with the app and Tor digests, `deploy plan` and `deploy install` start
+  `db`, `app`, `tor-identity-prepare` and `tor`; the app becomes healthy, the installed `compose.json` passes
+  `docker compose config --quiet`, `tor` serves the onion address `deploy init` generated, and the project has two
+  volumes (`postgres_data`, `tor_identity`). First start seeds `site_access=public` and `registrations=open`.
+- The script saves `members` and `closed` with the statement the administrator's access form commits (in SQL through
+  `docker compose exec db psql`, not through the form). `deploy redeploy --app-image` with the second reference
+  recreates only the app container, which then runs that reference and is healthy; `operator.json` names it; the `db`
+  and `tor` container IDs, the onion address, the volumes (name and creation time) and the saved settings are
+  unchanged.
+- `deploy doctor --start-check` prints the one-off run's `startup check:` lines (connected, passed), never the
+  database password, and leaves no one-off or `*-run-*` container.
+- With `999_from_a_newer_release` inserted into `schema_migrations`, `deploy redeploy --app-image` with the first
+  reference fails (`Docker command failed; configuration and volumes were retained`) and the script prints how long
+  it took and the app container's state. Expect about 600 seconds: under `restart: unless-stopped` the refused app
+  restarts rather than exiting, and Docker resets its health to `starting` at each start, so Compose's `--wait` sees
+  neither an exited nor an unhealthy container and ends only at its `--wait-timeout` (read from the Compose and
+  Docker sources; the CI run's printed duration is the measurement). `operator.json` and the app container name the
+  requested reference; the `db` and `tor` containers, the volumes, the schema rows and the settings are unchanged.
+  Development keeps container logs, so a failed development start does not run the start check
+  (`TestDevStartFailureDoesNotRunStartupCheck`): `deploy logs` shows the application's refusal, and `deploy doctor
+  --start-check` fails, prints `startup check: refused: database migration failed: the database was upgraded by a
+  newer release: ...` and leaves no run container.
+- `deploy down` removes every container of the project and retains both volumes.
+
+The exit trap runs `docker compose down --volumes --remove-orphans` for the project, removes any container, volume
+or network still labelled with this run's project names, the registry container and the tags it created, and the
+work directory (under `RUNNER_TEMP` or `TMPDIR`, since the controller refuses retention state inside an installation
+on tmpfs). It never reads the checkout's `.env` or touches another project. Not covered: production mode (`deploy
+init --mode prod` checks LUKS-encrypted storage, which this host does not have; the remote database; the app's
+logging driver `none` on a real start; the start check a failed production start runs, which only the fake-Docker
+`TestProdRedeployFailurePrintsRedactedStartupError` exercises), Monero, clamd and administrator Tor at runtime, the
+administrator's access form, and a deployed host. CI runs the script in the container job, on its external-database
+row (the internal-database row runs the image scan and the scanner container), after building the Tor image as the
+Tor image job does.
+
 ## Backup and restore through the internal-db Compose service
 
 ```sh

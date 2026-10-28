@@ -1,12 +1,14 @@
 package operator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -32,9 +34,14 @@ func runStartupCheck(ctx context.Context, dir string, cfg Config, out, errOut io
 	}
 	ctx, cancel := context.WithTimeout(ctx, startupCheckTimeout)
 	defer cancel()
-	if err := dockerCall(ctx, dir, cfg, out, errOut, "run", "--rm", "--no-deps", "-T", "app", "serve", "--check-startup"); err != nil {
+	// dockerCall bounds its output at 2 MiB, so this copy is bounded too.
+	var output bytes.Buffer
+	if err := dockerCall(ctx, dir, cfg, io.MultiWriter(out, &output), errOut, "run", "--rm", "--no-deps", "-T", "app", "serve", "--check-startup"); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("the startup check did not finish within %s (deadline exceeded); configuration and volumes were retained", startupCheckTimeout)
+		}
+		if strings.Contains(output.String(), "flag provided but not defined: -check-startup") {
+			return errors.New("this app image predates the startup check (serve --check-startup), so it cannot say why the application would not start; configuration and volumes were retained")
 		}
 		return errors.New("the startup check says the application would not start; the refusal is printed above; configuration and volumes were retained")
 	}
