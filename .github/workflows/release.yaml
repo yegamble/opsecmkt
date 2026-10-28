@@ -2,36 +2,78 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # A dry run of the whole pipeline on the selected branch (A-696): CI, the image and binaries built under the fixed
+  # tag v0.0.0-dry-run, their scans, and the files kept only as a workflow artifact. It never creates a release or tag.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  verify:
-    uses: ./.github/workflows/ci.yaml # zizmor: ignore[self-repository] -- verify the complete CI from the same tagged commit; retain supported local workflow syntax.
-  package:
-    name: Draft image release
-    needs: verify
+  identity:
+    name: Release tag and commit
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Require a version tag
+          # Every branch: the tagged commit is checked against main below.
+          fetch-depth: 0
+      - name: Release identity
+        id: identity
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            push)
+              [[ "$REF" == refs/tags/* ]] || { echo "a release builds from a tag push, not $REF" >&2; exit 1; }
+              tag=$REF_NAME ;;
+            workflow_dispatch) tag=v0.0.0-dry-run ;;
+            *) echo "unexpected event $EVENT" >&2; exit 1 ;;
+          esac
+          version='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          [[ "$tag" =~ $version ]] || { echo "not a version tag: $tag" >&2; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      # A-519: a release is built only from a reviewed commit already merged to main (docs/ci-cd.md#tag-time-checklist).
+      # It fails closed: a checkout without main refuses too.
+      - name: Require the tagged commit on main
+        if: github.event_name == 'push'
+        run: |
+          git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null || { echo 'origin/main is missing from the checkout; refusing to release' >&2; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || { echo "$GITHUB_SHA is not on main; tag a merged commit" >&2; exit 1; }
+  verify:
+    needs: identity
+    uses: ./.github/workflows/ci.yaml # zizmor: ignore[self-repository] -- verify the complete CI from the same tagged commit; retain supported local workflow syntax.
+  package:
+    name: Build and scan release files
+    needs: [identity, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build OCI archive with provenance and SBOM
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
-          tags: opsecmkt:${{ github.ref_name }}
+          tags: opsecmkt:${{ needs.identity.outputs.tag }}
           outputs: type=oci,dest=opsecmkt.oci.tar
           provenance: mode=max
           sbom: true
+          # The image's `version` command and /admin/system name this tag and commit (A-696).
+          build-args: |
+            BUILD_VERSION=${{ needs.identity.outputs.tag }}
+            BUILD_COMMIT=${{ github.sha }}
           # Built from scratch: no Actions cache feeds a release image.
           no-cache: true
       - name: Scan the actual release OCI archive
@@ -60,19 +102,20 @@ jobs:
           rm usage.txt
       - name: Build standalone application and deployment CLI
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
         run: |
           for goarch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath -buildvcs=false -ldflags="-s -w -buildid= -X main.buildVersion=$RELEASE_TAG -X main.buildCommit=$GITHUB_SHA" \
               -o "opsecmkt-linux-$goarch" ./cmd/server
           done
+          test "$(./opsecmkt-linux-amd64 version)" = "opsecmkt $RELEASE_TAG commit $GITHUB_SHA"
           ./opsecmkt-linux-amd64 --help > application-usage.txt
           grep -q 'upload-gateway' application-usage.txt
           grep -q 'deploy' application-usage.txt
           rm application-usage.txt
       - name: Package checksums and build record
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
         run: |
           gzip -n opsecmkt.oci.tar
           python3 - <<'PY'
@@ -82,16 +125,15 @@ jobs:
               output.write('\n')
           PY
           sha256sum opsecmkt.oci.tar.gz build.json opsecmkt-linux-* verify-audit-* > SHA256SUMS
-      - name: Create private draft release
+      - name: Write release notes
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
         run: |
           printf 'Pre-release. Test networks only. No real funds. Install: git checkout %s; see UPGRADING.md.\n\n' "$RELEASE_TAG" > release-notes.md
           cat >> release-notes.md <<'NOTES'
           Built after CI verification: Linux amd64 OCI image archive. Verify SHA256SUMS before importing with an OCI-aware tool such as Skopeo. The archive embeds BuildKit provenance and an SBOM. These are build metadata, not a cryptographic signature. See docs/ci-cd.md for import and rollback instructions. No production deployment is performed.
 
-          opsecmkt-linux-amd64 and opsecmkt-linux-arm64 are standalone application and deployment CLI binaries with embedded UI assets and migrations. Copy the matching binary to the server, verify SHA256SUMS, and run --help. Native serve uses an external PostgreSQL service; deploy manages explicit pinned Docker images without requiring a source checkout or Go compiler. See docs/install/binary.md for initialization, key import and production layer separation. Deployment infrastructure and remote-service readiness still require operator verification.
+          opsecmkt-linux-amd64 and opsecmkt-linux-arm64 are standalone application and deployment CLI binaries with embedded UI assets and migrations. Copy the matching binary to the server, verify SHA256SUMS, and run --help; version prints the release tag and commit, as the image's version command and /admin/system do. Native serve uses an external PostgreSQL service; deploy manages explicit pinned Docker images without requiring a source checkout or Go compiler. See docs/install/binary.md for initialization, key import and production layer separation. Deployment infrastructure and remote-service readiness still require operator verification.
 
           The default image CAPTCHA has no audio or text alternative.
 
@@ -100,6 +142,42 @@ jobs:
           verify-audit-OS-ARCH are standalone builds of cmd/verify-audit for checking a signed audit export offline: verify-audit -pub <key from /canary> export.jsonl export.sig (exit 0 = valid). They are listed in SHA256SUMS. Each is built on the runner with: CGO_ENABLED=0 GOOS=OS GOARCH=ARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o verify-audit-OS-ARCH ./cmd/verify-audit
           NOTES
           echo "Go version: $(go version)" >> release-notes.md
+      # A tag push hands these files to the release job; a dispatch dry run ends here, with them as its evidence.
+      - name: Keep the release files as a workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            opsecmkt.oci.tar.gz
+            SHA256SUMS
+            build.json
+            opsecmkt-linux-*
+            verify-audit-*
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    name: Draft image release
+    needs: [identity, package]
+    # Tag pushes only: a dispatch dry run never reaches this job.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+      - name: Verify the release files
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Create private draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        run: |
+          [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo "only a tag push creates a release (event $GITHUB_EVENT_NAME, ref $GITHUB_REF)" >&2; exit 1; }
           flags=()
           if [[ "$RELEASE_TAG" == *-* ]]; then flags=(--prerelease); fi
           gh release create "$RELEASE_TAG" opsecmkt.oci.tar.gz SHA256SUMS build.json opsecmkt-linux-* verify-audit-* \

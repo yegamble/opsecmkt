@@ -95,12 +95,31 @@ obtain the real digest from Docker; `DIGEST` in the table describes the format.
    ```
 
 3. **Build and publish the image.** Run from the checkout directory containing
-   `Dockerfile`. This example targets a Linux AMD64 application host:
+   `Dockerfile`. This example targets a Linux AMD64 application host. The first
+   command fails if a tracked file differs from the checked-out commit; do not
+   continue until it succeeds, so the recorded commit is what the image contains:
 
    ```sh
-   docker build --platform linux/amd64 -t "$APP_REPOSITORY:$APP_TAG" .
+   test -z "$(git status --porcelain --untracked-files=no)"
+   APP_COMMIT=$(git rev-parse --verify 'HEAD^{commit}')
+   docker build --pull --platform linux/amd64 \
+     --build-arg SECURITY_REFRESH="$(date -u +%F)" \
+     --build-arg BUILD_VERSION="$APP_TAG" --build-arg BUILD_COMMIT="$APP_COMMIT" \
+     -t "$APP_REPOSITORY:$APP_TAG" .
+   docker run --rm --network none "$APP_REPOSITORY:$APP_TAG" version
    docker push "$APP_REPOSITORY:$APP_TAG"
    ```
+
+   `--pull` resolves the digest-pinned base images from the registry instead of
+   a local copy, and the build day in `SECURITY_REFRESH` rebuilds the layer that
+   applies Debian security updates, so that layer is never older than the day of
+   the build, even when an earlier build left it in the cache. `BUILD_VERSION`
+   (letters, digits and `. _ + -`, at most 64 characters) and `BUILD_COMMIT` (the
+   full lowercase commit) are what the image's `version` command and
+   `/admin/system` report; the build refuses other values. The `version` line
+   must print `opsecmkt YOUR_REVIEWED_RELEASE_OR_COMMIT commit` followed by
+   `APP_COMMIT`; stop if it does not. Without the two build arguments, the image
+   reports `development` and no commit.
 
    Retain the successful push's digest with the source revision and build record.
    For another host architecture, choose its matching single platform and verify
@@ -149,6 +168,28 @@ obtain the real digest from Docker; `DIGEST` in the table describes the format.
    [complete new-install command](production.md#4-initialize-and-start-the-application).
    Prepare payment flags before that one production initialization. Existing
    installations use `redeploy`, never a second `init`.
+
+## Building and publishing the Tor image
+
+Production Tor exposure needs a Tor image for `--admin-tor-image`, and the
+gateway host's public Tor service can run the same image. Build
+`deploy/Dockerfile.tor` from the same reviewed checkout, in the shell where you
+set `APP_REGISTRY` and `APP_TAG` above:
+
+```sh
+TOR_REPOSITORY="$APP_REGISTRY/YOUR_TEAM/opsecmkt-tor"
+docker build --pull --platform linux/amd64 --build-arg SECURITY_REFRESH="$(date -u +%F)" -t "$TOR_REPOSITORY:$APP_TAG" -f deploy/Dockerfile.tor deploy
+docker push "$TOR_REPOSITORY:$APP_TAG"
+```
+
+As for the application image, `--pull` and the build day make the build apply
+the day's Debian security updates instead of reusing a cached layer. Obtain and
+check the full digest reference with step 4 above, using `TOR_REPOSITORY` in
+place of `APP_REPOSITORY`; the expected entrypoint is
+`["tor","-f","/etc/tor/torrc"]`. Rebuild both images with these commands when
+Debian publishes a security fix for a package they contain; a rebuilt image
+changes nothing until you redeploy it. Replacing the gateway's public Tor image keeps its onion identity
+([steps](tor.md#replace-the-gateways-public-tor-image)).
 
 ## Initializing a development deployment
 

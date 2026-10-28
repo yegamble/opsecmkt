@@ -605,8 +605,12 @@ jobs:
           context: .
           load: true
           tags: opsecmkt:ci
-          # A daily value rebuilds the security-upgrade layer, so a fixed Debian package reaches the scan.
-          build-args: SECURITY_REFRESH=${{ steps.refresh.outputs.day }}
+          # A daily value rebuilds the security-upgrade layer, so a fixed Debian package reaches the scan. The build
+          # identity is the one scripts/ci-smoke.sh expects from `version` and /admin/system (A-696).
+          build-args: |
+            SECURITY_REFRESH=${{ steps.refresh.outputs.day }}
+            BUILD_VERSION=ci
+            BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app
       # Both runtime matrix entries exercise this image; scan it once.
@@ -617,6 +621,9 @@ jobs:
           image-ref: opsecmkt:ci
           artifact-name: application-image-vulnerabilities
       - name: Bootstrap production image with a real database
+        env:
+          EXPECT_BUILD_VERSION: ci
+          EXPECT_BUILD_COMMIT: ${{ github.sha }}
         run: bash scripts/ci-smoke.sh "${{ matrix.database }}"
       # A-192: the app, the database and the pinned clamd of compose.scanner.yaml whose only signature database is
       # deploy/testdata/clamav-test.ndb, packed at job time into an unsigned daily.cud (a test signature, not a
