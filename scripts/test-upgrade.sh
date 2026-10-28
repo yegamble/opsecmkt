@@ -87,6 +87,26 @@ launch_server() {
   server_pid=$!
 }
 
+# check_startup NAME BINARY DIRECTORY: runs BINARY serve --check-startup (A-694) in launch_server's clean
+# environment, in the foreground, with its output in $work/NAME.log; returns its exit status.
+check_startup() {
+  local name=$1 binary=$2 directory=$3
+  local database_url_file="$work/$name.database-url" setup_token_file="$work/$name.setup-token"
+  printf '%s\n' "$database_url" > "$database_url_file"
+  printf '%s\n' "$setup_token" > "$setup_token_file"
+  chmod 600 "$database_url_file" "$setup_token_file"
+  (
+    cd "$directory"
+    # shellcheck disable=SC2016
+    exec env -i PATH="$PATH" bash -c '
+      IFS= read -r DATABASE_URL < "$1"
+      IFS= read -r SETUP_TOKEN < "$2"
+      export DATABASE_URL SETUP_TOKEN COOKIE_SECURE=false
+      exec "$3" serve --check-startup
+    ' check-startup "$database_url_file" "$setup_token_file" "$binary"
+  ) > "$work/$name.log" 2>&1
+}
+
 # start_server NAME BINARY DIRECTORY [DATABASE_URL]: launch and wait for /healthz.
 start_server() {
   local name=$1 binary=$2 directory=$3 target_database_url=${4:-$database_url}
@@ -356,6 +376,18 @@ stop_server
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
 sql -c "INSERT INTO schema_migrations(version,name) VALUES (999,'from_a_newer_release')"
 applied=$(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations")
+# The startup check (A-694), which production deploy commands print because the app keeps no container logs, gives
+# the same refusal without serving: exit 1, the migration and the rollback section named, no URL or token printed.
+checked=0
+check_startup check-refused "$work/new-server" "$root" || checked=$?
+((checked == 1)) || { echo "serve --check-startup exited $checked on a database with a migration it does not include" >&2; exit 1; }
+grep -q 'startup check: refused: database migration failed: the database was upgraded by a newer release: it records migration(s) 999_from_a_newer_release, which this server does not include' "$work/check-refused.log"
+grep -q 'UPGRADING.md, section "Rolling back"' "$work/check-refused.log"
+if grep -qF -e upgrade-test-only -e "$setup_token" "$work/check-refused.log"; then
+  echo 'serve --check-startup printed the database password or the setup token' >&2
+  exit 1
+fi
+[[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
 launch_server refused "$work/new-server" "$root"
 for _ in {1..60}; do
   kill -0 "$server_pid" 2>/dev/null || break
@@ -374,6 +406,8 @@ grep -q 'UPGRADING.md, section "Rolling back"' "$work/refused.log"
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
 # Rolling forward (the newer release's row gone again) starts normally.
 sql -c 'DELETE FROM schema_migrations WHERE version=999'
+check_startup check-current "$work/new-server" "$root"
+grep -q 'startup check: passed; nothing was changed' "$work/check-current.log"
 start_server roll-forward "$work/new-server" "$root"
 stop_server
 

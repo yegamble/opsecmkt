@@ -15,6 +15,31 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A refused production start says why (serve --check-startup, A-694)
+
+No migration and no configuration change. The production app container keeps no logs (logging driver `none`), so
+a refused start (a database migrated by a newer or different build, a database authentication or TLS failure, a
+retention ledger that is missing or belongs to another database, a configuration error such as an invalid
+`MIGRATION_TIMEOUT`) used to show only as `unhealthy` or `Restarting`. Now:
+
+- `opsecmkt serve --check-startup` (legacy `-check-startup`) runs the startup checks that need no wallet, scanner
+  or listener (configuration, database connection and encoding, the serving lock, the recorded migrations, the
+  install state, the network class and the retention ledger's presence) with the same environment and flags as
+  `serve`, prints one `startup check:` line per check and exits `0` when the server would start, or `1` with the
+  server's own refusal text. It migrates nothing, writes no row, file or lock, and takes no advisory lock. A
+  database no server has migrated passes, saying how many migrations startup would apply; one an application is
+  serving passes, saying so.
+- `deploy doctor --start-check` runs the app image once as `compose run --rm --no-deps -T app serve
+  --check-startup` (no dependency service, no published port, at most 60 seconds) and prints its output with
+  `deploy logs`' secret redaction.
+- When a production `deploy up`, `install` or `redeploy` does not become ready, it runs that check once and prints
+  the cause before failing. Nothing is persisted; the desired image stays saved as before.
+
+The check does not apply pending migrations (it names how many there are and `MIGRATION_TIMEOUT`) or contact the
+Monero wallet RPC, the scanner or the upload gateway, so a migration failure or timeout, or a refusal from those,
+still needs `deploy status` and the administrator panel. For the separate gateway host, see the foreground check in
+[production section 5](docs/install/production.md#5-run-the-scanner-and-supervised-gateway).
+
 ## Moderation model proposals always wait for a human (moderation-v6, A-684)
 
 No migration. The moderation protocol is now `moderation-v6`, and the controller refuses v1–v5 pins. **If you start

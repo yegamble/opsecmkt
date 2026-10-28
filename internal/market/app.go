@@ -120,58 +120,23 @@ func New(ctx context.Context, preview bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: os.Getenv("APP_MODE"), limits: make(map[string]bucket), writeLimits: make(map[string]bucket), inFlight: make(map[string]int)}
-	if a.mode == "" {
-		a.mode = "clearnet"
+	mode, err := appModeFromEnv()
+	if err != nil {
+		return nil, err
 	}
-	if a.mode != "clearnet" && a.mode != "tor" {
-		return nil, errors.New("APP_MODE must be clearnet or tor")
-	}
+	a := &App{startedAt: time.Now().UTC(), templates: t, preview: preview, mode: mode, limits: make(map[string]bucket), writeLimits: make(map[string]bucket), inFlight: make(map[string]int)}
 	if preview {
 		a.key = []byte(randomToken())
 		return a, nil
 	}
-	// Everything checkable without the database is checked before it is opened (config.go).
-	cfg, err := loadStartupConfig(os.Getenv, a.mode)
-	if err != nil {
-		return nil, err
-	}
-	a.secure, a.setupToken = cfg.secure, cfg.setupToken
-	a.adminSocket = cfg.adminSocket
-	a.brandingUploadOrigin = cfg.brandingUploadOrigin
-	a.officialAddresses = cfg.officialAddresses
-	if cfg.hostControlSocket != "" {
-		a.hostControl = newHostRebootController(cfg.hostControlSocket)
-	}
-	if a.live, err = marketLiveFromEnv(os.Getenv); err != nil {
-		return nil, err
-	}
-	root, legacy := cfg.keyRoot()
-	a.useKeyRoot(root)
+	cfg, legacy, timeouts, err := a.configure()
 	for _, note := range cfg.notes {
 		log.Print(note)
 	}
+	if err != nil {
+		return nil, err
+	}
 	dsn := os.Getenv("DATABASE_URL")
-	timeouts, err := startupTimeoutsFromEnv()
-	if err != nil {
-		return nil, err
-	}
-	scanCfg, err := scannerConfigFromEnv(os.Getenv)
-	if err != nil {
-		return nil, err
-	}
-	a.scanner = newImageScanner(scanCfg)
-	switch os.Getenv("UPLOAD_MODE") {
-	case "", "integrated":
-	case "isolated":
-		a.isolatedUploads = true
-		a.scanner = nil // the application never contacts clamd in this mode
-	default:
-		return nil, errors.New("UPLOAD_MODE must be integrated or isolated")
-	}
-	if a.storageLimit, err = imageStorageLimitFromEnv(os.Getenv); err != nil {
-		return nil, err
-	}
 	// The application pool is opened and pinged first: its session timeouts (A-177) are startup parameters,
 	// which a connection pooler may refuse, and such a database must stop startup before the schema moves.
 	db, err := openAppPool(ctx, dsn, timeouts.connect)
@@ -233,6 +198,58 @@ func New(ctx context.Context, preview bool) (*App, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// appModeFromEnv is APP_MODE: clearnet (when blank) or tor.
+func appModeFromEnv() (string, error) {
+	mode := os.Getenv("APP_MODE")
+	if mode == "" {
+		mode = "clearnet"
+	}
+	if mode != "clearnet" && mode != "tor" {
+		return "", errors.New("APP_MODE must be clearnet or tor")
+	}
+	return mode, nil
+}
+
+// configure makes every check New can make without the database, before it is opened (config.go), and sets what
+// they configure on a. CheckStartup makes the same checks. The notes of cfg are startup log lines (never a secret).
+func (a *App) configure() (cfg startupConfig, legacy bool, timeouts startupTimeouts, err error) {
+	if cfg, err = loadStartupConfig(os.Getenv, a.mode); err != nil {
+		return
+	}
+	a.secure, a.setupToken = cfg.secure, cfg.setupToken
+	a.adminSocket = cfg.adminSocket
+	a.brandingUploadOrigin = cfg.brandingUploadOrigin
+	a.officialAddresses = cfg.officialAddresses
+	if cfg.hostControlSocket != "" {
+		a.hostControl = newHostRebootController(cfg.hostControlSocket)
+	}
+	if a.live, err = marketLiveFromEnv(os.Getenv); err != nil {
+		return
+	}
+	var root string
+	root, legacy = cfg.keyRoot()
+	a.useKeyRoot(root)
+	if timeouts, err = startupTimeoutsFromEnv(); err != nil {
+		return
+	}
+	scanCfg, err := scannerConfigFromEnv(os.Getenv)
+	if err != nil {
+		return
+	}
+	a.scanner = newImageScanner(scanCfg)
+	switch os.Getenv("UPLOAD_MODE") {
+	case "", "integrated":
+	case "isolated":
+		a.isolatedUploads = true
+		a.scanner = nil // the application never contacts clamd in this mode
+	default:
+		err = errors.New("UPLOAD_MODE must be integrated or isolated")
+		return
+	}
+	a.storageLimit, err = imageStorageLimitFromEnv(os.Getenv)
+	return
 }
 
 // openAppPool opens the application pool (WithAppTimeouts) and pings it within connectTimeout. When the

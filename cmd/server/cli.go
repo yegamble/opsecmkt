@@ -196,6 +196,7 @@ func configureServe(args []string, errOut io.Writer) error {
 	f := flag.NewFlagSet("serve", flag.ContinueOnError)
 	f.SetOutput(errOut)
 	preview := f.Bool("preview", false, "read-only sample UI, no database")
+	checkStartup := f.Bool("check-startup", false, "run the startup checks (configuration, database connection, serving lock, recorded migrations, install state, retention ledger), print each result and exit 0 when the server would start or 1 with the refusal; migrates, serves and writes nothing")
 	options := map[string]string{
 		"branding-upload-origin": "BRANDING_UPLOAD_ORIGIN", "official-addresses": "OFFICIAL_ADDRESSES",
 		"site-access": "INITIAL_SITE_ACCESS", "registrations": "INITIAL_REGISTRATIONS",
@@ -279,6 +280,9 @@ func configureServe(args []string, errOut io.Writer) error {
 		if v := os.Getenv("ADDR"); v != "" {
 			_ = os.Setenv("PREVIEW_ADDR", v)
 		}
+	}
+	if *checkStartup {
+		os.Args = append(os.Args, "-check-startup")
 	}
 	return nil
 }

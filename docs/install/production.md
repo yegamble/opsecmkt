@@ -383,6 +383,21 @@ systemctl is-active opsecmkt-gateway
 
 Expect `active`. On another service manager, preserve the same account, arguments, permissions and restart behavior. Confirm recovery after a controlled restart of the gateway and application hosts.
 
+The unit discards the gateway's output (`StandardOutput=null`, `StandardError=null`), so a gateway that keeps
+restarting shows only `activating (auto-restart)` or `failed` in `systemctl status`. To read its refusal, stop the
+unit and run its `ExecStart` command in the foreground as the service account, with exactly the unit's arguments:
+
+```sh
+systemctl stop opsecmkt-gateway
+sudo -u opsecmkt-gateway /usr/local/bin/opsecmkt upload-gateway --addr 127.0.0.1:8080 --app-url https://app.internal:8080 --app-ca /etc/opsecmkt-gateway/app-ca.pem --backend-url https://app.internal:8443 --ca /etc/opsecmkt-gateway/upload-ca.pem --cert /etc/opsecmkt-gateway/gateway-client.pem --key /etc/opsecmkt-gateway/gateway-client.key --clamd-address 127.0.0.1:3310
+```
+
+A configuration or certificate refusal is printed to the terminal and the command exits; nothing is written to a
+log. If it keeps running without output, it started: press Ctrl-C and `systemctl start opsecmkt-gateway` again. Do
+not leave it running in the foreground, and review the output before sharing it, because request errors printed
+while it serves can name addresses. For the application host, use `deploy doctor --dir DIR --start-check`
+(below); a failed `install`, `up` or `redeploy` runs that check by itself.
+
 `--app-ca` authenticates ordinary application HTTPS. `--ca`, `--cert` and `--key` authenticate the mutual-TLS upload backend. These are separate connections; omitting the application CA commonly causes proxy certificate failures. Use normal hostname verification throughout.
 
 ### Attach public ingress
@@ -597,6 +612,7 @@ client-certificate renewal happens on the gateway host only.
 
 | Symptom | Check and correction |
 | --- | --- |
+| App `unhealthy` or `Restarting` after `install`, `up` or `redeploy` | The command prints the app's startup check (`serve --check-startup`) before failing, because the production app keeps no container logs. Repeat it with `./opsecmkt deploy doctor --dir /srv/opsecmkt/market-prod --start-check`. A database from a newer release prints the `upgraded by a newer release` line: follow [UPGRADING.md, Rolling back](../../UPGRADING.md#5-rolling-back). A check that passes points at a step it does not run: applying pending migrations (`MIGRATION_TIMEOUT`), wallet RPC, the scanner, listeners or readiness. |
 | Database timeout or connection refused | Verify private endpoint resolution, actual service port, routes and both provider/host allowlists. Test from the application host. |
 | Database TLS or hostname failure | Use the service's matching hostname, correct CA and `sslmode=verify-full`. Check the CA path in the relevant host or container. |
 | Gateway returns `503`, or public proxy returns `502` | Check application health, private DNS/ports and `--app-ca`. Verify the application server certificate matches `--app-url`. |
