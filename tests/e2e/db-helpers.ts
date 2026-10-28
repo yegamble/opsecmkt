@@ -124,10 +124,12 @@ export async function passwordSignIn(page: Page, handle: string, password: strin
   }
 }
 
-// Submits the admin "Assign an account role" form for handle (a text input looked up on the server). A new
-// moderator gets the seedStaffFactor stand-in unless staffFactor is false.
+// Submits the admin "Assign an account role" form for handle (a text input looked up on the server). Only an
+// account with a second factor can be made a moderator (A-706): unless staffFactor is false (the account enrolled
+// one itself), the candidate gets the seedStaffFactor stand-in first.
 export async function setRole(admin: Page, handle: string, role: string, adminPassword = ADMIN.password, staffFactor = true) {
   if (role === 'vendor') seedVendorPublicKey(handle);
+  if (role === 'moderator' && staffFactor) seedCandidateFactor(handle);
   await admin.goto('/admin/users');
   const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await form.getByLabel('Account handle').fill(handle);
@@ -136,7 +138,14 @@ export async function setRole(admin: Page, handle: string, role: string, adminPa
   await form.getByRole('button', { name: 'Update role' }).click();
   await expectNotice(admin, 'Account role saved.');
   await expect(admin).toHaveURL(/\/admin\/users$/);
-  if (role === 'moderator' && staffFactor) seedStaffFactor(handle);
+}
+
+// The seedStaffFactor stand-in for an account about to be appointed (any role).
+function seedCandidateFactor(handle: string): void {
+  const databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL;
+  if (!databaseURL) throw new Error('Staff factor fixture requires an isolated browser test database');
+  const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+  execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET pgp_2fa=true WHERE handle=${literal(handle)}`], { encoding: 'utf8' });
 }
 
 // A-117: the one-shot notice a successful form post leaves on the page it returns to, and the title it prefixes.

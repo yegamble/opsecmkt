@@ -92,7 +92,13 @@ func totpActivate(c *actionCtx) (actionResult, error) {
 		}
 	}
 	// Activation issues recovery codes, so it locks them before the account row, like every such change (A-154).
-	return confirmedTxWith(c, &confirmation{Before: lockOwnRecoveryCodes}, activateTOTP)
+	// A first factor also ends pending sign-ins, which go before the recovery codes, as in the factor resets.
+	return confirmedTxWith(c, &confirmation{Before: func(c *actionCtx) error {
+		if err := endPendingSignInsBeforeFirstFactor(c); err != nil {
+			return err
+		}
+		return lockOwnRecoveryCodes(c)
+	}}, activateTOTP)
 }
 
 // lockOwnRecoveryCodes is a confirmation.Before for a change that replaces or deletes the signed-in user's codes.
@@ -101,8 +107,8 @@ func lockOwnRecoveryCodes(c *actionCtx) error { return lockRecoveryCodes(c.Ctx()
 func activateTOTP(c *actionCtx) (actionResult, error) {
 	ctx := c.Ctx()
 	var pending string
-	var enabled bool
-	if err := c.Tx.QueryRowContext(ctx, "SELECT totp_pending,totp_enabled FROM users WHERE id=$1 FOR UPDATE", c.User.ID).Scan(&pending, &enabled); err != nil {
+	var enabled, pgpSignIn bool
+	if err := c.Tx.QueryRowContext(ctx, "SELECT totp_pending,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", c.User.ID).Scan(&pending, &enabled, &pgpSignIn); err != nil {
 		return actionResult{}, err
 	}
 	if enabled {
@@ -125,6 +131,11 @@ func activateTOTP(c *actionCtx) (actionResult, error) {
 	step, ok := totpMatch(key, c.Form.Get("code"), time.Now(), 0)
 	if !ok {
 		return actionResult{}, fail(400, "Code incorrect. Check the secret and your device clock, then try again. TOTP remains off.")
+	}
+	if !pgpSignIn {
+		if err = endOtherSessionsForFirstFactor(c); err != nil {
+			return actionResult{}, err
+		}
 	}
 	if _, err = c.Tx.ExecContext(ctx, "UPDATE users SET totp_secret=totp_pending,totp_pending='',totp_enabled=true,totp_last_step=$2 WHERE id=$1", c.User.ID, step); err != nil {
 		return actionResult{}, err

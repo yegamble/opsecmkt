@@ -255,6 +255,7 @@ func TestVendorDemotionArchivesListingsAndRefusesNewOrders(t *testing.T) {
 	// approval and its active listings; a later Buyer assignment revokes it.
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "vendor", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	c := w.e.product(w.vendorID, "digital")
+	w.e.candidateFactor(w.e.loadUser(w.vendorID).Handle)
 	w.expect("/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", w.e.loadUser(w.vendorID).Handle), 303, "")
 	var archived bool
 	w.e.DB.QueryRow("SELECT archived FROM products WHERE id=$1", c).Scan(&archived)

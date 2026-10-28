@@ -479,8 +479,8 @@ func adminChange(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		var target, old string
-		var banned bool
-		err = tx.QueryRowContext(ctx, "SELECT id,role,banned_at IS NOT NULL FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old, &banned)
+		var banned, factor bool
+		err = tx.QueryRowContext(ctx, "SELECT id,role,banned_at IS NOT NULL,totp_enabled OR pgp_2fa FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old, &banned, &factor)
 		if err == sql.ErrNoRows {
 			return actionResult{}, adminRoleHandleError(c, handle, role)
 		}
@@ -489,6 +489,9 @@ func adminChange(c *actionCtx) (actionResult, error) {
 		}
 		if banned && role != "buyer" { // A-546: lifting the ban must not hand back a staff or vendor role (SEC-546-2)
 			return actionResult{}, fail(409, handle+" is banned; nothing was changed.")
+		}
+		if grantsStaffRole(old, role) && !factor { // A-706, SEC706-2
+			return actionResult{}, fail(409, handle+" has no second factor. They turn on an authenticator (TOTP) or PGP sign-in on their own account first; then make them a moderator. Nothing was changed.")
 		}
 		// Both accounts get an audit row naming the change; an unchanged role is recorded for the administrator only.
 		// The account's row ("Role changed from OLD to NEW …") also tells disputeEvidence when it left staff (A-294).

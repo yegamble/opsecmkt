@@ -259,7 +259,7 @@ func TestTicketsRejectUnusableOpenerAndAssigneeKeys(t *testing.T) {
 
 func TestTicketsStaffCanSelectHiddenColleaguesWithoutSelectingTheOpener(t *testing.T) {
 	w := newTicketTestWorld(t)
-	agExec(w.e, "UPDATE users SET role='moderator' WHERE id=$1", w.ids["opener"])
+	agExec(w.e, "UPDATE users SET role='moderator',pgp_2fa=true WHERE id=$1", w.ids["opener"])
 	agExec(w.e, "UPDATE users SET staff_hidden=true WHERE id=$1", w.ids["mod"])
 	agExec(w.e, "UPDATE settings SET value='false' WHERE key='staff_list_public'")
 	w.refused("/tickets", "opener", url.Values{"staff_id": {w.ids["opener"]}, "body": {w.ciphertext("mod", "Private self-assignment refusal.")}})

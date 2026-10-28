@@ -42,6 +42,13 @@ func (e *testEnv) factorlessStaff(handle, role string) (id, session string) {
 	return id, session
 }
 
+// candidateFactor gives an account about to be appointed to staff the fixture's PGP sign-in: only an account with a
+// second factor is made a moderator or administrator (A-706, SEC706-2).
+func (e *testEnv) candidateFactor(handle string) {
+	e.t.Helper()
+	agExec(e, "UPDATE users SET pgp_2fa=true WHERE handle=$1", handle)
+}
+
 // dbFingerprint digests every row of every table in the test schema except the session table (which records the
 // request's own session use), so a refused post can be shown to have changed nothing.
 func (e *testEnv) dbFingerprint() string {

@@ -38,11 +38,20 @@ func TestPGPLoginCodeRejectedAfterKeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldCode := testSignInCode(t, first, challenge)
+	// The new key turned PGP sign-in off; turning it on again is the account's first factor once more, which also
+	// ends the sign-in in progress (A-706, SEC706-3), so the old code finds nothing to complete.
 	saveAndVerify(second, secondPub)
 	e.check(e.do("POST", "/challenge", anon, form("method", "pgp", "pgp_code", oldCode), pending), 401)
+	if agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pending.Value)) != 0 {
+		t.Fatal("the rotation left the pending sign-in")
+	}
 	// Restoring the original public key creates a new ownership proof; an old
 	// code must not become valid again just because its fingerprint matches.
 	saveAndVerify(first, firstPub)
+	anon = randomToken()
+	login = e.do("POST", "/login", anon, form("handle", "rotation_user", "password", testPassword))
+	e.check(login, 303)
+	pending = &http.Cookie{Name: "pending", Value: e.cookie(login, "pending")}
 	e.check(e.do("POST", "/challenge", anon, form("method", "pgp", "pgp_code", oldCode), pending), 401)
 	// A newly generated code still works; rotating a key does not strand sign-in.
 	e.check(e.do("POST", "/challenge/pgp", anon, nil, pending), 303)

@@ -109,6 +109,7 @@ func TestStaffDisputeMessagesRequirePGPAndKeepPrivateContext(t *testing.T) {
 			e.check(e.do("POST", "/messages", staff, f), 403)
 			setMessageTestKey(e, staffID, staffPub)
 			e.pgpSessionKey(staff)
+			agExec(e, "UPDATE users SET pgp_2fa=true WHERE id=$1", staffID) // staff messaging needs a factor (A-706)
 			plain := cloneValues(f)
 			plain.Set("body", "An unencrypted private staff update must never be stored or sent.")
 			e.check(e.do("POST", "/messages", staff, plain), 400)

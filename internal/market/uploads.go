@@ -663,6 +663,9 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		l, err := lockListing(c, f.id)
 		if err != nil {
 			var he *httpError
+			if errors.Is(err, errStaffFactorRequired) {
+				return "", err
+			}
 			if errors.As(err, &he) {
 				return "", &httpError{Code: he.Code, Msg: "Photo not saved: listing not found. Nothing was stored."}
 			}

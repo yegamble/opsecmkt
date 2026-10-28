@@ -203,6 +203,7 @@ func TestAdminUserDirectory(t *testing.T) {
 	agExec(e, "UPDATE users SET totp_enabled=true WHERE id=$1", alphaID)
 	page = userPageNotice(t, e, post("/admin/reset-factors", form("handle", "dir_alpha")), admin, back+"#reset-factors")
 	mustContain(t, page, "Second factors reset.", "<dt>Authenticator (TOTP)</dt>\n<dd>Off</dd>")
+	e.candidateFactor("dir_alpha") // enrolled again after the reset: only such an account is made a moderator
 	page = userPageNotice(t, e, post("/admin", form("handle", "dir_alpha", "action", "role", "role", "moderator")), admin, back)
 	mustContain(t, page, "Account role saved.", "<dt>Role</dt>\n<dd>moderator</dd>")
 	page = userPageNotice(t, e, post("/admin", form("handle", "dir_alpha", "action", "role", "role", "buyer")), admin, back)

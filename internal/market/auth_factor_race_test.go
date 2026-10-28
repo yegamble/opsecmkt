@@ -57,6 +57,7 @@ func TestPasswordOnlySignInRefusesConcurrentFactorEnrollment(t *testing.T) {
 				e.check(e.do("POST", "/pgp/challenge", owner, url.Values{"kind": {"sign"}}), 303)
 				challenge := agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", uid)
 				e.check(e.do("POST", "/pgp/verify", owner, url.Values{"signature": {testClearsign(t, key, challenge)}}), 303)
+				e.pgpSessionKey(owner) // and decrypted one in this browser, which turning PGP sign-in on needs (SEC706-1)
 				enable = func() {
 					e.check(e.do("POST", "/pgp/2fa", owner, url.Values{"password": {testPassword}, "enable": {"1"}}), 303)
 				}
