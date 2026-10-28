@@ -94,7 +94,7 @@ type Order struct {
 }
 
 // VendorWaiting is one order in the vendor desk's "Waiting for you" section (A-710): what the vendor does next
-// (Action, on the order page at the fragment Anchor) and a paid physical order's ship-by time (ShipBy; ShipByPassed once it passed).
+// (Action, on the order page at the fragment Anchor) and a paid order's ship-by or delivery deadline (ShipBy; ShipByPassed once it passed).
 type VendorWaiting struct {
 	Order                  Order
 	Action, Anchor, ShipBy string

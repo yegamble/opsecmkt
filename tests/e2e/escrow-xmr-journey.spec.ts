@@ -278,6 +278,10 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await vendor.goto(first.url);
   await expect(vendor.getByRole('heading', { name: 'Claim the escrowed coins' })).toHaveCount(0);
   await expect(vendor.locator('main')).toContainText('no claim is possible before then');
+  // A-710: in the window the vendor desk offers no claim; its payout waits for the buyer or the deadline.
+  await vendor.goto('/vendor-dashboard');
+  await expect(vendor.locator('section.vendor-waiting tbody tr', { hasText: orderID(first.url) })).toHaveCount(0);
+  await expect(vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) }).locator('td').nth(4)).toHaveText('Waiting for buyer or deadline');
   // Its end: the watcher completes the order, and the dispute form is gone.
   moveClock(first.url, "release_at=now()-interval '1 minute'");
   await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
@@ -295,7 +299,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   const deskRow = vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) });
   await expect(deskRow.locator('td').nth(4)).toHaveText('Waiting for your claim');
   await expect(vendor.getByRole('link', { name: 'Payouts not yet confirmed' })).toBeVisible();
-  await shot(vendor, info, '04b-desk-waiting-for-claim');
+  await shot(vendor, info, '04c-desk-waiting-for-claim');
   await tabTo(vendor, claimLink);
   await vendor.keyboard.press('Enter');
   await expect(vendor).toHaveURL(new RegExp(`/order\\?id=${orderID(first.url)}#xmr-escrow-claim$`));

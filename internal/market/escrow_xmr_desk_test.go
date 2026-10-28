@@ -71,7 +71,22 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 	x.mustPoll()
 	physical := x.physical(x.vendor)
 
-	completed, _ := x.fundedXMR(x.product) // digital, delivered automatically and completed: no release yet
+	// Digital, delivered automatically: in its dispute window (A-709) there is no claim yet, on the desk or the order
+	// page; once the window ends with no dispute the order completes and waits for the vendor's claim.
+	completed, _ := x.fundedXMR(x.product)
+	if x.state(completed) != stateDelivered {
+		t.Fatalf("funded digital order is %s, want delivered", x.state(completed))
+	}
+	if waiting, _ := x.waitingOf(); waiting[completed] != "" || x.claimOffered(completed) {
+		t.Fatalf("a digital order in its dispute window is offered a claim: desk %q, order page %v", waiting[completed], x.claimOffered(completed))
+	}
+	if row := deskRow(deskSection(t, x.page("/vendor-dashboard", x.vendorSess), "vendor-orders"), completed); !strings.Contains(row, "<td>Waiting for buyer or deadline</td>") {
+		t.Fatalf("a digital order in its dispute window has the wrong payout:\n%s", row)
+	}
+	x.endWindows()
+	if x.state(completed) != stateCompleted {
+		t.Fatalf("after its dispute window the digital order is %s", x.state(completed))
+	}
 	paid, _ := x.paidXMRPhysical(physical)
 	decided, _ := x.paidXMRPhysical(physical) // decided for the vendor before shipping: no release yet
 	x.disputeAndResolve(decided, "release")
@@ -91,14 +106,15 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 	if code, body := x.xmrDispute(vendorOpened, x.vendorSess); code != 303 {
 		t.Fatalf("vendor's dispute: %d %s", code, body)
 	}
+	manual, _ := x.undeliveredXMR() // paid digital, delivered by hand by its deadline (A-709)
 
-	want := map[string]string{completed: "Claim your payment", decided: "Claim your payment", paid: "Mark shipped", disputed: "Reply to dispute"}
+	want := map[string]string{completed: "Claim your payment", decided: "Claim your payment", paid: "Mark shipped", disputed: "Reply to dispute", manual: "Fulfil this order"}
 	waiting, _ := x.waitingOf()
 	if !maps.Equal(waiting, want) {
 		t.Fatalf("waiting for the vendor: %v, want %v", waiting, want)
 	}
 	// The same predicate as the order view's claim form: offered exactly where the desk says to claim.
-	for _, o := range []string{completed, decided, shippedDecided, refunded, confirmed, paid, disputed, vendorOpened} {
+	for _, o := range []string{completed, decided, shippedDecided, refunded, confirmed, paid, disputed, vendorOpened, manual} {
 		if offered, listed := x.claimOffered(o), waiting[o] == "Claim your payment"; offered != listed {
 			t.Errorf("order %s (%s): claim form offered=%v, desk lists a claim=%v", shortID(o), x.state(o), offered, listed)
 		}
@@ -113,11 +129,14 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 	// The disputes tile says who decides: not the vendor.
 	mustContain(t, dash, "Open disputes</div>\n<strong>2</strong>\n<span>Disputes on your orders awaiting an administrator's decision</span>")
 	mustNotContain(t, dash, "needing a dispute decision")
-	shipBy := agStrings(t, x.testEnv, `SELECT to_char(ship_by,'YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, paid)[0]
+	shipBy := func(o string) string {
+		return agStrings(t, x.testEnv, `SELECT to_char(ship_by,'YYYY-MM-DD HH24:MI "UTC"') FROM escrows WHERE order_id=$1`, o)[0]
+	}
 	for order, wantRow := range map[string][]string{
 		completed: {"Claim your payment", `href="/order?id=` + completed + `#xmr-escrow-claim"`},
 		decided:   {"Claim your payment"},
-		paid:      {"Mark shipped", "Ship by " + shipBy},
+		paid:      {"Mark shipped", "Ship by " + shipBy(paid)},
+		manual:    {"Fulfil this order", "Deliver by " + shipBy(manual)},
 		disputed:  {"Reply to dispute", `href="/order?id=` + disputed + `#order-dispute"`},
 	} {
 		row := deskRow(section, order)
@@ -160,7 +179,7 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 	if w := x.do("POST", "/disputes/reply", x.vendorSess, url.Values{"order_id": {disputed}, "reply": {"The licence key was sent through the order page."}}); w.Code != 303 {
 		t.Fatalf("reply: %d %s", w.Code, w.Body.String())
 	}
-	if waiting, _ = x.waitingOf(); !maps.Equal(waiting, map[string]string{decided: "Claim your payment"}) {
+	if waiting, _ = x.waitingOf(); !maps.Equal(waiting, map[string]string{decided: "Claim your payment", manual: "Fulfil this order"}) {
 		t.Fatalf("after the claim, the shipment and the reply: %v", waiting)
 	}
 	if x.claimOffered(completed) {
@@ -193,6 +212,8 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	x.enableOrderPGP(otherVendor)
 	purchase, _ := x.fundedXMR(x.digital(otherVendor))
 	agExec(x.testEnv, "UPDATE orders SET buyer_id=$1 WHERE id=$2", x.vendor, purchase)
+	x.endWindows()                        // the digital orders complete with no dispute (A-709)
+	inWindow, _ := x.fundedXMR(x.product) // delivered, its dispute window still open: no claim yet
 
 	claim := func(orders ...string) {
 		t.Helper()
@@ -224,7 +245,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	}
 
 	labels := map[string]string{
-		claimable: "Waiting for your claim", shipped: "Waiting for buyer or deadline", requested: "Requested", sent: "Sent",
+		claimable: "Waiting for your claim", shipped: "Waiting for buyer or deadline", inWindow: "Waiting for buyer or deadline", requested: "Requested", sent: "Sent",
 		confirmed: "Confirmed", safe: "Confirmed", failed: "Not sent – see order", held: "Held", paid: "—", refunded: "None: refund to the buyer",
 	}
 	dash := x.page("/vendor-dashboard", x.vendorSess)
@@ -238,7 +259,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	mustContain(t, dash, `href="/vendor-dashboard?payouts=unconfirmed#vendor-orders"`, "Payouts not yet confirmed")
 
 	// The filter and the tile: every vendor-side Monero escrow order but the one confirmed past the reorganisation depth.
-	open := []string{claimable, sent, confirmed, requested, failed, shipped, held, paid, refunded}
+	open := []string{claimable, inWindow, sent, confirmed, requested, failed, shipped, held, paid, refunded}
 	filtered := x.page("/vendor-dashboard?payouts=unconfirmed", x.vendorSess)
 	ftable := deskSection(t, filtered, "vendor-orders")
 	for _, o := range open {

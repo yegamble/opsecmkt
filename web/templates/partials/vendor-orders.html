@@ -29,7 +29,7 @@
 <td>{{.Order.Buyer}}</td>
 <td>
 <a class="text-link" href="/order?id={{.Order.ID}}{{with .Anchor}}#{{.}}{{end}}" aria-label="{{.Action}}: {{.Order.Title}}">{{.Action}}</a>{{if .ShipBy}}
-<br><small{{if .ShipByPassed}} class="accent"{{end}}>Ship by {{.ShipBy}}{{if .ShipByPassed}}: passed, so the buyer may cancel{{end}}</small>{{end}}
+<br><small{{if .ShipByPassed}} class="accent"{{end}}>{{if eq .Order.Kind "digital"}}Deliver{{else}}Ship{{end}} by {{.ShipBy}}{{if .ShipByPassed}}: passed, so the buyer may cancel{{end}}</small>{{end}}
 </td>
 </tr>{{end}}</tbody>
 </table>
