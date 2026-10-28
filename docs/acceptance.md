@@ -437,7 +437,13 @@ The strengthened v2 contract additionally requires:
   (`tests/e2e/db-access.spec.ts`).
 - [ ] An actual app-only container redeployment preserves the saved access and
   registration settings. Rehearse the retained database and image replacement;
-  process-restart tests do not prove the container lifecycle.
+  process-restart tests do not prove the container lifecycle. Added, to be checked
+  with the CI run: `scripts/test-native-deploy.sh` (A-697, container job) saves
+  members-only access and closed registrations in a development installation and
+  runs `deploy redeploy --app-image` to a second reference of the same image on a
+  real Docker Engine; the settings, the `db` and `tor` containers and the volumes
+  stay as they were. Development mode only; production (LUKS storage, remote
+  database) is not covered.
 
 - [ ] Passwords use adaptive hashing; password and username bounds are enforced before expensive work. No production default credentials exist. Partial evidence: bcrypt cost 12, bounds on password change and admin reset, CAPTCHA and taken-handle checks before hashing, and weak setup tokens refused (`TestResetAdminPasswordCLI`, `TestPasswordChangeRevokesOtherSessions`, `TestResetAdminPassword`, `TestRegisterTakenHandleSkipsPasswordWork`, `TestCaptchaOnRegisterAndLogin`, `TestCheckSetupTokenRefusesPlaceholdersAndLowVariety`, `TestEnvExampleSetupTokenIsNotUsable`, `TestNewRefusesPlaceholderSetupToken`); no over-long password or handle is sent to `/login` or `/register`, and `compose.yaml` falls back to a fixed database password when `POSTGRES_PASSWORD` is unset (the installer always generates one), which nothing tests.
 - [ ] Sessions use cryptographic randomness, expire server-side, rotate on authentication, and are revoked on logout. Cookies are HttpOnly, have an explicit SameSite policy, and use Secure unless `COOKIE_SECURE=false` (the installer writes `true` for clearnet behind HTTPS and `false` for local HTTP and Tor). Partial evidence: expiry, rotation, revocation and cookie attributes are tested (`TestExpiredSessionIsSignedOut`, `TestLoginRotatesSessionToken`, `TestLogoutAndRevokeSessionsDeleteRows`, `TestSessionCookieSecurityAttributes`, `TestPreLoginCookieSeparateFromSession`; installer: `tests/test_installer.py`); nothing tests the source of randomness.

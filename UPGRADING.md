@@ -965,8 +965,13 @@ last step.
    ./opsecmkt deploy up --dir /srv/opsecmkt/market-prod
    ```
 
-   The installation already mounts its current external retention directory; keep `RETENTION_ENABLED=on` so startup
-   replays it against the restored database.
+   A restored database starts only with `RETENTION_ENABLED=on` and the installation's **current** external retention
+   ledger: `scripts/restore.sh` (step 2) and `-set-restore-gate` (step 4) both set `retention_restore_required`, and
+   startup refuses that database otherwise (`retention previously enrolled or restore pending: ...`). The installation
+   already mounts its current external retention directory; keep `RETENTION_ENABLED=on` so startup replays it against
+   the restored database, and never substitute an older copy of the ledger. The ledger must have been enrolled on the
+   original database before the backup is relied on; an old restored database cannot initialize an empty one (see
+   [production backups and recovery](docs/install/production.md#7-establish-backups-and-recovery)).
 
 6. Over the private administrator onion, with public ingress still closed, reconcile the restored database with the
    wallets as [the runbook](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes.
