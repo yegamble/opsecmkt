@@ -83,7 +83,13 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		// The current party is checked again by transition's locked order row.
-		if _, err = c.A.transition(withConcessionTransition(withPayoutSeen(ctx, orderID, seen), orderID, to, c.User.ID), c.Tx, orderID, stateDisputed, to, c.User, status); err != nil {
+		tctx := withConcessionTransition(withPayoutSeen(ctx, orderID, seen), orderID, to, c.User.ID)
+		if to == stateCompleted { // A-710: the buyer's concession leaves an unshipped order's release for the vendor to claim
+			if tctx, err = xmrClaimCueCtx(tctx, c.Tx, orderID, to); err != nil {
+				return actionResult{}, err
+			}
+		}
+		if _, err = c.A.transition(tctx, c.Tx, orderID, stateDisputed, to, c.User, status); err != nil {
 			return actionResult{}, err
 		}
 		if err = notifyConcededStaff(ctx, c.Tx, orderID, status, c.User.ID); err != nil {

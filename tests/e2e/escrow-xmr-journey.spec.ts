@@ -265,6 +265,20 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await expect(row.locator('td').nth(3)).toHaveText('Confirmed');
   await shot(buyer, info, '04-completed-on-funding');
 
+  // A-710: the vendor desk lists the completed order under Waiting for you, and its payout waits for the claim; the
+  // keyboard follows the link to the claim form.
+  await vendor.goto('/vendor-dashboard');
+  const waitingRow = vendor.locator('section.vendor-waiting tbody tr', { hasText: orderID(first.url) });
+  const claimLink = waitingRow.getByRole('link', { name: /^Claim your payment/ });
+  await expect(claimLink).toBeVisible();
+  const deskRow = vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) });
+  await expect(deskRow.locator('td').nth(4)).toHaveText('Waiting for your claim');
+  await expect(vendor.getByRole('link', { name: 'Payouts not yet confirmed' })).toBeVisible();
+  await shot(vendor, info, '04b-desk-waiting-for-claim');
+  await tabTo(vendor, claimLink);
+  await vendor.keyboard.press('Enter');
+  await expect(vendor).toHaveURL(new RegExp(`/order\\?id=${orderID(first.url)}#xmr-escrow-claim$`));
+
   // The vendor's claim: a fresh address and the password step-up; a wrong password is refused and changes nothing.
   await vendor.goto(first.url);
   await expect(vendor.getByRole('heading', { name: 'Claim the escrowed coins' })).toBeVisible();
@@ -294,6 +308,10 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await buyer.goto(first.url);
   await expect(settlement(buyer, "The vendor's claim").locator('.settlement-outputs li').nth(0)).toContainText('(shown only to its recipient)');
   await shot(buyer, info, '07-claim-confirmed-buyer');
+  // A-710: once claimed the order leaves Waiting for you, and the desk shows its release confirmed.
+  await vendor.goto('/vendor-dashboard');
+  await expect(waitingRow).toHaveCount(0);
+  await expect(deskRow.locator('td').nth(4)).toHaveText('Confirmed');
 
   // An underpaid order: confirmed below the price, the buyer cancels it, and the refund is built and sent.
   await draft(buyer, digitalTitle);

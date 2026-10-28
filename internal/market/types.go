@@ -92,6 +92,14 @@ type Order struct {
 	// has an escrows row (WR-escrow Phase 1, escrow_create.go), of either coin (btcEscrow).
 	Escrow bool
 }
+
+// VendorWaiting is one order in the vendor desk's "Waiting for you" section (A-710): what the vendor does next
+// (Action, on the order page at the fragment Anchor) and a paid physical order's ship-by time (ShipBy; ShipByPassed once it passed).
+type VendorWaiting struct {
+	Order                  Order
+	Action, Anchor, ShipBy string
+	ShipByPassed           bool
+}
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
 	OrderID, DisputeID                   string // explicit, authorized correspondence context
@@ -345,6 +353,13 @@ type PageData struct {
 	IncomingOrders     []Order
 	NeedsAction        int
 	VendorOpenDisputes int
+	// VendorWaiting: vendor desk, every order waiting for the vendor (A-710, outside the history cap): paid orders to
+	// fulfil, Monero escrow orders to claim (xmrClaimDueSQL) and open disputes to reply to. DeskPayouts: the short payout
+	// state of each Monero escrow row of IncomingOrders, keyed by order id (xmrPayoutLabel); PayoutFilter: the table
+	// lists only "Payouts not yet confirmed" (xmrMayHoldSQL).
+	VendorWaiting []VendorWaiting
+	DeskPayouts   map[string]string
+	PayoutFilter  bool
 	// DeadlineBanners: /orders, the viewer's escrow orders whose release deadline is less than 72 hours away
 	// (escrow_deadline.go, P2-R9).
 	DeadlineBanners []DeadlineBanner
@@ -424,8 +439,8 @@ type PageData struct {
 	EscrowOrders int
 	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
-	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
-	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain", "stagenet" or
+	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the Monero escrow orders on the viewer's listings that may hold
+	// coins (xmrMayHoldSQL). XMREscrowNet: Monero escrow's network, "fakechain", "stagenet" or
 	// "mainnet" (App.xmrEscrowNetwork, A-449, A-460), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
 	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
 	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool

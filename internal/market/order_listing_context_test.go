@@ -246,6 +246,7 @@ func TestDeskOrderRowsLinkTheirListing(t *testing.T) {
 	}
 
 	vendorDesk := w.page("/vendor-dashboard", w.vendor, 200)
+	vendorDesk = vendorDesk[strings.Index(vendorDesk, `id="vendor-orders"`):] // the incoming-orders table, after "Waiting for you" (A-710)
 	for id, c := range map[string]struct{ order, title string }{disputed: {disputedOrder, "A265 disputed listing"}, flagged: {flaggedOrder, "Listing terms were not recorded for this order"}} {
 		mustContain(t, segment(vendorDesk, "<tr>", `href="/order?id=`+c.order+`"`, "</tr>"),
 			`<a class="text-link" href="/product?id=`+id+`">Listing<span class="sr-only">: `+c.title+`</span></a>`)

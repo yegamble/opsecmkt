@@ -313,11 +313,11 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	o := d.Order
 	var releaseAt sql.NullTime
 	var left sql.NullFloat64
-	var shipByOpen, rechecked, live, tooFew bool
+	var shipByOpen, rechecked, live, tooFew, claimDue bool
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
-		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind IN ('release','refund') AND s.state<>'superseded'),
-		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew); err != nil {
+		`+xmrLiveOutcomeSQL("es.order_id")+`,
+		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2),`+xmrClaimDueSQL("o")+`
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue); err != nil {
 		return err
 	}
 	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
@@ -358,7 +358,7 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	v.Off = !on
 	v.Ship = on && d.OrderViewer == roleVendor && o.State == statePaid && o.Kind == "physical"
 	v.Confirm = on && d.OrderViewer == roleBuyer && o.State == stateShipped
-	v.Claim = on && d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && !live
+	v.Claim = on && d.OrderViewer == roleVendor && claimDue // the vendor desk's "Claim your payment" (A-710)
 	if (v.Ship || v.Confirm || v.Claim) && d.Security == nil {
 		if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
 			return err

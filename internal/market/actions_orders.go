@@ -392,7 +392,13 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 		if err = disputeResolverRefusal(c.User, coin); err != nil {
 			return actionResult{}, err
 		}
-		_, err = c.A.transition(withPayoutSeen(c.Ctx(), orderID, seen), c.Tx, orderID, stateDisputed, stateResolved, c.User, status)
+		ctx := withPayoutSeen(c.Ctx(), orderID, seen)
+		if outcome == "release" { // A-710: a decision for the vendor that leaves the release unclaimed says to claim it
+			if ctx, err = xmrClaimCueCtx(ctx, c.Tx, orderID, stateResolved); err != nil {
+				return actionResult{}, err
+			}
+		}
+		_, err = c.A.transition(ctx, c.Tx, orderID, stateDisputed, stateResolved, c.User, status)
 		if err == errReleaseFinal && coin == "XMR" {
 			return actionResult{}, errXMRReleaseFinal // escrowSettleTerminal: the release requested at shipment has its transaction
 		}
