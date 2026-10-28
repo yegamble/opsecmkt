@@ -38,7 +38,8 @@ func TestResetAdminFactorsWithPublicKeyRestoresStrictAdminLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(summary, "PGP public key replaced (fingerprint "+fingerprint+"; ownership unverified)") {
+	_, oldFingerprint, _ := parsePublicKey(oldPublic)
+	if !strings.Contains(summary, "PGP public key replaced fingerprint "+oldFingerprint+" -> "+fingerprint+" (ownership unverified)") {
 		t.Fatalf("recovery summary %q", summary)
 	}
 	if agStr(e, "SELECT pgp FROM users WHERE id=$1", id) != canonical ||

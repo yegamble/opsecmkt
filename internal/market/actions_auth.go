@@ -970,7 +970,12 @@ func (a *App) secondFactor(c *actionCtx, userID, passwordHash, code, next string
 			return actionResult{}, fail(503, "Service unavailable")
 		}
 		if p.Key == nil || !canReceiveEncrypted(p.Key, time.Now()) {
-			return actionResult{}, fail(409, "This market requires PGP authentication at sign-in. Your account needs a usable public key. If you cannot sign in to renew it, contact market staff for account recovery.")
+			// A-702: the refusal names replacement-key recovery and the staff contact.
+			contact, err := signedOutStaffContactRefusal(ctx, a.db)
+			if err != nil {
+				return actionResult{}, fail(503, "Service unavailable")
+			}
+			return actionResult{}, strictKeyRefusal("Your account has no public key a sign-in code can be encrypted to: none is saved, or it expired, was revoked or cannot encrypt. ", contact)
 		}
 	}
 	names, err := a.enrolledFactors(ctx, userID)
@@ -1241,6 +1246,7 @@ func challengeLoader(ctx context.Context, a *App, r *http.Request, d *PageData) 
 	if required {
 		d.Auth.TOTPEnrolled = false
 	}
+	d.Auth.PGPRequired = required
 	return nil
 }
 

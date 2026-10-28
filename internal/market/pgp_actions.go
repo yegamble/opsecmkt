@@ -289,6 +289,7 @@ func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error 
 		return err
 	}
 	v := &PGPView{HasKey: p.Armored != "", Armored: p.Armored, Verified: p.Verified, VerifiedAt: p.VerifiedAt, TwoFactor: p.TwoFactor}
+	v.LoginRequired = d.Settings[settingAllowLoginWithoutPGP] != "true" // as pgpLoginRequired reads it (A-702)
 	d.PGP = v
 	if p.Key == nil {
 		if v.HasKey {
@@ -303,6 +304,9 @@ func pgpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error 
 	}
 	slices.Sort(v.UserIDs)
 	keyDates(v, p.Key, time.Now())
+	if v.LoginRequired && (v.CannotEncrypt || v.StopsSoon != "") {
+		v.SignInLockout = strictSignInLockout(v.StopsSoon, v.CannotEncrypt)
+	}
 	if d.Page != "pgp" {
 		return nil
 	}

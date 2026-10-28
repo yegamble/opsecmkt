@@ -8,6 +8,7 @@ The current Monero-only suite is configured to cover:
 - Monero escrow against real daemon and wallet-rpc binaries on a local fakechain (`escrow-xmr-regtest`). This uses test coins and establishes no public-network or deployment result.
 - Server-rendered preview and database browser journeys with JavaScript disabled. Monero escrow browser journeys use simulated RPC, not a live chain.
 - Installer, Compose network isolation, resource limits, Tor configuration, scanner, encrypted backup/restore, and upgrade smoke checks.
+- The native deployment controller (`deploy init`, `install`, `redeploy`, `doctor --start-check`, `down`) in development mode on the runner's Docker Engine (`scripts/test-native-deploy.sh`, container job, external-database row); production mode is not run.
 - Required-job aggregation through **CI passed**. Historical Bitcoin jobs and signer builds have been removed.
 
 Each parallel test process needs its own disposable database. No development or CI job uses mainnet. Preserve a failed run's sanitized logs and browser traces; do not change expectations until the failure is understood. See [development commands](development.md), [operations checks](operations-tests.md) and the dated [verification records](verification.md).

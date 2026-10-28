@@ -182,3 +182,82 @@ func TestDevStartFailureDoesNotRunStartupCheck(t *testing.T) {
 		t.Fatalf("development failure ran the startup check: %q", calls)
 	}
 }
+
+// An app image older than A-694 has no serve --check-startup: Go's flag package refuses the flag and prints its usage.
+// The start check says the image predates it instead of pointing at a refusal that was never printed (QA95v-2), for
+// doctor --start-check and for the check a failed production start runs (a rollback to an older image).
+func TestStartCheckOnImageWithoutCheckStartupSaysItPredatesIt(t *testing.T) {
+	const flagError = "flag provided but not defined: -check-startup"
+	dir := initProduction(t)
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := materialize(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	receiptBytes, _ := json.Marshal(receipt{Project: c.Project, DockerContext: c.DockerContext, Version: 1})
+	if err := os.WriteFile(filepath.Join(dir, "installation.json"), receiptBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fakeStartCheckDocker(t, `case "$args" in
+*" up "*) echo 'container opsecmkt-app-1 is unhealthy'; exit 1 ;;
+*" run "*) printf '%s\nUsage of serve:\n  -preview\n    \tread-only preview\n' '`+flagError+`' >&2; exit 2 ;;
+esac
+exit 0
+`)
+	out, err := invoke(t, "doctor", "--dir", dir, "--start-check")
+	if err == nil || !strings.Contains(out, flagError) || !strings.Contains(err.Error(), "predates the startup check") || strings.Contains(err.Error(), "printed above") {
+		t.Fatalf("doctor --start-check on an older image: %v (%s)", err, out)
+	}
+	previous := "example.invalid/market@sha256:" + strings.Repeat("0badc0de", 8)
+	out, err = invoke(t, "redeploy", "--dir", dir, "--app-image", previous)
+	if err == nil || !strings.Contains(err.Error(), "Docker command failed") || !strings.Contains(out, "is unhealthy") ||
+		!strings.Contains(err.Error(), "predates the startup check") || strings.Contains(err.Error(), "printed above") {
+		t.Fatalf("redeploy to an older image: %v (%s)", err, out)
+	}
+
+	// Any other failure still points at the refusal the check printed.
+	fakeStartCheckDocker(t, `case "$args" in *" run "*) printf '%s\n' '`+newerReleaseRefusal+`'; exit 1 ;; esac
+exit 0
+`)
+	if _, err = invoke(t, "doctor", "--dir", dir, "--start-check"); err == nil || !strings.Contains(err.Error(), "printed above") || strings.Contains(err.Error(), "predates") {
+		t.Fatalf("refusal: %v", err)
+	}
+}
+
+// A failed production redeploy --admin-tor-image replaced only tor-admin: the application was not touched, so the
+// application's startup check does not run and the failure is reported as it is.
+func TestProdAdminTorRedeployFailureDoesNotRunStartupCheck(t *testing.T) {
+	dir, args := productionInitArgs(t, "database-ca.pem")
+	args = append(args, "--exposure", "tor", "--admin-tor-image", testImage, "--admin-client-auth-dir", adminAuthInput(t))
+	if out, err := invoke(t, args...); err != nil {
+		t.Fatalf("init: %v (%s)", err, out)
+	}
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := materialize(dir, c); err != nil {
+		t.Fatal(err)
+	}
+	receiptBytes, _ := json.Marshal(receipt{Project: c.Project, DockerContext: c.DockerContext, Version: 1})
+	if err := os.WriteFile(filepath.Join(dir, "installation.json"), receiptBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	record := fakeStartCheckDocker(t, `case "$args" in *" up "*) echo 'container opsecmkt-tor-admin-1 exited (1)'; exit 1 ;; esac
+exit 0
+`)
+	next := "example.invalid/tor-admin@sha256:" + strings.Repeat("fedcba98", 8)
+	out, err := invoke(t, "redeploy", "--dir", dir, "--admin-tor-image", next)
+	if err == nil || strings.Contains(out+err.Error(), "startup check") {
+		t.Fatalf("failed admin Tor redeploy: %v (%s)", err, out)
+	}
+	calls := dockerInvocations(t, record)
+	if len(calls) != 1 || !strings.HasSuffix(calls[0], " up -d --wait --wait-timeout 600 --no-deps tor-admin") {
+		t.Fatalf("failed admin Tor redeploy ran more than its own up: %q", calls)
+	}
+	if after, err := loadConfig(dir); err != nil || after.AdminTorImage != next || after.AppImage != c.AppImage {
+		t.Fatalf("failed admin Tor redeploy did not retain the requested image only: %v", err)
+	}
+}

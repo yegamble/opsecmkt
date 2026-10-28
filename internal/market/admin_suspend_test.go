@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const suspendedMsg = "This account is suspended. Ask the operator of this market."
+const suspendedMsg = "This account is suspended. Ask the operator of this market. " + staffReadyLine
 
 // signedOut reports whether session no longer authenticates (a protected page redirects to /login).
 func signedOut(e *testEnv, session string) bool {

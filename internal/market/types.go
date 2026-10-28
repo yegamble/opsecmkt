@@ -516,7 +516,9 @@ type PageData struct {
 }
 
 // Foundation
-type AuthView struct{ TOTPEnrolled, PGPEnrolled bool }
+
+// AuthView is /challenge's pending sign-in; PGPRequired: this market requires PGP at every sign-in (A-702).
+type AuthView struct{ TOTPEnrolled, PGPEnrolled, PGPRequired bool }
 
 // P1 Authentication
 type SecurityView struct {
@@ -555,6 +557,10 @@ type PGPView struct {
 	StopsSoon                     string // A-155: UTC date encryption to the key stops, when that is within 30 days
 	FingerprintHex                string // unspaced fingerprint for the renewal commands
 	CannotEncrypt                 bool   // A-225: nothing can be encrypted to the saved key now (canReceiveEncrypted)
+	// A-702: this market requires PGP at every sign-in (pgpLoginRequired), and, while the key's expiry warning shows,
+	// what that expiry means for signing in (strictSignInLockout).
+	LoginRequired bool
+	SignInLockout string
 }
 
 // P3 Orders

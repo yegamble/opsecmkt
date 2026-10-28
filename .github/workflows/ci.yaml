@@ -587,7 +587,8 @@ jobs:
   container:
     name: Container runtime (${{ matrix.database }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The external row also runs the native deployment test (about 1 minute in CI run 40685808020, A-697).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -635,6 +636,31 @@ jobs:
       - name: Malware scanner container, read-only and offline
         if: matrix.database == 'internal'
         run: bash scripts/test-scanner.sh
+      # A-697: the native deployment controller (deploy init/install/redeploy/doctor/down) on this engine with this
+      # image, in development mode with its own internal database and Tor (production storage and logging are not
+      # run). Once, on the row without the image scan and scanner container, so the rows take similar time; a refused
+      # redeploy failed after 1 second on Compose v2.38.2 (CI run 40685808020); the timeout still allows its 600-second --wait-timeout on another Compose version.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.database == 'external'
+        with:
+          go-version-file: go.mod
+          # Releases call this workflow too; restore no Go module or build cache into this job (zizmor cache-poisoning).
+          cache: false
+      - name: Build the Tor image for the native deployment test
+        if: matrix.database == 'external'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy
+          file: deploy/Dockerfile.tor
+          load: true
+          tags: opsecmkt-tor:ci
+          # The tor-image job's build arguments and cache; that job scans the image and writes the cache.
+          build-args: SECURITY_REFRESH=${{ steps.refresh.outputs.day }}
+          cache-from: type=gha,scope=tor
+      - name: Native deployment controller on a real Docker Engine (development mode)
+        if: matrix.database == 'external'
+        timeout-minutes: 25
+        run: bash scripts/test-native-deploy.sh
   installer:
     name: Local installer, setup wizard, terminal bootstrap and upgrade
     runs-on: ubuntu-24.04

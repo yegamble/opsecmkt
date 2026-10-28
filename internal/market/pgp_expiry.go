@@ -56,6 +56,10 @@ func (a *App) sweepKeyExpiry(ctx context.Context, now time.Time) error {
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	strict, err := pgpLoginRequired(ctx, a.db)
+	if err != nil {
+		return err
+	}
 	for _, k := range keys {
 		fp, enc, ok := sweptKey(k.armored, now)
 		if !ok || enc.Until.IsZero() || enc.Until.Sub(now) > keyExpiryWarning {
@@ -69,7 +73,7 @@ func (a *App) sweepKeyExpiry(ctx context.Context, now time.Time) error {
 		if k.notice == marker+stage || k.notice == marker+"/expired" {
 			continue
 		}
-		if err = a.sendKeyExpiryNotice(ctx, k.id, k.armored, k.notice, marker+stage, keyExpiryNotice(enc.Until, stage == "/expired")); err != nil {
+		if err = a.sendKeyExpiryNotice(ctx, k.id, k.armored, k.notice, marker+stage, keyExpiryNotice(enc.Until, stage == "/expired", strict)); err != nil {
 			return err
 		}
 	}
@@ -118,13 +122,27 @@ func (a *App) sendKeyExpiryNotice(ctx context.Context, userID, armored, was, not
 }
 
 // keyExpiryNotice is the owner's notification. Like notifyOwner's it is link-free and names no fingerprint: the
-// renewal commands say where to find it.
-func keyExpiryNotice(until time.Time, expired bool) string {
+// renewal commands say where to find it. strict (pgpLoginRequired, A-702) adds that the expiry also locks the owner out
+// of signing in (strictSignInLockout).
+func keyExpiryNotice(until time.Time, expired, strict bool) string {
 	day := until.UTC().Format(time.DateOnly) + " UTC"
 	head := "Encryption to your PGP key stops on " + day + ", when the key or its encryption subkey expires. After that nobody can encrypt messages or shipping addresses to it, and PGP sign-in, if on, cannot send you a code."
 	if expired {
 		head = "Encryption to your PGP key stopped on " + day + ": the key or its encryption subkey expired. Nobody can encrypt messages or shipping addresses to it, and PGP sign-in, if on, cannot send you a code."
 	}
+	if strict {
+		head += " " + strictSignInLockout(day, expired)
+	}
 	return head + " Renew the same key in your own PGP software: gpg --quick-set-expire FINGERPRINT 2y renews the key and gpg --quick-set-expire FINGERPRINT 2y '*' its subkeys, where FINGERPRINT is the one on your account page." +
 		" Then export it with gpg --armor --export FINGERPRINT and paste it on your account page with your password: the same key renewed keeps its ownership proof and PGP sign-in."
+}
+
+// strictSignInLockout is what a key's expiry on day ("YYYY-MM-DD UTC") means on a market that requires PGP at every
+// sign-in (A-702): the expiry notice and the /account and /pgp warnings (PGPView.SignInLockout) say it. An owner who
+// reads it after the expiry is still signed in, and can renew the key from this session.
+func strictSignInLockout(day string, expired bool) string {
+	if expired {
+		return "This market requires PGP at every sign-in: you cannot sign in again until this key is renewed or replaced, and if this session ends first, staff must restore your account."
+	}
+	return "This market requires PGP at every sign-in: from " + day + " (when the key expires that day) you cannot sign in until staff restore your account. Renew before then."
 }

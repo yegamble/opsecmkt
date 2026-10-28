@@ -93,7 +93,7 @@ test('administrator publishes a staff contact that every promised page shows as 
     await suspect.getByLabel('Handle', { exact: true }).fill(suspectHandle);
     await suspect.getByLabel('Password', { exact: true }).fill(password);
     expect(await submitStatus(suspect, () => suspect.getByRole('button', { name: 'Sign in' }).click())).toBe(403);
-    await expect(suspect.getByRole('alert')).toHaveText(`This account is suspended. Contact the market staff: ${hostile}.`);
+    await expect(suspect.getByRole('alert')).toHaveText(`This account is suspended. Contact the market staff: ${hostile}. Have ready your account's handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key.`);
 
     // A moderator's handle with a usable key links a signed-in reader to Messages, prefilled; a visitor gets text.
     expect(await saveContact(modHandle)).toBe(303);

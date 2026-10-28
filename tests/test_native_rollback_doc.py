@@ -98,6 +98,24 @@ class NativeRollbackCommandsTest(unittest.TestCase):
                 self.assertTrue((ROOT / script).is_file(), f"{line}: {script} does not exist")
         self.assertGreaterEqual(found, 2)
 
+    def test_restart_step_requires_retention_with_the_current_ledger(self):
+        # QA95v-1: both restore paths set retention_restore_required, and startup then refuses the restored database
+        # without RETENTION_ENABLED=on and the current external ledger, so the restart step must say so.
+        step = re.search(r"^5\. (.*?)^6\. ", self.block, re.M | re.S).group(1)
+        for text in ("RETENTION_ENABLED=on", "retention_restore_required", "**current** external retention",
+                     "scripts/restore.sh", "-set-restore-gate",
+                     "(docs/install/production.md#7-establish-backups-and-recovery)"):
+            self.assertIn(text, step)
+        production = (ROOT / "docs" / "install" / "production.md").read_text(encoding="utf-8")
+        self.assertIn("\n## 7. Establish backups and recovery\n", production)
+        self.assertIn("An old restored database cannot initialize an empty ledger", production)
+        self.assertIn("INSERT INTO settings(key,value) VALUES ('retention_restore_required','true')",
+                      (ROOT / "scripts" / "restore.sh").read_text(encoding="utf-8"))
+        gate = (ROOT / "internal" / "market" / "restore_gate.go").read_text(encoding="utf-8")
+        self.assertRegex(gate, r'for _, key := range \[\]string\{[^}]*"retention_restore_required"')
+        retention = (ROOT / "internal" / "market" / "retention_state.go").read_text(encoding="utf-8")
+        self.assertIn("retention previously enrolled or restore pending: RETENTION_ENABLED", retention)
+
     def test_restore_script_names_the_native_command(self):
         text = (ROOT / "scripts" / "restore.sh").read_text(encoding="utf-8")
         self.assertIn("opsecmkt deploy endpoint set --dir DIR --database-url-file FILE", text)

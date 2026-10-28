@@ -8,8 +8,8 @@
 </div>{{end}}{{end}}{{end}}
 {{define "account-security:panel"}}<div class="panel">
 <h2>Two-factor authentication</h2>
-<p>Purchasing and messages require <a class="text-link" href="/pgp">PGP decryption in this browser</a>{{if .PGPAccessVerified}} (completed for your current public key){{end}}. The market can also require PGP at every sign-in.</p>{{with .Security}}{{if .TOTPEnabled}}
-<p>Your authenticator app or a one-time recovery code can verify sign-in when the market allows browse-only sign-in.{{if lt .RecoveryRemaining 3}} <strong>Few recovery codes remain; replace them.</strong>{{end}}</p>{{else}}
+<p>Purchasing and messages require <a class="text-link" href="/pgp">PGP decryption in this browser</a>{{if .PGPAccessVerified}} (completed for your current public key){{end}}. {{$strict := and .PGP .PGP.LoginRequired}}{{if $strict}}This market requires PGP decryption at every sign-in: an authenticator or recovery code cannot replace it, so keep your key renewed.{{else}}This market allows browse-only sign-in without PGP.{{end}}</p>{{with .Security}}{{if .TOTPEnabled}}
+<p>{{if $strict}}Your authenticator app confirms changes to your password, key and second factors; on this market it cannot verify sign-in.{{else}}Your authenticator app or a one-time recovery code can verify sign-in when the market allows browse-only sign-in.{{end}}{{if lt .RecoveryRemaining 3}} <strong>Few recovery codes remain; replace them.</strong>{{end}}</p>{{else}}
 <p>We strongly encourage adding time-based one-time codes (TOTP) from an authenticator app you control to help prevent account takeover. Keep its recovery codes offline.</p>{{end}}{{end}}
 <a class="button" href="/totp">Manage TOTP <span class="action-icon">↗</span></a>
 </div>{{$totp := and .Security .Security.TOTPEnabled}}

@@ -14,7 +14,7 @@ import (
 // tests against the simulated Monero wallet RPC, not chain evidence.
 
 const (
-	bannedMsg      = "This account is closed and cannot sign in. Ask the operator of this market."
+	bannedMsg      = "This account is closed and cannot sign in. Ask the operator of this market. " + staffReadyLine
 	testBanReason  = "Took payment for three orders and shipped nothing."
 	testLiftReason = "Appeal upheld: the parcels were lost in the post."
 	// The reasons as audit rows quote them: without the final full stop, since the row goes on after it (SEC-546-6).
