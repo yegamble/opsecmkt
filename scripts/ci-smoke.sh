@@ -353,6 +353,11 @@ if [[ "$leg" == scanner ]]; then
   scanner_leg
   exit 0
 fi
+# A-696: the image names the build identity CI passed it (EXPECT_BUILD_VERSION, EXPECT_BUILD_COMMIT); an image built
+# without BUILD_VERSION and BUILD_COMMIT says "development" with no commit. /admin/system is checked below.
+expected_version="opsecmkt ${EXPECT_BUILD_VERSION:-development}${EXPECT_BUILD_COMMIT:+ commit $EXPECT_BUILD_COMMIT}"
+actual_version=$(docker run --rm --network none opsecmkt:ci version)
+[[ "$actual_version" == "$expected_version" ]] || { echo "unexpected version output: $actual_version (expected: $expected_version)" >&2; exit 1; }
 python3 - <<'PY'
 import http.cookiejar, os, re, time, urllib.parse, urllib.request
 base = 'http://127.0.0.1:18090'
@@ -398,6 +403,15 @@ admin = ''.join(client.open(base + path).read().decode() for path in admin_pages
 assert 'action="/admin/payout"' not in admin and 'action="/account/payout"' not in admin
 assert 'id="payouts"' not in admin and '#payouts"' not in admin and ' payouts)' not in admin
 assert 'action="/orders/pay"' not in admin
+# A-696: /admin/system's own-build row names the version and commit the image was built with.
+system = client.open(base + '/admin/system').read().decode()
+row = system[system.index('>OPSEC Market (this app)<'):]
+row = row[:row.index('</tr>')]
+build_version = os.environ.get('EXPECT_BUILD_VERSION') or 'development'
+build_commit = os.environ.get('EXPECT_BUILD_COMMIT', '')
+assert f'<td>{build_version}<br>' in row, f'/admin/system build row lacks version {build_version}: {row}'
+evidence = f'This running build; commit {build_commit[:12]}' if build_commit else 'This running build; commit not recorded in it'
+assert evidence in row, f'/admin/system build row lacks {evidence!r}: {row}'
 # Signed audit export: available with the pinned key, and the downloaded export verifies offline below.
 section = admin[admin.index('id="audit-export-title"'):]
 section = section[:section.index('</section>')]

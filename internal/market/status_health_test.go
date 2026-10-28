@@ -67,7 +67,8 @@ func TestDependencyStatusObservesMonero(t *testing.T) {
 	// Before any watcher pass the Monero rows say so; the market's own build is shown.
 	d := deps()
 	wantAll(t, "dependency table", d, `<th scope="col">Health</th>`)
-	wantAll(t, "market row", dependencyRow(t, d, "OPSEC Market (this app)"), "v9.9.9-test", "0123456789ab")
+	// scripts/ci-smoke.sh matches these exact strings against the image CI built (A-696).
+	wantAll(t, "market row", dependencyRow(t, d, "OPSEC Market (this app)"), "<td>v9.9.9-test<br>", "This running build; commit 0123456789ab")
 	wantAll(t, "daemon row before a pass", dependencyRow(t, d, "Monero daemon"), "No Monero escrow watcher pass recorded yet")
 
 	// After a pass: the daemon's release from get_info and the wallet-rpc's interface version, observed by this app,

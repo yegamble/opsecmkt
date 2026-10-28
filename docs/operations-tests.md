@@ -139,7 +139,9 @@ Requires Docker with Compose v2, Go (it builds `cmd/verify-audit`, as the plain 
 pulls the ClamAV image of `compose.scanner.yaml` when it is missing (one signature loads in a second or two).
 Like the plain `ci-smoke.sh internal|external`, it runs the `opsecmkt:ci` image under a unique project name on
 loopback port 18090, with the internal or an external PostgreSQL, ignores `.env`, and its exit trap removes
-every container, volume and network it created. The app
+every container, volume and network it created. (The plain run also checks the image's build identity: `version`
+and the `/admin/system` build row must name `EXPECT_BUILD_VERSION` and `EXPECT_BUILD_COMMIT`, which CI sets to `ci`
+and its commit; unset, an image built as above says `development` with no commit, A-696.) The app
 runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit, and `clamd` exactly as
 `compose.scanner.yaml` defines it (hardened, `scanner` network only) except for one read-only bind mount over
 `/var/lib/clamav`, which hides the image's own signatures:

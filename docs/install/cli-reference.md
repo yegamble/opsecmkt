@@ -9,7 +9,7 @@ Examples use `./opsecmkt`. Rename the release file for your platform or substitu
 | Command | Purpose |
 | --- | --- |
 | `help`, `--help`, `-h` | Print the root command list. |
-| `version` | Print the release build version; development builds may print a VCS revision or `development`. Takes no arguments. |
+| `version` | Print the build identity `/admin/system` shows: `opsecmkt TAG commit COMMIT` for a release binary or an image built with `BUILD_VERSION` and `BUILD_COMMIT`; otherwise `opsecmkt development`, followed by `commit` and the VCS revision when Go recorded one. Takes no arguments. |
 | `setup` | Open guided deployment/key/management prompts explicitly, including when input is a pipe. Accepts no configuration flags; `setup --help` prints help. |
 | `serve` | Run the application in the foreground, with embedded UI assets and migrations. |
 | `upload-gateway` | Run the separate upload/scanner front door in the foreground. |

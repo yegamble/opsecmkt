@@ -3437,9 +3437,14 @@ time.sleep(60)
             self.assertNotIn(word, text)
         # Docker pulls one image on the installer's behalf: the scanner's, for refresh-scanner (A-184, ruling C1).
         self.assertEqual(re.findall(r'.*compose pull.*', text), ['  docker compose pull clamd || {'])
-        # No command runs git, nc or ssh (messages may mention `git pull` for the operator to run).
+        # No command runs nc or ssh, or git other than the local reads of build_identity (A-696: rev-parse, status
+        # and describe of this checkout); messages may mention `git pull` for the operator to run.
         for line in text.splitlines():
-            self.assertNotRegex(line.split(' #')[0], r'''(^|[;&|(`]|\$\(|then|do)\s*(git|nc|ssh|scp)\s''', line)
+            self.assertNotRegex(line.split(' #')[0],
+                                r'''(^|[;&|(`]|\$\(|then|do)\s*(git\s(?!(rev-parse|status|describe)\s)|(nc|ssh|scp)\s)''', line)
+        local_git = re.findall(r'\bgit (rev-parse|status|describe)\b.*', text)
+        self.assertEqual(len(local_git), 3, local_git)
+        self.assertTrue(all('fetch' not in line and 'remote' not in line for line in local_git), local_git)
         self.assertEqual(self.run_installer([''] * 12).returncode, 0)
         self.assertFalse(Path(str(self.log) + '.fetch').exists())
 
@@ -3463,6 +3468,8 @@ time.sleep(60)
         retired_internal.update(key for key in keys if key.startswith(('BITCOIN_', 'ESCROW_BTC', 'ESCROW_SIGNER_')))
         # Optional overrides are documented without assignments; a blank network flag would select mainnet.
         optional_compose = {'MONERO_NETWORK_FLAG', 'LOG_DRIVER', 'TOR_VERSION'}
+        # The app image's build arguments, which build_identity sets for each Compose run and .env never holds (A-696).
+        optional_compose |= {'OPSECMKT_BUILD_VERSION', 'OPSECMKT_BUILD_COMMIT', 'OPSECMKT_SECURITY_REFRESH'}
         self.assertEqual(sorted(key for key in keys if key not in retired_internal | optional_compose),
                          sorted(example_values()))
 

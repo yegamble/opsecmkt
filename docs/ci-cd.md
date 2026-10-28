@@ -41,7 +41,10 @@ database matrix entry's image, and the Tor scan reuses the offline-test image.
 CI's image builds reuse the Actions layer cache, but pass the build day as
 `SECURITY_REFRESH`, so the layer that runs `apt-get upgrade` is rebuilt at least
 daily and a Debian security fix published since the last cached build reaches
-the scan. Release packaging additionally scans the actual OCI archive before creating the
+the scan. The documented operator builds ([binary installation](install/binary.md))
+pass the same day with `--pull`, and `scripts/install.sh` passes it to Compose.
+CI's application image also carries `BUILD_VERSION=ci` and the commit, and
+`scripts/ci-smoke.sh` checks that `version` and `/admin/system` name them. Release packaging additionally scans the actual OCI archive before creating the
 draft. No registry push is required for these scans.
 
 The [scheduled security workflow](../.github/workflows/security.yaml) runs weekly
@@ -55,9 +58,13 @@ databases can disclose new problems after an earlier green CI run.
 
 ## Release a tested version
 
-Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The release workflow reruns the entire CI workflow against that tag before building any release output. It requires the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported). A tag with a suffix (any `-` in the name, such as `v0.1.0-alpha.2`) is created with `gh release create --prerelease`; a plain tag is not. The image is built without any Actions cache.
+Push a version tag, for example `v0.1.0`, on the intended reviewed commit. The release workflow first refuses a tag whose commit is not on `main` (an ancestry check against the checkout's `origin/main`; a checkout without `main` refuses too), then reruns the entire CI workflow against that tag before building any release output. It requires the tag to use `vMAJOR.MINOR.PATCH` (an optional prerelease suffix is supported). A tag with a suffix (any `-` in the name, such as `v0.1.0-alpha.2`) is created with `gh release create --prerelease`; a plain tag is not. The image is built without any Actions cache.
 
-After the OCI archive passes its vulnerability gate, the pipeline creates a **draft GitHub release** with:
+The image and the standalone binaries carry the tag and commit (the `BUILD_VERSION` and `BUILD_COMMIT` build arguments; `-X main.buildVersion` and `-X main.buildCommit`): the image's `version` prints `opsecmkt <tag> commit <sha>`, as the standalone binaries' version prints, and packaging fails if the amd64 binary prints anything else. `/admin/system` shows the same tag and the commit's first 12 characters.
+
+**Dry run.** **Run workflow** on the Release workflow (`workflow_dispatch`, no inputs) runs the same pipeline on the selected branch under the fixed tag `v0.0.0-dry-run`: CI, the OCI archive and its scan, the binaries and `SHA256SUMS`. It keeps those files only as the run's `release-files` workflow artifact (14 days) and never creates a release or pushes a tag: the release job runs only for a `v*` tag push, and its release step refuses any other event or ref. A green dry run on `main` is the evidence that the pipeline works before the first tag is pushed.
+
+After the OCI archive passes its vulnerability gate, a tag push hands the same workflow artifact to the release job, which checks `SHA256SUMS` and creates a **draft GitHub release** with:
 
 - `opsecmkt.oci.tar.gz`: Linux amd64 OCI image archive, with embedded BuildKit provenance and SBOM.
 - `build.json`: exact source commit, tag, platform and Actions run URL.
@@ -100,7 +107,7 @@ A future deployment workflow needs an explicitly selected target, environment pr
 
 Do these in order for each release tag (the first is `v0.1.0-alpha.2` or whatever the owner picks). Nothing here deploys anything.
 
-1. **Merge first.** The tag goes on a reviewed commit on `main` whose CI run passed, including the **CI passed** check. Do not tag a branch.
+1. **Merge first.** The tag goes on a reviewed commit on `main` whose CI run passed, including the **CI passed** check, and a Release dry run (**Run workflow** on `main`) passed on it. Do not tag a branch: the release workflow refuses a tag whose commit is not on `main`.
 2. **Replace "in no release".** Once the tag exists, those words are false. Change them to name the tag in `README.md` (the important note under the title), `docs/escrow.md`, `docs/operator-guide.md` (Escrow) and the "development branch and in no release" lines in `docs/acceptance.md`, in the same commit that precedes the tag. Keep the test-network and unverified-journey wording (mainnet is an unrun operator opt-in); a tag does not verify anything.
 3. **Retitle UPGRADING.md** from "Upgrading from v0.1.0-alpha.1" to "Upgrading from v0.1.0-alpha.1 to `<tag>`", and put a one-page summary on top: what changed for an operator, the migration range (`001` to the last file in `internal/market/migrations`), the sections that need action before the upgrade (a database with payment history this build does not support is refused, sections 58 and 59), and the rollback rule.
 4. **Check the notes.** Push the tag. The release workflow reruns CI and creates a draft marked **Pre-release**; open it and confirm the first line of the notes, the reproducibility paragraph, the line "The default image CAPTCHA has no audio or text alternative." and the Go version, then publish.
@@ -111,7 +118,7 @@ Do these in order for each release tag (the first is `v0.1.0-alpha.2` or whateve
 
 ## Workflow maintenance
 
-Actions are pinned to verified full commit SHAs, permissions default to read-only, and checkout does not persist credentials. Only the release packaging job receives `contents: write`. Pull requests never receive release permissions or production secrets. Dependabot proposes dependency/action updates for review.
+Actions are pinned to verified full commit SHAs, permissions default to read-only, and checkout does not persist credentials. Only the release job, which runs for tag pushes alone, receives `contents: write`; the identity and packaging jobs, and every dry run, only read. Pull requests never receive release permissions or production secrets. Dependabot proposes dependency/action updates for review.
 
 ### Go test jobs
 

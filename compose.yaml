@@ -10,7 +10,14 @@ x-logging: &logging
     max-file: '3'
 services:
   app:
-    build: .
+    build:
+      context: .
+      # scripts/install.sh sets these (A-696): the clean checkout's tag and commit, which `version` and /admin/system
+      # report, and the build day, which rebuilds the image's apt-get upgrade layer. Unset, the image says "development".
+      args:
+        BUILD_VERSION: ${OPSECMKT_BUILD_VERSION:-}
+        BUILD_COMMIT: ${OPSECMKT_BUILD_COMMIT:-}
+        SECURITY_REFRESH: ${OPSECMKT_SECURITY_REFRESH:-}
     restart: unless-stopped
     networks: [backend]
     environment:

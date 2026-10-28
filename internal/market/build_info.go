@@ -4,7 +4,7 @@ import "runtime/debug"
 
 // BuildVersion and BuildCommit are this market's own build (A-553), shown in the administrator's dependency table.
 // cmd/server sets them before New from its link-time values (release builds: -X main.buildVersion=<tag>
-// -X main.buildCommit=<commit>). A blank commit falls back to the Go toolchain's vcs.revision when the binary was built
+// -X main.buildCommit=<commit>; images: the Dockerfile's BUILD_VERSION and BUILD_COMMIT, A-696). A blank commit falls back to the Go toolchain's vcs.revision when the binary was built
 // from a git checkout.
 var BuildVersion, BuildCommit = "development", ""
 
