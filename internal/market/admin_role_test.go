@@ -27,6 +27,7 @@ func TestRetentionAdministratorRecoveryUsesFreshAccount(t *testing.T) {
 	}
 	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {"recovery_operator"}, "password": {testPassword}})
 	e.check(w, 303)
+	agEnableTOTP(e, agStr(e, "SELECT id FROM users WHERE handle='recovery_operator'")) // A-706: appointed with a factor
 	if _, err := SetRole(t.Context(), e.DB, "recovery_operator", "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +120,7 @@ func TestSetRole(t *testing.T) {
 	e.check(e.do("GET", "/account", vendor, nil), 200)
 
 	// Adding an administrator: the account's existing session reaches /admin at once.
+	e.candidateFactor("role_buyer")
 	if got, err = SetRole(ctx, e.DB, "role_buyer", "admin"); err != nil || got != "Role of role_buyer changed from buyer to admin" {
 		t.Fatalf("promotion: %q %v", got, err)
 	}

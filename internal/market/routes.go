@@ -85,7 +85,8 @@ type actionCtx struct {
 	// transaction owns both its mutation and the durable submission receipt.
 	ConfirmedFormNonce bool
 	// FactorFormNonce explicitly permits the recovery-code lock and consumption
-	// order used by TOTP activation/replacement/disable. Other confirmed forms
+	// order used by TOTP activation/replacement/disable, and the pending sign-in
+	// end before a first factor (TOTP or PGP sign-in, A-706). Other confirmed forms
 	// still reject those options.
 	FactorFormNonce bool
 	// OwnFormNonce records the original confirmation mode for dynamic OwnTx

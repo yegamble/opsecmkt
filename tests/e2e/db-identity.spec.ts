@@ -59,13 +59,15 @@ test('changing the password needs the current one, ends other sessions and keeps
   await other.context().close();
 
   // With TOTP enrolled the change also needs a code; a one-time recovery code is accepted once.
+  // A-706: the first factor already ends the other browser's newer session, so the next change ends none.
   await enrollTOTP(page, second);
   const recovery = (await page.locator('.recovery-codes li').allInnerTexts())[0];
   await page.goto('/account');
+  await expect(activity).toContainText('Ended 1 other session(s) and any pending sign-ins: first second factor turned on');
   await expect(page.getByLabel('Authenticator code or recovery code')).toBeVisible();
   expect(await changePassword(page, second, third, { code: recovery })).toBe(303);
   await expect(page.getByRole('status')).toHaveText('Password changed.');
-  await expect(activity).toContainText('Changed password; ended 1 other session(s) and any pending sign-ins (confirmed with password and recovery code)');
+  await expect(activity).toContainText('Changed password; ended 0 other session(s) and any pending sign-ins (confirmed with password and recovery code)');
   expect(await changePassword(page, third, first, { code: recovery })).toBe(401);
   await expect(page.getByRole('alert')).toHaveText('Recovery code incorrect or already used');
   await page.goto('/totp');

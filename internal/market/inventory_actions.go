@@ -47,8 +47,8 @@ func lockListing(c *actionCtx, id string) (managedListing, error) {
 	// Hold the actor's account through the mutation so stale forms cannot write
 	// after a concurrent revocation, including photo removal and listing edits.
 	var current User
-	var active bool
-	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT role,vendor_approved,suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&current.Role, &current.VendorApproved, &active); err != nil {
+	var active, factor bool
+	if err := c.Tx.QueryRowContext(c.Ctx(), "SELECT role,vendor_approved,suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL,totp_enabled OR pgp_2fa FROM users WHERE id=$1 FOR SHARE", c.User.ID).Scan(&current.Role, &current.VendorApproved, &active, &factor); err != nil {
 		return l, err
 	}
 	if !current.CanSell() || !active {
@@ -60,6 +60,9 @@ func lockListing(c *actionCtx, id string) (managedListing, error) {
 	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT vendor_id,kind,stock,archived,coalesce(admin_archive_reason,'') FROM products WHERE id=$1 AND (vendor_id=$2 OR $3='admin') FOR UPDATE`, id, c.User.ID, c.User.Role).Scan(&l.VendorID, &l.Kind, &l.Stock, &l.Archived, &l.Takedown)
 	if err == sql.ErrNoRows {
 		return l, fail(404, "Listing not found")
+	}
+	if err == nil && l.VendorID != c.User.ID && !factor { // the administrator branch: A-706, SEC706-4
+		return l, errStaffFactorRequired
 	}
 	return l, err
 }

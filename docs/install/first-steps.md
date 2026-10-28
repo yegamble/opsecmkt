@@ -33,8 +33,11 @@ the setup below.
    a permanent 3–32 character handle using letters, digits or underscores, and
    a password of 12–72 bytes. Select **Initialize marketplace**. If the host
    bootstrap command already completed setup, sign in instead.
-2. Enroll an authenticator app and store the recovery codes offline. Optionally
-   add a PGP key for PGP sign-in and encrypted messages. Host-side account
+2. Enroll an authenticator app immediately and store the recovery codes offline.
+   Until then every staff action is refused (A-706), and anyone who has the
+   password could enroll their own authenticator for the account, so do not leave
+   the new administrator unenrolled. Optionally add a PGP key for PGP sign-in and
+   encrypted messages. Host-side account
    recovery is covered in [Authentication](../operator-guide.md#authentication).
 3. Run `./opsecmkt deploy status --dir INSTALL_DIR`. Confirm application health,
    then exercise account, listing and upload journeys through the real gateway

@@ -12,6 +12,7 @@ func cleanupDemote(t *testing.T, e *testEnv, handle, role string) (string, strin
 	t.Helper()
 	e.user("cleanup_admin", "admin")
 	id, session := e.user(handle, "vendor")
+	e.candidateFactor(handle)
 	if _, err := SetRole(context.Background(), e.DB, handle, role); err != nil {
 		t.Fatal(err)
 	}

@@ -55,6 +55,15 @@ func messageAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	if recipient == "" {
+		// Staff may write to any account only with a second factor (A-706, SEC706-4); the same answer for every
+		// handle keeps the directory private.
+		var factorless bool
+		if err = tx.QueryRowContext(ctx, "SELECT role IN ('admin','moderator') AND NOT (totp_enabled OR pgp_2fa) FROM users WHERE id=$1", u.ID).Scan(&factorless); err != nil {
+			return actionResult{}, err
+		}
+		if factorless {
+			return actionResult{}, errStaffFactorRequired
+		}
 		return actionResult{}, fail(403, messageNotPermitted+" Nothing was stored.")
 	}
 	var restricted bool
@@ -123,7 +132,7 @@ func messageRecipient(ctx context.Context, q rowQuerier, sender *User, handle st
 	var id string
 	err := q.QueryRowContext(ctx, `SELECT r.id FROM users s JOIN users r ON r.handle=$2
 		WHERE s.id=$1 AND s.suspended_at IS NULL AND s.closed_at IS NULL AND s.banned_at IS NULL
-		AND r.id<>s.id AND r.banned_at IS NULL AND (s.role IN ('moderator','admin')
+		AND r.id<>s.id AND r.banned_at IS NULL AND (s.role IN ('moderator','admin') AND (s.totp_enabled OR s.pgp_2fa)
 		OR ((r.role IN ('vendor','admin') OR r.vendor_approved) AND r.suspended_at IS NULL AND r.closed_at IS NULL
 			AND `+vendorAcceptsBuyerMessagesSQL("r")+`
 			AND ((`+activeVendorSQL("r")+` AND (r.role NOT IN ('moderator','admin') OR EXISTS(

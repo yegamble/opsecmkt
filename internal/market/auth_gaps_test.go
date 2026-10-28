@@ -965,6 +965,7 @@ func TestStolenSessionCannotAddPGPFactorToTOTPAccount(t *testing.T) {
 		t.Fatal("confirmed key change not audited with its confirmation")
 	}
 	agExec(e, "UPDATE users SET pgp_verified_at=now() WHERE id=$1", uid)
+	e.pgpSessionKey(owner) // the owner's browser decrypted a challenge to the new key (SEC706-1)
 	next, _ := e.totpCodeFor(uid, 1)
 	e.check(e.do("POST", "/pgp/2fa", owner, url.Values{"enable": {"1"}, "password": {testPassword}, "code": {next}}), 303)
 	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", uid) != "true" || agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Turned on PGP sign-in verification%(confirmed with password and authenticator code)'", uid) != 1 {

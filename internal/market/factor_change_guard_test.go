@@ -150,6 +150,9 @@ func TestFactorlessAccountNeedsPasswordForKeyAndPGPSignIn(t *testing.T) {
 	if agStr(e, "SELECT pgp_2fa::text FROM users WHERE id=$1", uid) != "false" || a152Notes(e, uid, "") != 2 {
 		t.Fatal("PGP sign-in turned on by a session alone")
 	}
+	// A signed challenge proves ownership but not decryption in this browser: PGP sign-in also needs that (SEC706-1).
+	agExpect(e, "/pgp/2fa", stolen, url.Values{"enable": {"1"}, "password": {testPassword}}, 403, "Decrypt a challenge with your PGP key in this browser")
+	e.pgpSessionKey(stolen) // stands in for decrypting a challenge here
 	e.check(e.do("POST", "/pgp/2fa", stolen, url.Values{"enable": {"1"}, "password": {testPassword}}), 303)
 	a152Once(e, uid, 2, "Turned on PGP sign-in verification", "PGP sign-in verification was turned on")
 	e.check(e.do("POST", "/pgp/2fa", stolen, url.Values{"enable": {"0"}, "password": {testPassword}}), 303)

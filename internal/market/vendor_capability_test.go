@@ -130,6 +130,7 @@ func TestVendorCapabilityDoesNotSurviveAdministratorDemotion(t *testing.T) {
 	// Genuine approval is retained when a vendor becomes a moderator, and
 	// through a later administrator promotion and demotion.
 	vendorID, _ := e.user("cap_approved", "vendor")
+	e.candidateFactor("cap_approved")
 	product = e.product(vendorID, "digital")
 	for _, role := range []string{"moderator", "admin", "moderator"} {
 		if _, err := SetRole(t.Context(), e.DB, "cap_approved", role); err != nil {

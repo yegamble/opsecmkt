@@ -46,8 +46,8 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		}
 	}
 	var id, old string
-	var suspended, closed, closing, banned bool
-	err = tx.QueryRowContext(ctx, "SELECT id,role,suspended_at IS NOT NULL,closed_at IS NOT NULL OR password_hash='',deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL,banned_at IS NOT NULL FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &old, &suspended, &closed, &closing, &banned)
+	var suspended, closed, closing, banned, factor bool
+	err = tx.QueryRowContext(ctx, "SELECT id,role,suspended_at IS NOT NULL,closed_at IS NOT NULL OR password_hash='',deletion_requested_at IS NOT NULL OR retention_restricted_at IS NOT NULL,banned_at IS NOT NULL,totp_enabled OR pgp_2fa FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &old, &suspended, &closed, &closing, &banned, &factor)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("no account has the handle %q (handles are exact and case-sensitive)", handle)
 	}
@@ -65,6 +65,8 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		return "", fmt.Errorf("%q is suspended; restore it under Admin → Suspend or restore an account before making it an administrator", handle)
 	case role == "admin" && closing:
 		return "", fmt.Errorf("%q is awaiting account closure; choose a new active account as replacement administrator", handle)
+	case grantsStaffRole(old, role) && !factor: // A-706, SEC706-2
+		return "", fmt.Errorf("%q has no second factor; the account turns on an authenticator (TOTP) or PGP sign-in first, then run this again; nothing was changed", handle)
 	}
 	if old == "admin" {
 		var others int
