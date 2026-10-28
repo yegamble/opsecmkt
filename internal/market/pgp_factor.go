@@ -183,14 +183,15 @@ func unreadableKeyRefusal(ctx context.Context, q rowQuerier, userID string) erro
 // pgpKeyRefusal refuses a PGP sign-in that cannot be finished because of the saved key (problem says why), naming what
 // the account can still do: its other method when TOTP is enrolled, otherwise the administrator's reset of second
 // factors (/admin; for an administrator only A-137's operator reset, -reset-admin-factors; keeps says what that reset
-// leaves), then fix; and how to reach the staff (the staff contact, A-119).
+// leaves), then fix; and how to reach the staff (the staff contact, A-119, with A-702's signed-out lines). Under the
+// strict policy (pgpLoginRequired) none of those helps, only replacement-key recovery through the staff (A-702).
 func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fix string) error {
 	var totp bool
 	var role string
 	if err := q.QueryRowContext(ctx, "SELECT totp_enabled,role FROM users WHERE id=$1", userID).Scan(&totp, &role); err != nil {
 		return err
 	}
-	contact, err := staffContactRefusal(ctx, q)
+	contact, err := signedOutStaffContactRefusal(ctx, q)
 	if err != nil {
 		return err
 	}
@@ -199,7 +200,7 @@ func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fi
 		return err
 	}
 	if required {
-		return fail(409, problem+"This market requires PGP decryption at every sign-in. An authenticator, recovery code or second-factor reset cannot replace it. Ask market staff for identity-verified replacement-public-key recovery using the factor-reset form. For a locked-out administrator, the server operator supplies a replacement public-key file with the existing reset-admin-factors command. Recovery leaves the login policy in force; decryption with the replacement key is still required. "+contact)
+		return strictKeyRefusal(problem, contact)
 	}
 	if totp {
 		return fail(409, problem+"Sign in with your authenticator code or a recovery code instead, then "+fix+". Replacing the existing public-key binding also needs a fresh code from your previously enrolled authenticator or old-key decryption proof. If neither is available, ask for identity-verified replacement-key recovery. "+contact)
@@ -211,6 +212,16 @@ func pgpKeyRefusal(ctx context.Context, q rowQuerier, userID, problem, keeps, fi
 	}
 	return fail(409, problem+"PGP sign-in is the only verification method on this account, so this sign-in cannot be finished. "+who+
 		"; "+keeps+"you then sign in with your password. A reset alone cannot authorize replacing the protected key binding: renew a usable export of the same key where possible, or request identity-verified replacement-public-key recovery. "+contact)
+}
+
+// strictKeyRefusal refuses a sign-in under the strict policy (pgpLoginRequired) for want of a usable key (problem says
+// why), naming replacement-key recovery and contact (signedOutStaffContactRefusal), A-702. The staff save the key with
+// the factor reset's replacement public key (for an administrator, the operator with -reset-admin-factors and
+// -reset-admin-pgp-key-file); sign-in then still needs decryption with it.
+func strictKeyRefusal(problem, contact string) error {
+	return fail(409, problem+"This market requires PGP decryption at every sign-in. An authenticator, recovery code or second-factor reset cannot replace it. "+
+		"To recover, renew your key in your own PGP software (gpg --quick-set-expire keeps the same fingerprint) or, if its private key is lost or none is saved, make a new key, and send the public key to the market staff. "+
+		"Once they have checked it is you, they save it (for an administrator account, the server operator does) and you sign in by decrypting with it; the policy stays in force. "+contact)
 }
 
 // pgpSignInLost reports that PGP sign-in is turned on but cannot be used: the saved key cannot be read (or no longer

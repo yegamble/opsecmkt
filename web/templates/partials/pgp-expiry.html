@@ -1,4 +1,5 @@
-{{/* P2 PGP owns. The saved key's expiry (A-155) and whether it can receive encrypted messages (A-225), on /account and /pgp (input: PGPView). */}}
+{{/* P2 PGP owns. The saved key's expiry (A-155) and whether it can receive encrypted messages (A-225), on /account and /pgp (input: PGPView).
+Under the strict sign-in policy the warning ends with what the expiry means for signing in (SignInLockout, A-702). */}}
 {{define "pgp-expiry:rows"}}<div>
 <dt>Primary key expires</dt>
 <dd>{{.PrimaryExpires}}</dd>
@@ -8,6 +9,7 @@
 <dd>{{if .SubkeyExpires}}{{.SubkeyExpires}}{{else}}No subkey that can encrypt{{end}}</dd>
 </div>{{end}}
 {{define "pgp-expiry:warning"}}{{if .CannotEncrypt}}<p class="pgp-key-warning" role="note">
-<strong>Buyers cannot encrypt to this key.</strong> It has expired, or it has no current encryption subkey (signing only, or the subkey expired or was revoked), so nobody can send you encrypted messages or shipping addresses{{if .TwoFactor}} and PGP sign-in cannot send you a code{{end}}. {{if .SubkeyExpires}}Renew it{{template "pgp-expiry:renew" .}}{{else}}Save a key with a current encryption subkey.{{end}}</p>{{else if .StopsSoon}}<p class="pgp-key-warning" role="note">
-<strong>Encryption to this key stops on {{.StopsSoon}}</strong>: it expires within 30 days. Renew it{{template "pgp-expiry:renew" .}}</p>{{end}}{{end}}
+<strong>Buyers cannot encrypt to this key.</strong> It has expired, or it has no current encryption subkey (signing only, or the subkey expired or was revoked), so nobody can send you encrypted messages or shipping addresses{{if or .TwoFactor .LoginRequired}} and PGP sign-in cannot send you a code{{end}}. {{if .SubkeyExpires}}Renew it{{template "pgp-expiry:renew" .}}{{else}}Save a key with a current encryption subkey.{{end}}{{template "pgp-expiry:lockout" .}}</p>{{else if .StopsSoon}}<p class="pgp-key-warning" role="note">
+<strong>Encryption to this key stops on {{.StopsSoon}}</strong>: it expires within 30 days. Renew it{{template "pgp-expiry:renew" .}}{{template "pgp-expiry:lockout" .}}</p>{{end}}{{end}}
+{{define "pgp-expiry:lockout"}}{{with .SignInLockout}} <strong>{{.}}</strong>{{end}}{{end}}
 {{define "pgp-expiry:renew"}} in your own PGP software: <code>gpg --quick-set-expire {{.FingerprintHex}} 2y</code> renews the key and <code>gpg --quick-set-expire {{.FingerprintHex}} 2y '*'</code> its subkeys. Then export it with <code>gpg --armor --export {{.FingerprintHex}}</code> and paste it on the account page with your password: the same key renewed keeps its ownership proof and PGP sign-in.{{end}}

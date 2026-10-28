@@ -22,6 +22,9 @@ const (
 	lostFactorsLine   = "Lost your authenticator and recovery codes"
 	captchaHelpLine   = "Can’t read the image?"
 	staffContactValue = "xmpp:help@staff-example.onion"
+	// A-702: what a signed-out staff-contact mention adds (staffContactSignedOut).
+	staffNewAccountLine = "That is a market handle: you can message it from a new account once that account has a PGP key."
+	staffReadyLine      = "Have ready your account's handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key."
 )
 
 func staffContactForm(value string, extra ...string) url.Values {
@@ -180,7 +183,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 		}
 	}
 
-	if got := suspendedRefusal(); got != "This account is suspended. "+askOperatorLine {
+	if got := suspendedRefusal(); got != "This account is suspended. "+askOperatorLine+" "+staffReadyLine {
 		t.Fatalf("unset: suspended refusal %q", got)
 	}
 	unset := pages()
@@ -198,7 +201,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 
 	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1)", staffContactValue)
 	want := "Contact the market staff: " + staffContactValue + "."
-	if got := suspendedRefusal(); got != "This account is suspended. "+want {
+	if got := suspendedRefusal(); got != "This account is suspended. "+want+" "+staffReadyLine {
 		t.Fatalf("set: suspended refusal %q", got)
 	}
 	set := pages()
@@ -233,7 +236,7 @@ func TestStaffContactShownWherePromised(t *testing.T) {
 	w = e.do("POST", "/login", randomToken(), form("handle", "sc_suspended", "password", testPassword))
 	// A-514: the sign-in form again, the refusal escaped in its alert.
 	if ct := w.Header().Get("Content-Type"); w.Code != 403 || !strings.HasPrefix(ct, "text/html") || w.Header().Get("X-Content-Type-Options") != "nosniff" ||
-		!strings.Contains(w.Body.String(), `role="alert">`+template.HTMLEscapeString("This account is suspended. Contact the market staff: "+hostile+".")+`</div>`) ||
+		!strings.Contains(w.Body.String(), `role="alert">`+template.HTMLEscapeString("This account is suspended. Contact the market staff: "+hostile+". "+staffReadyLine)+`</div>`) ||
 		strings.Contains(w.Body.String(), "<script>alert") {
 		t.Fatalf("hostile contact in the suspended refusal: %d %q %q", w.Code, ct, w.Body.String())
 	}
@@ -319,6 +322,71 @@ func TestExpiredKeyRefusalNamesStaffContact(t *testing.T) {
 		mustContain(t, b, keyExpiredRefusal, "Contact the market staff: "+staffContactValue+".")
 		mustNotContain(t, b, askOperatorLine)
 	}
+}
+
+// TestSignedOutRefusalsExplainHandleContactNeedsAccount (A-702): a staff contact that is a bare handle can be messaged
+// only from an account, so the signed-out refusals (suspended, strict PGP without a usable key) and /challenge say a
+// new account can message it; each also says what to have ready and what staff never ask for. Another kind of contact
+// gets the second line only. Under the strict PGP policy /challenge's lost-key line names replacement-key recovery,
+// not the second-factor reset, which cannot help there.
+func TestSignedOutRefusalsExplainHandleContactNeedsAccount(t *testing.T) {
+	e := newTestApp(t)
+	e.user("a702staff", "moderator")
+	suspendedID, _ := e.user("a702_suspended", "buyer")
+	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", suspendedID)
+	totpID, _ := e.user("a702_totp", "buyer")
+	agEnableTOTP(e, totpID)
+	e.user("a702_pgp", "buyer")
+	e.keylessUser("a702_keyless", "buyer")
+	signIn := func(handle string, code int) string {
+		t.Helper()
+		w := e.do("POST", "/login", randomToken(), form("handle", handle, "password", testPassword))
+		if w.Code != code || e.cookie(w, "session") != "" || e.cookie(w, "pending") != "" {
+			t.Fatalf("sign-in of %s: %d %q", handle, w.Code, w.Body.String())
+		}
+		return refusalText(w.Body.String())
+	}
+	challenge := func(handle string) string {
+		t.Helper()
+		anon, pc := e.pendingSignIn(handle)
+		b := html.UnescapeString(e.body("GET", "/challenge", anon, nil, 200, pc))
+		i := strings.Index(b, `class="help staff-contact lost-factors"`)
+		if i < 0 {
+			t.Fatal("/challenge without its lost-factors line")
+		}
+		b, _, _ = strings.Cut(b[i:], "</p>")
+		return b
+	}
+	const lostReset = "Only a market administrator can turn your second factors off"
+	const strictLost = "Lost your PGP key? This market requires PGP decryption at every sign-in, so a second-factor reset cannot help. "
+
+	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact','a702staff')")
+	handleLine := "Contact the market staff: a702staff. " + staffNewAccountLine + " " + staffReadyLine
+	if got := signIn("a702_suspended", 403); got != "This account is suspended. "+handleLine {
+		t.Fatalf("suspended refusal with a handle contact: %q", got)
+	}
+	b := challenge("a702_totp")
+	mustContain(t, b, lostFactorsLine+"? "+lostReset, handleLine)
+	mustNotContain(t, b, `href="/messages`)
+
+	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+	mustContain(t, signIn("a702_keyless", 409), strictRecoveryLine, handleLine)
+	b = challenge("a702_pgp")
+	mustContain(t, b, strictLost, "send the public key to the market staff", handleLine)
+	mustNotContain(t, b, lostReset, lostFactorsLine)
+
+	// An address that works without an account: no new-account line, still what to have ready.
+	agExec(e, "UPDATE settings SET value=$1 WHERE key='staff_contact'", staffContactValue)
+	addressLine := "Contact the market staff: " + staffContactValue + ". " + staffReadyLine
+	mustContain(t, signIn("a702_keyless", 409), addressLine)
+	mustContain(t, challenge("a702_pgp"), strictLost, addressLine)
+	agExec(e, "UPDATE settings SET value='true' WHERE key=$1", settingAllowLoginWithoutPGP)
+	if got := signIn("a702_suspended", 403); got != "This account is suspended. "+addressLine {
+		t.Fatalf("suspended refusal with an address contact: %q", got)
+	}
+	b = challenge("a702_totp")
+	mustContain(t, b, lostFactorsLine+"? "+lostReset, addressLine)
+	mustNotContain(t, b, staffNewAccountLine, "requires PGP decryption at every sign-in")
 }
 
 // A-298: on the flagged-upload path (A-279) a staff contact that cannot be read leaves the contact line out rather

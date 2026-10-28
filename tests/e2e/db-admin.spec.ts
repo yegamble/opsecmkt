@@ -262,8 +262,9 @@ test('site settings, account suspension, operator key, canary signature checks a
   expect(await suspectSignIn('wrong-suspect-password-1')).toBe(401);
   await expect(suspect.getByRole('alert')).toHaveText('Invalid handle or password');
   expect(await suspectSignIn(suspectPassword)).toBe(403);
-  // A-119: no staff contact is set in this suite at this point (db-staff-contact.spec.ts clears the one it sets).
-  await expect(suspect.getByRole('alert')).toHaveText('This account is suspended. Ask the operator of this market.');
+  // A-119: no staff contact is set in this suite at this point (db-staff-contact.spec.ts clears the one it sets). A-702:
+  // a signed-out refusal says what to have ready and what staff never ask for.
+  await expect(suspect.getByRole('alert')).toHaveText('This account is suspended. Ask the operator of this market. Have ready your account\'s handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key.');
 
   // Restoring allows sign-in again; the account was told about both changes.
   await admin.setViewportSize({ width: 1280, height: 900 });
