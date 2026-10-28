@@ -209,9 +209,10 @@ func (x *xmrEscrowEnv) orderForms(order, sess string) []pageForm {
 
 // QA on X-a (chair addendum): a Monero escrow order's page offers only actions that can succeed. In awaiting payment
 // (with a deposit), paid (digital and physical), completed and, since slice X-e, shipped and resolved for the vendor,
-// every form the buyer or the vendor is shown is submitted once, each on a fresh copy of the order, and none answers
-// 409 (or a server error): the cancel carries amount_seen, and the pooled "Mark shipped" and the buyer's cancel of a
-// paid digital order are not offered. The Monero escrow forms (Mark shipped, the claim, Confirm receipt) are offered
+// and since A-709 delivered (a digital order in its dispute window), every form the buyer or the vendor is shown is
+// submitted once, each on a fresh copy of the order, and none answers 409 (or a server error): the cancel carries
+// amount_seen, and the pooled "Mark shipped" and the buyer's cancel of a paid digital order before its delivery
+// deadline are not offered. The Monero escrow forms (Mark shipped, the claim, Confirm receipt) are offered
 // exactly where they apply and each succeeds (303).
 func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 	x := newXMREscrowEnv(t)
@@ -243,6 +244,14 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 		"completed": func() string {
 			order, addr := x.freshOrder(x.digital(x.vendor))
 			x.fake.payAddress(addr, hex64("done "+order), xmrListingPrice, 10)
+			x.mustPoll()
+			x.endWindows()
+			return order
+		},
+		// A-709: delivered on funding, in its dispute window.
+		"delivered": func() string {
+			order, addr := x.freshOrder(x.digital(x.vendor))
+			x.fake.payAddress(addr, hex64("window "+order), xmrListingPrice, 10)
 			x.mustPoll()
 			return order
 		},
@@ -292,10 +301,10 @@ func TestXMREscrowOrderFormsNeverConflict(t *testing.T) {
 		return forms
 	}
 	want := map[string]string{"awaiting payment with a deposit": stateAwaitingPayment, "paid digital": statePaid, "paid physical": statePaid, "completed": stateCompleted,
-		"shipped": stateShipped, "resolved for the vendor before shipping": stateResolved}
+		"delivered": stateDelivered, "shipped": stateShipped, "resolved for the vendor before shipping": stateResolved}
 	// The Monero escrow forms of slice X-e, by scenario and viewer: each is offered there, and succeeds.
 	offered := map[string]string{"paid physical/vendor": "/escrow-xmr/ship", "completed/vendor": "/escrow-xmr/claim", "shipped/buyer": "/escrow-xmr/confirm",
-		"resolved for the vendor before shipping/vendor": "/escrow-xmr/claim"}
+		"delivered/buyer": "/escrow-xmr/confirm", "resolved for the vendor before shipping/vendor": "/escrow-xmr/claim"}
 	for name, build := range scenarios {
 		for _, viewer := range []string{roleBuyer, roleVendor} {
 			order := build()
@@ -500,6 +509,7 @@ func TestXMREscrowOrderPanel(t *testing.T) {
 	x.fake.setConfs(hex64("panel-dep"), 10)
 	x.fake.payAddress(addr, hex64("panel-dep-2"), xmrListingPrice-123456789012, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("funded: %s", x.state(order))
 	}

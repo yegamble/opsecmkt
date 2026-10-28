@@ -189,7 +189,7 @@ func TestBanOrdersLeavesShippedDisputedCompleted(t *testing.T) {
 	if code, body := x.xmrDispute(disputed, disputedSess); code != 303 {
 		t.Fatalf("dispute: %d %s", code, body)
 	}
-	completed, _ := x.fundedXMR(x.product)
+	completed, _ := x.completedXMR(x.product)
 	if x.state(completed) != stateCompleted {
 		t.Fatalf("funded digital order is %s", x.state(completed))
 	}
@@ -482,7 +482,7 @@ func TestBannedAccountOpenOrdersListed(t *testing.T) {
 	unpaid, _ := x.freshCheckout(x.product)
 	paid, _ := x.paidXMRPhysical(physical)
 	shipped, _, _ := x.shippedXMR(physical)
-	completed, _ := x.fundedXMR(x.product)
+	completed, _ := x.completedXMR(x.product)
 	disputed, disputedSess := x.paidXMRPhysical(physical)
 	if code, body := x.xmrDispute(disputed, disputedSess); code != 303 {
 		t.Fatalf("dispute: %d %s", code, body)

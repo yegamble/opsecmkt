@@ -72,7 +72,7 @@ func (x *xmrEscrowEnv) opens(name string) int {
 	return n
 }
 
-// settled is a digital order of the active wallet completed on funding whose release is confirmed 110 blocks deep (so
+// settled is a digital order of the active wallet completed (its dispute window ended, endWindows) whose release is confirmed 110 blocks deep (so
 // no longer followed), and its escrow address.
 func (x *xmrEscrowEnv) settled() (string, string) {
 	x.t.Helper()
@@ -476,6 +476,7 @@ func TestXMREscrowMissingWalletAlerts(t *testing.T) {
 	x.fake.edit(func(f *fakeXMREscrow) { f.files[name] = file })
 	x.fake.payAddress(addr, hex64("back"), xmrListingPrice, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.walletState(name) != "closing" || x.state(order) != stateCompleted {
 		t.Fatalf("with its file back: %s, order %s", x.walletState(name), x.state(order))
 	}
@@ -759,6 +760,7 @@ func TestXMREscrowLookaheadForOlderWallet(t *testing.T) {
 		t.Fatalf("the default lookahead saw %d transfers (%v)", len(tr), err)
 	}
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("the deposit to account 300 was not recorded: %s", x.state(order))
 	}
@@ -1164,6 +1166,7 @@ func TestXMREscrowLockedWalletWaits(t *testing.T) {
 	order, addr := x.freshCheckout(x.product)
 	x.fake.payAddress(addr, hex64("after the lock"), xmrListingPrice, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("after the lock: %s", x.state(order))
 	}

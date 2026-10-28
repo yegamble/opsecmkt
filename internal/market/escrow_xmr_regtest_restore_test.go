@@ -167,10 +167,10 @@ func TestXMREscrowRegtestLookahead(t *testing.T) {
 	t.Logf("deposit %s to account 300 missed with the default lookahead", tx)
 	agExec(r.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrEscrowSweepKey)
 	r.mustPoll()
-	if r.state(order) != stateCompleted || r.sweepRequired() {
+	if r.state(order) != stateDelivered || r.sweepRequired() { // funded: delivered, in its dispute window (A-709)
 		t.Fatalf("after the sweep's lookahead: %s (deposits %v), sweep %v", r.state(order), r.depositConfs(order), r.sweepRequired())
 	}
-	t.Logf("the sweep raised the lookahead past account 300 and rescanned: the deposit is recorded and order %s completed", shortID(order))
+	t.Logf("the sweep raised the lookahead past account 300 and rescanned: the deposit is recorded and order %s funded and delivered", shortID(order))
 }
 
 // TestXMREscrowRegtestWrongSecret: with MONERO_WALLET_SECRET changed from the one the database pinned, Monero escrow is

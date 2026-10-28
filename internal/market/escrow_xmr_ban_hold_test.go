@@ -364,7 +364,7 @@ func TestBanStopsAutoDelivery(t *testing.T) {
 			control, controlAddr := x.freshCheckout(product)
 			x.fake.payAddress(controlAddr, hex64("a652e control "+control), xmrListingPrice, 10)
 			x.mustPoll()
-			if x.state(control) != stateCompleted || agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", control) != 1 {
+			if x.state(control) != stateDelivered || agInt(e, "SELECT count(*) FROM deliveries WHERE order_id=$1", control) != 1 {
 				t.Fatalf("an unbanned vendor's order was not delivered automatically: %s", x.state(control))
 			}
 

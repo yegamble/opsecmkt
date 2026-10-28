@@ -433,8 +433,9 @@ func (a *App) load(r *http.Request, d *PageData) error {
 				args = append(args, r.URL.Query().Get("id"), d.User.Role)
 			}
 			if d.Page == "disputes" {
-				// Only disputable orders, and every one of them: an old shipped order must stay selectable.
-				query += " AND o.state IN ('paid','shipped','delivered') ORDER BY o.created DESC"
+				// Only disputable orders, and every one of them: an old shipped order must stay selectable, unless it is an
+				// escrow order past its release deadline or dispute window, whose dispute is refused (lateDispute, PM-4).
+				query += " AND o.state IN ('paid','shipped','delivered') AND NOT " + disputeClosedSQL + " ORDER BY o.created DESC"
 			} else if d.Page == "orders" {
 				var total int
 				if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE "+activityVisible, d.User.ID).Scan(&total); err != nil {

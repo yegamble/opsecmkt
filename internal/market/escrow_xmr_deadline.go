@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 )
 
 // The clocks of a physical Monero escrow order (WR-escrow Phase 3, slice X-e; P3-R7 with the Phase 2 rules P2-R3, P2-R5,
-// P2-R9 and P2-R10's restore recheck). Behind ESCROW_XMR (off by default); fakechain or stagenet (A-449). They are escrow_deadline.go's,
-// run by the Monero escrow watcher for Monero escrow orders (xmrDeadlines, the last step of its pass), so they apply with
+// P2-R9 and P2-R10's restore recheck), and of a digital one (A-709: its delivery deadline and dispute window, steps 1
+// and 3). Behind ESCROW_XMR (off by default); fakechain or stagenet (A-449). They are escrow_deadline.go's, run by
+// the Monero escrow watcher for Monero escrow orders (xmrDeadlines, the last step of its pass), so they apply with
 // ESCROW_BTC off; the Bitcoin escrow watcher's escrowDeadlines handles Bitcoin escrow orders only.
 //
 //  1. Paid: ship_by and the buyer's no-ship cancel are shared with Bitcoin escrow (escrowTransitionHook, noShipCancel,
@@ -17,19 +20,29 @@ import (
 //  2. Shipped: from 72 hours before release_at the buyer is reminded once (reminded_at claimed by compare-and-set) and
 //     the vendor told the buyer's deadline (xmrRemindDeadlines). A dispute filed after it is refused (lateDispute).
 //  3. At release_at a shipped order with no dispute is completed by the system ("auto-release deadline passed") under
-//     the order row lock (xmrReleaseDue); the release requested at shipment is then buildable (settlementFits).
+//     the order row lock (xmrReleaseDue); the release requested at shipment is then buildable (settlementFits). A
+//     delivered digital order's release_at is the end of its dispute window (A-709, escrowTransitionHook): it is
+//     completed the same way ("dispute window ended"), and the vendor may then claim. A paid digital order's ship_by
+//     is its delivery deadline: step 1's buyer cancel applies from it.
 //  4. After a restore from backup (scripts/restore.sh, or UPGRADING.md section 6, sets escrow_xmr_release_recheck) the
-//     pass moves every passed deadline of a shipped order to now + 72 hours and tells the buyer
+//     pass moves every passed deadline of a shipped or delivered order to now + 72 hours and tells the buyer
 //     (xmrRecheckReleaseDeadlines), as recheckReleaseDeadlines does for Bitcoin escrow with its own setting.
-//  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped orders with no dispute to
-//     72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
+//  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped or delivered orders with
+//     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
 //     banned, steps 2 and 3 and the buyer's confirmation say the release is then held (xmrReleaseHeld, A-652c).
 //
 // No step makes an RPC, and none runs while the restore gate is set: the recheck then runs in the first pass after the
 // gate is cleared, before the release. Step 5 runs with the ban whatever the gate: it only moves deadlines later.
 
+// digitalWindowNote opens the order history note of a digital order's completion at the end of its dispute window.
+const digitalWindowNote = "dispute window ended"
+
 // xmrReleaseRecheckKey is the setting a restore from backup writes to ask for the Monero deadline recheck (step 4).
 const xmrReleaseRecheckKey = "escrow_xmr_release_recheck"
+
+// xmrOpenSQL is the order states whose release_at applies: a shipped physical order's release deadline and a delivered
+// digital order's dispute window (A-709).
+const xmrOpenSQL = "o.state IN ('shipped','delivered')"
 
 // releaseGraceSQL is the soonest release deadline the restore recheck (step 4) and a vendor's ban (step 5) leave a
 // shipped order: 72 hours from now, so its buyer has that long to confirm receipt or open a dispute.
@@ -80,10 +93,10 @@ func (a *App) xmrDeadlines(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// xmrReleaseDue completes every shipped Monero escrow order whose release deadline has passed with no dispute, each in
-// its own transaction (step 3 of the file comment).
+// xmrReleaseDue completes every shipped or delivered Monero escrow order whose release deadline or dispute window has
+// passed with no dispute, each in its own transaction (step 3 of the file comment).
 func (a *App) xmrReleaseDue(ctx context.Context) error {
-	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND o.state='shipped' AND `+releaseDueSQL+` AND `+noDisputeSQL+` ORDER BY es.release_at`)
+	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseDueSQL+` AND `+noDisputeSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
 	}
@@ -108,24 +121,29 @@ func (a *App) xmrReleaseOne(ctx context.Context, orderID string) error {
 	return tx.Commit()
 }
 
-// xmrReleaseIfDue completes order in tx if it is still shipped, has no dispute and its release deadline has passed: the
-// order row is locked first and checked in a statement after the lock (releaseIfDue's rule). It reports whether the
-// order was completed.
+// xmrReleaseIfDue completes order in tx if it is still shipped or delivered, has no dispute and its release deadline or
+// dispute window has passed: the order row is locked first and checked in a statement after the lock (releaseIfDue's
+// rule). It reports whether the order was completed.
 func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (bool, error) {
 	if _, err := tx.ExecContext(ctx, "SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", orderID); err != nil {
 		return false, err
 	}
 	var due bool
+	var state string
 	var at time.Time
-	err := tx.QueryRowContext(ctx, `SELECT o.state='shipped' AND `+noDisputeSQL+` AND `+releaseDueSQL+`,es.release_at
-		FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR' AND es.release_at IS NOT NULL`, orderID).Scan(&due, &at)
+	err := tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+noDisputeSQL+` AND `+releaseDueSQL+`,o.state,es.release_at
+		FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR' AND es.release_at IS NOT NULL`, orderID).Scan(&due, &state, &at)
 	if err == sql.ErrNoRows || err == nil && !due {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	note := escrowDeadlineNote + " (" + utcUntil(at) + "): no dispute was opened by then, so the order is completed (Monero escrow). "
+	lead := escrowDeadlineNote
+	if state == stateDelivered {
+		lead = digitalWindowNote
+	}
+	note := lead + " (" + utcUntil(at) + "): no dispute was opened by then, so the order is completed (Monero escrow). "
 	if banned, err := orderVendorBanned(ctx, tx, orderID); err != nil {
 		return false, err
 	} else if banned {
@@ -134,10 +152,13 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 			return false, err
 		}
 		note += xmrHeldNote + " " + holdRefundLater(days) // PAY90-3, A-652f
+	} else if state == stateDelivered {
+		note += "The vendor claims the escrowed coins from the order page."
+		ctx = withNoticeDetail(ctx, orderID, stateCompleted, xmrClaimCue) // A-710's cue: the vendor has to claim
 	} else {
 		note += "The market builds the release of the escrowed coins to the address the vendor gave when marking the order shipped, and sends it."
 	}
-	if _, err = a.transition(ctx, tx, orderID, stateShipped, stateCompleted, nil, note); err != nil {
+	if _, err = a.transition(ctx, tx, orderID, state, stateCompleted, nil, note); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -199,7 +220,7 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 }
 
 // xmrRecheckReleaseDeadlines moves, once after each restore from backup, every passed release deadline of a shipped
-// Monero escrow order with no dispute to now + 72 hours, with an order note and a notice to the buyer, in one
+// Monero escrow order, and every passed dispute window of a delivered one (A-709), with no dispute to now + 72 hours, with an order note and a notice to the buyer, in one
 // transaction that consumes the restore's request (step 4 of the file comment; recheckReleaseDeadlines' rules: only the
 // rechecks reset and set release_recheck, so a second restore rechecks as the first did).
 func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
@@ -216,7 +237,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND o.state='shipped' AND `+releaseDueSQL+` ORDER BY o.id`)
+	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseDueSQL+` ORDER BY o.id`)
 	if err != nil {
 		return err
 	}
@@ -225,7 +246,8 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 			return err
 		}
 		var due bool
-		if err = tx.QueryRowContext(ctx, `SELECT o.state='shipped' AND `+releaseDueSQL+` AND `+noDisputeSQL+` FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR'`, id).Scan(&due); err != nil {
+		var state string
+		if err = tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+releaseDueSQL+` AND `+noDisputeSQL+`,o.state FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR'`, id).Scan(&due, &state); err != nil {
 			return err
 		}
 		if !due {
@@ -240,13 +262,16 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 			FROM orders o WHERE o.id=es.order_id AND es.order_id=$1 AND es.coin='XMR' RETURNING es.release_at,o.buyer_id`, id).Scan(&at, &buyer); err != nil {
 			return err
 		}
-		until := utcUntil(at)
-		note := "Release deadline moved to " + until + " after a restore from backup (Monero escrow): the deadline in the restored records had passed, so the buyer has 72 more hours to confirm receipt or open a dispute."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, stateShipped, note); err != nil {
+		until, what, check, outcome := utcUntil(at), "release deadline", "if the goods have arrived, or open a dispute before then if they have not", "the market releases the coins in this Monero escrow to the vendor"
+		if state == stateDelivered { // A-709: a digital order's dispute window
+			what, check, outcome = "dispute window", "if the delivered content works, or open a dispute before then if it does not", "the vendor can claim the coins in this Monero escrow"
+		}
+		note := strings.ToUpper(what[:1]) + what[1:] + " moved to " + until + " after a restore from backup (Monero escrow): the deadline in the restored records had passed, so the buyer has 72 more hours to confirm receipt or open a dispute."
+		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, state, note); err != nil {
 			return err
 		}
-		body := "Order " + shortID(id) + ": this market restored its records from a backup, and the release deadline of this order had passed, so it was moved to " + until +
-			". Use Confirm receipt on the order page if the goods have arrived, or open a dispute before then if they have not. If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor."
+		body := "Order " + shortID(id) + ": this market restored its records from a backup, and the " + what + " of this order had passed, so it was moved to " + until +
+			". Use Confirm receipt on the order page " + check + ". If you do neither, the order completes at that time and " + outcome + "."
 		if _, err = insertNotification(ctx, tx, buyer, body, id); err != nil {
 			return err
 		}
@@ -259,12 +284,13 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 
 // xmrBanDeadlines is step 5 of the file comment (A-652d; owner decision 2026-10-25 "refund + hold": shipped orders get at
 // least 72 hours from the ban for the buyer to dispute, with a notice to each buyer for their order; PAY87-4, PAY89-1).
-// In the ban's transaction tx, after the vendor's account row lock (adminBanAction), it locks each shipped Monero escrow
-// order of vendorID in id order, without waiting, and checks it again after the lock (the recheck's rule): the ban
-// already holds those listed before that lock (lockBanShippedOrders), so only an order shipped in between can be held
-// by another transaction, which refuses the whole ban with the retryable database-busy 503, nothing changed. One still
-// shipped with no dispute gets release_at = GREATEST(release_at, releaseGraceSQL), never earlier, and its buyer an order
-// note and a notice for that order: the vendor's account is closed, a dispute can be opened until the deadline, and
+// In the ban's transaction tx, after the vendor's account row lock (adminBanAction), it locks each shipped or delivered
+// Monero escrow order of vendorID in id order, without waiting, and checks it again after the lock (the recheck's
+// rule): the ban already holds those listed before that lock (lockBanShippedOrders), so only an order shipped or
+// delivered in between can be held by another transaction, which refuses the whole ban with the retryable database-busy
+// 503, nothing changed. One still shipped or delivered with no dispute gets release_at = GREATEST(release_at,
+// releaseGraceSQL), never earlier (a delivered order's dispute window, A-709), and its buyer an order note and a
+// notice for that order: the vendor's account is closed, a dispute can be opened until the deadline, and
 // otherwise the order completes and its payment is held (xmrReleaseHeld). Nothing else changes and no money moves;
 // lifting the ban never touches a deadline. A moved deadline counts as reminded: the ban's notice names it.
 //
@@ -284,17 +310,21 @@ func xmrBanDeadlines(ctx context.Context, tx *sql.Tx, vendorID string) (moved, t
 			return 0, 0, err
 		}
 		var open, soon, prior bool
-		var buyer string
+		var buyer, state string
 		var at time.Time
-		err = tx.QueryRowContext(ctx, `SELECT o.state='shipped' AND `+noDisputeSQL+`,es.release_at<`+releaseGraceSQL+`,es.release_recheck,o.buyer_id,es.release_at
-			FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR' AND es.release_at IS NOT NULL`, id).Scan(&open, &soon, &prior, &buyer, &at)
+		err = tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+noDisputeSQL+`,es.release_at<`+releaseGraceSQL+`,es.release_recheck,o.buyer_id,es.release_at,o.state
+			FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR' AND es.release_at IS NOT NULL`, id).Scan(&open, &soon, &prior, &buyer, &at, &state)
 		if err == sql.ErrNoRows || err == nil && !open {
 			continue
 		}
 		if err != nil {
 			return 0, 0, err
 		}
-		note := banDeadlineNote + " (Monero escrow); the release deadline stays at " + utcUntil(at) + ", at least 72 hours after the ban, for the buyer to open a dispute."
+		what, problem := "release deadline", "if the goods have not arrived"
+		if state == stateDelivered { // A-709: a digital order's dispute window
+			what, problem = "dispute window", "if the delivered content does not work"
+		}
+		note := banDeadlineNote + " (Monero escrow); the " + what + " stays at " + utcUntil(at) + ", at least 72 hours after the ban, for the buyer to open a dispute."
 		if soon {
 			if _, err = tx.ExecContext(ctx, "UPDATE escrows SET release_recheck=false WHERE order_id=$1 AND coin='XMR' AND release_recheck", id); err != nil {
 				return 0, 0, err
@@ -307,14 +337,14 @@ func xmrBanDeadlines(ctx context.Context, tx *sql.Tx, vendorID string) (moved, t
 				return 0, 0, err
 			}
 			moved++
-			note = banDeadlineNote + " (Monero escrow), so the release deadline moved to " + utcUntil(at) + ": the buyer has at least 72 hours from the ban to open a dispute."
+			note = banDeadlineNote + " (Monero escrow), so the " + what + " moved to " + utcUntil(at) + ": the buyer has at least 72 hours from the ban to open a dispute."
 		}
 		note += " If the buyer neither opens a dispute nor confirms receipt by then, the order completes at that time and " + xmrBanHeldPayment + "."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, stateShipped, note); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, state, note); err != nil {
 			return 0, 0, err
 		}
 		body := "Order " + shortID(id) + ": " + banDeadlineNote + ". You may open a dispute on the order page until " + utcUntil(at) +
-			" if the goods have not arrived. If you neither open a dispute nor confirm receipt by then, the order completes at that time and " + xmrBanHeldPayment + "."
+			" " + problem + ". If you neither open a dispute nor confirm receipt by then, the order completes at that time and " + xmrBanHeldPayment + "."
 		if _, err = insertNotification(ctx, tx, buyer, body, id); err != nil {
 			return 0, 0, err
 		}
@@ -323,13 +353,14 @@ func xmrBanDeadlines(ctx context.Context, tx *sql.Tx, vendorID string) (moved, t
 	return moved, told, nil
 }
 
-// banShippedSQL lists vendor $1's shipped Monero escrow orders in id order: those a ban may move (xmrBanDeadlines).
+// banShippedSQL lists vendor $1's shipped and delivered Monero escrow orders in id order: those a ban may move
+// (xmrBanDeadlines; a delivered one is a digital order in its dispute window, A-709).
 const banShippedSQL = `SELECT o.id FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
-	WHERE p.vendor_id=$1 AND es.coin='XMR' AND o.state='shipped' ORDER BY o.id`
+	WHERE p.vendor_id=$1 AND es.coin='XMR' AND ` + xmrOpenSQL + ` ORDER BY o.id`
 
 // lockBanShippedOrders locks, in the ban's transaction tx and before the vendor's account row (adminBanAction,
-// PAY90-2), each shipped Monero escrow order of vendorID in id order, waiting for one another transaction holds (the
-// escrow watcher locks each order whose deposits it records on every pass). That is an order message's order too (its
+// PAY90-2), each shipped or delivered Monero escrow order of vendorID in id order, waiting for one another transaction
+// holds (the escrow watcher locks each order whose deposits it records on every pass). That is an order message's order too (its
 // order, then the partner's account, orderMessageAction), so the wait cannot close a cycle with it, and the ban no
 // longer refuses with the busy 503 while the watcher runs. The ban's lock wait bounds it (waitForWalletLocks).
 func lockBanShippedOrders(ctx context.Context, tx *sql.Tx, vendorID string) error {
@@ -339,6 +370,44 @@ func lockBanShippedOrders(ctx context.Context, tx *sql.Tx, vendorID string) erro
 	}
 	for _, id := range ids {
 		if _, err = tx.ExecContext(ctx, "SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// openDisputeWindow sets the dispute window of a digital Monero escrow order just delivered (escrowTransitionHook; step
+// 3 of the file comment), in the delivery's transaction, and records it: an order note that says whether it opened on
+// funding (the automatic delivery, by the system) or on delivery (the vendor's), and a notice to the buyer and to the
+// vendor stating its end.
+func openDisputeWindow(ctx context.Context, tx *sql.Tx, o *Order) error {
+	var until time.Time
+	err := tx.QueryRowContext(ctx, "UPDATE escrows SET release_at=now()+make_interval(hours => $2) WHERE order_id=$1 AND coin='XMR' AND release_at IS NULL RETURNING release_at", o.ID, disputeWindowHours).Scan(&until)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var automatic bool
+	if err = tx.QueryRowContext(ctx, "SELECT actor_id IS NULL FROM order_events WHERE order_id=$1 AND to_state='delivered' ORDER BY id DESC LIMIT 1", o.ID).Scan(&automatic); err != nil {
+		return err
+	}
+	at := utcUntil(until)
+	note := "Dispute window opened on delivery (Monero escrow): the vendor delivered the content."
+	if automatic {
+		note = "Dispute window opened on funding (Monero escrow): the content was delivered automatically."
+	}
+	note += " The buyer has until " + at + " (" + strconv.Itoa(disputeWindowHours) + " hours) to check it and open a dispute, or to confirm receipt. If the buyer does neither, the order completes at that time and the vendor claims the escrowed coins from the order page; nothing is paid to the vendor before then."
+	if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, stateDelivered, note); err != nil {
+		return err
+	}
+	short := "Order " + shortID(o.ID) + ": "
+	for _, n := range [][2]string{
+		{o.BuyerID, short + "check the delivered content now. You have until " + at + " to use Confirm receipt on the order page once it works, or to open a dispute if it does not. If you do neither, the order completes at that time and the vendor can claim the coins in this Monero escrow; a dispute can no longer be opened after it."},
+		{o.VendorID, short + "the buyer has until " + at + " to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and you can claim the coins in this Monero escrow from the order page; no claim is possible before the order is completed."},
+	} {
+		if _, err = insertNotification(ctx, tx, n[0], n[1], o.ID); err != nil {
 			return err
 		}
 	}

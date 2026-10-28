@@ -91,8 +91,9 @@ func (x *escrowEnv) waitForLockWaits(n int) {
 	}
 }
 
-// A-381: only the release recheck (escrow_deadline.go) writes release_recheck, and release_at is written only there and
-// by the shipment (escrow_release.go, from NULL); scripts/restore.sh only asks for the recheck.
+// A-381: only the release recheck (escrow_deadline.go) writes release_recheck, and release_at is written only there,
+// by the shipment (escrow_release.go, from NULL) and by a digital Monero order's delivery (escrow_xmr_deadline.go's
+// openDisputeWindow, from NULL, A-709); scripts/restore.sh only asks for the recheck.
 func TestEscrowReleaseAtWriters(t *testing.T) {
 	writes := regexp.MustCompile(`(?i)(release_at|release_recheck)\s*=[^=]`)
 	// TestMain runs the tests from the repository root.

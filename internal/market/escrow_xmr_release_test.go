@@ -135,7 +135,8 @@ func noBitcoinWords(t *testing.T, what, s string) {
 	}
 }
 
-// P3-R7, P3-R2: the vendor claims a completed digital Monero escrow order with a fresh Monero address, parsed offline,
+// P3-R7, P3-R2: the vendor claims a completed digital Monero escrow order (once its dispute window has ended, A-709;
+// never while it is delivered) with a fresh Monero address, parsed offline,
 // and a password step-up; the claim is one requested release (kind release, the destination, requested by the vendor),
 // which the Monero escrow watcher builds. Integrated addresses, this market's escrow, slot and wallet addresses, the fee
 // address and the buyer's refund address are refused, each with its own message, and change nothing.
@@ -146,10 +147,15 @@ func TestXMREscrowDigitalClaim(t *testing.T) {
 	t.Setenv("ESCROW_XMR_FEE_ADDRESS", fee)
 	x.restart()
 	x.mustPoll()
-	order, buyerSess := x.fundedXMR(x.product)
-	if x.state(order) != stateCompleted {
-		t.Fatalf("funded digital order is %s", x.state(order))
+	// A-709: delivered on funding, the order is in its dispute window: no claim until the watcher completes it.
+	order, buyerSess := x.deliveredXMR(x.product)
+	if page := x.page("/order?id="+order, x.vendorSess); strings.Contains(page, `action="/escrow-xmr/claim"`) {
+		t.Fatal("the vendor is offered the claim in the dispute window")
 	}
+	if code, body := x.xmrClaim(order, x.vendorSess, testXMRAddr("claim "+order, true), testPassword); code != 409 || !strings.Contains(body, errClaimState.Error()) {
+		t.Fatalf("a claim in the dispute window: %d %s", code, body)
+	}
+	x.endDisputeWindow(order)
 	vendorPage := html.UnescapeString(x.page("/order?id="+order, x.vendorSess))
 	if !containsAll(vendorPage, `action="/escrow-xmr/claim"`, `name="address"`, `name="password"`) {
 		t.Fatalf("the vendor of a completed Monero escrow order is not offered the claim:\n%s", vendorPage)
@@ -164,7 +170,7 @@ func TestXMREscrowDigitalClaim(t *testing.T) {
 	x.DB.QueryRow("SELECT primary_address FROM xmr_escrow_wallets ORDER BY id LIMIT 1").Scan(&primary)
 	x.DB.QueryRow("SELECT address FROM xmr_escrow_slots WHERE state='free' ORDER BY id LIMIT 1").Scan(&freeSlot)
 	escrowAddr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
-	other, _ := x.fundedXMR(x.product)
+	other, _ := x.completedXMR(x.product)
 	fresh := testXMRAddr("claim "+order, true)
 	for _, c := range []struct {
 		name, addr, password string

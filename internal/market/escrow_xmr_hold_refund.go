@@ -36,9 +36,9 @@ import (
 // NO KEY UPDATE, so the ban cannot be lifted while this runs), then the order row FOR UPDATE, then the live release FOR
 // UPDATE. A ban locks its shipped orders before the vendor's account row (lockBanShippedOrders, PAY90-2) and an order
 // message locks its order before a partner's account (FOR SHARE, which does not conflict with this one); neither is a
-// cycle with this order: this action takes only a completed or resolved order, which a ban never locks (it locks shipped
-// orders only), and a ban or unban takes no order lock after the account row except the ban's NOWAIT pass over shipped
-// orders. The watcher locks the order and then the settlement (storeXMRBuilt), the same order as here. Where there is no
+// cycle with this order: this action takes only a completed or resolved order, which a ban never locks (it locks
+// shipped and delivered orders only), and a ban or unban takes no order lock after the account row except the ban's
+// NOWAIT pass over those orders. The watcher locks the order and then the settlement (storeXMRBuilt), the same order as here. Where there is no
 // release, none can appear meanwhile: every path that inserts one (the vendor's claim, insertXMRRelease after
 // partyOrderLocked; an administrator's re-request, of a failed release with a transaction, which is refused here anyway)
 // first locks the order row FOR NO KEY UPDATE, which waits for this FOR UPDATE and then finds the order cancelled

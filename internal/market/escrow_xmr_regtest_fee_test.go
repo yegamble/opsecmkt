@@ -12,7 +12,8 @@ import (
 
 // TestXMREscrowRegtestFeeAndReturn (A-673, A-681; scripts/test-escrow-xmr-regtest.sh, run by the escrow-xmr-regtest CI
 // job): a release that returns an overpayment, on a real monero-wallet-rpc. Each case funds a digital order with its
-// price and 0.002 XMR more in one real transaction (it completes on funding) and requests its release as the vendor's
+// price and 0.002 XMR more in one real transaction (delivered on funding; completed when its dispute window is ended by
+// the deadline step) and requests its release as the vendor's
 // claim does; claim, refund and fee addresses are subaddresses of the funder's wallet, so the leg reads what each payee
 // received.
 //   - "fee and return": the one App that charges a market fee (ESCROW_XMR_FEE_BPS=250). The release has three
@@ -75,6 +76,7 @@ func xmrRegtestFeeAndReturn(t *testing.T, bps int64) {
 	funding := r.pay(map[string]int64{addr: price + excess})
 	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
+	r.endWindows()
 	if r.state(order) != stateCompleted || agInt64(t, r.testEnv, "SELECT COALESCE(sum(amount),0) FROM payments WHERE order_id=$1 AND txid=$2 AND credited", order, funding) != price+excess {
 		t.Fatalf("funded with %d piconero: %s (deposits %v)", price+excess, r.state(order), r.depositConfs(order))
 	}

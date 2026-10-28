@@ -183,8 +183,8 @@ func TestTransitionCompareAndSetIsExclusive(t *testing.T) {
 
 // A-244 (ARCH-4): the escrow-only system edges exist in the table for the system role and are marked escrow-only,
 // and on a historical non-escrow order (Order.Escrow false: no escrows row) the system cannot complete an order on them: 403, the
-// order and its history unchanged. Historical orders are read-only for buyers too. (An escrow order completes on funding
-// through the digital edge: TestEscrowFundingCompletesOrder.)
+// order and its history unchanged. Historical orders are read-only for buyers too. (A digital Monero escrow order
+// completes through the digital edge at the end of its dispute window: TestXMREscrowDigitalDisputeWindow.)
 func TestEscrowOnlySystemEdgesRefusedForPooledOrders(t *testing.T) {
 	for _, tc := range []struct{ kind, from string }{{"digital", stateDelivered}, {"physical", stateShipped}} {
 		if !slices.Contains(transitions[tc.from][stateCompleted], roleSystem) || !escrowOnly[[3]string{tc.from, stateCompleted, roleSystem}] {

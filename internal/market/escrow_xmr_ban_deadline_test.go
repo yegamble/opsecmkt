@@ -99,7 +99,7 @@ func TestBanExtendsShippedDeadline(t *testing.T) {
 	if p := x.panel(passed, passedSess); strings.Contains(p, "restored its records from a backup") {
 		t.Fatalf("the ban's move reads as a restore's:\n%s", p)
 	}
-	if n := agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE action LIKE 'Account banned by %' AND strpos(action,$1)>0", "2 shipped order(s)"); n != 1 {
+	if n := agInt(x.testEnv, "SELECT count(*) FROM audit_events WHERE action LIKE 'Account banned by %' AND strpos(action,$1)>0", "2 shipped or delivered order(s)"); n != 1 {
 		t.Fatalf("%d ban audit rows name the shipped orders", n)
 	}
 	for range 2 {

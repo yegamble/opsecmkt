@@ -208,7 +208,11 @@ func (w *sweepWorld) sweepCases() map[string]func() sweepCase {
 		return order
 	}
 	paid := func() string { return funded(true) }
-	completed := func() string { return funded(false) }
+	completed := func() string { // A-709: delivered on funding, completed when its dispute window ends
+		order := funded(false)
+		x.endWindows()
+		return order
+	}
 	disputed := func() (string, string) {
 		order := paid()
 		if code, body := x.xmrDispute(order, x.buyerSess); code != 303 {

@@ -38,7 +38,11 @@
 <div>
 <dt>Fulfillment</dt>
 <dd>{{.Kind}}{{if eq .Kind "digital"}} — {{if eq .DigitalDeliveryMode "manual"}}delivered by the vendor after payment{{else}}automatically delivered after payment confirmation{{end}}{{end}}</dd>
-</div>
+</div>{{if and $.XMREscrowOn (eq .Kind "digital")}}
+<div>
+<dt>Buyer protection</dt>
+<dd>Monero escrow: {{if eq .DigitalDeliveryMode "manual"}}the vendor must deliver within 72 hours of payment, or you may cancel the order for a refund to your refund address. {{end}}After delivery you have 48 hours to check the content and open a dispute, or to confirm receipt. Then the order completes and the vendor can claim the coins.</dd>
+</div>{{end}}
 <div>
 <dt>Available stock</dt>
 <dd>{{$.StockLabel .VendorID .Stock}}</dd>
