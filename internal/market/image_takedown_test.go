@@ -661,6 +661,7 @@ func TestStaffDemotionDeletesAvatar(t *testing.T) {
 	e.wantHidden(adminAvatar, "administrator's hidden avatar after a refused change")
 	// A vendor promoted to moderator starts hidden: the avatar is kept and is no longer public.
 	vendorID, _ := e.user("promote_vendor", "vendor")
+	e.candidateFactor("promote_vendor")
 	vendorAvatar := e.image(vendorID, "", "avatar")
 	e.wantPublic(vendorAvatar, "vendor's avatar")
 	agExpect(e, "/admin", admin, form("action", "role", "password", testPassword, "role", "moderator", "handle", "promote_vendor"), 303, "")

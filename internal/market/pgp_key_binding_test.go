@@ -160,9 +160,9 @@ func TestPGPBindingFirstTOTPAndMaterialDisclosureRequireOldKeyProof(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	page = e.body("GET", "/totp", thief, nil, 200)
-	for _, code := range strings.Split(codes, "\n") {
-		mustNotContain(t, page, code)
+	// The account's first factor ended the unproven browser's session (A-706, SEC706-3).
+	if w := e.do("GET", "/totp", thief, nil); w.Code != http.StatusSeeOther || !strings.HasPrefix(w.Header().Get("Location"), "/login") {
+		t.Fatalf("the unproven browser's session survived the first factor: %d %q", w.Code, w.Header().Get("Location"))
 	}
 	if agStr(e, "SELECT recovery_reveal FROM users WHERE id=$1", userID) != reveal {
 		t.Fatal("an unproven browser consumed newly issued recovery codes")

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, SETUP_TOKEN } from './db-fixtures';
-import { saveEncryptionKey, seedPGPAccess } from './db-helpers';
+import { saveEncryptionKey, seedPGPAccess, seedStaffFactor } from './db-helpers';
 
 // Runs once against the fresh database before every other db-*.spec.ts. Never point E2E_DATABASE_URL at production.
 test('initialize the market and publish the fixture listing', async ({ page, browser, baseURL }) => {
@@ -13,6 +13,17 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(page).toHaveURL(/\/admin\?welcome=1$/);
   await expect(page.getByRole('heading', { name: 'Get your marketplace ready' })).toBeVisible();
   await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  // A-706: the new administrator has no second factor yet. The overview's first step says it is required, and a
+  // staff change is refused with links to enrol, changing nothing.
+  await expect(page.locator('main')).toContainText('Required before any staff action:');
+  await page.goto('/admin/security');
+  await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
+  await page.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
+  await expect(page.getByRole('alert')).toContainText('Staff actions need a second factor on your account.');
+  await expect(page.getByRole('link', { name: 'Set up an authenticator' })).toHaveAttribute('href', '/totp');
+  // The shared administrator's factor is a fixture stand-in for PGP sign-in (seedStaffFactor); db-admin.spec.ts
+  // enrols a real authenticator for a moderator.
+  seedStaffFactor(ADMIN.handle);
   // The setup administrator also sells the shared listing; every vendor needs a
   // usable encryption key before accepting orders.
   await saveEncryptionKey(page, ADMIN.password);

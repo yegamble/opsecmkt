@@ -28,7 +28,7 @@ func init() {
 	registerLoader("account", pgpLoader)
 	registerAction("/pgp/challenge", actionSpec{FormNonce: true, Run: pgpChallengeAction})
 	registerAction("/pgp/verify", actionSpec{FormNonce: true, Run: pgpVerifyAction})
-	registerAction("/pgp/2fa", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: pgpTwoFactorAction})
+	registerAction("/pgp/2fa", actionSpec{Roles: []string{"buyer", "vendor", "moderator", "admin"}, OwnTx: true, ConfirmedFormNonce: true, FactorFormNonce: true, Run: pgpTwoFactorAction})
 	registerPreview("pgp", previewPGP)
 	registerPreview("account", func(d *PageData) { d.PGP = &PGPView{} })
 }
@@ -476,7 +476,12 @@ func pgpTwoFactorAction(c *actionCtx) (actionResult, error) {
 	if enable != "1" && enable != "0" {
 		return actionResult{}, fail(400, "Choose to turn PGP sign-in verification on or off")
 	}
-	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) { return pgpTwoFactor(c, enable == "1") })
+	// Turning it on as the first factor ends pending sign-ins before the account lock (endOtherSessionsForFirstFactor).
+	opts := &confirmation{}
+	if enable == "1" {
+		opts.Before = endPendingSignInsBeforeFirstFactor
+	}
+	return confirmedTxWith(c, opts, func(c *actionCtx) (actionResult, error) { return pgpTwoFactor(c, enable == "1") })
 }
 
 func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
@@ -499,6 +504,24 @@ func pgpTwoFactor(c *actionCtx, enable bool) (actionResult, error) {
 	}
 	if _, err = encryptTo(p.Key, "probe"); err != nil {
 		return actionResult{}, fail(409, "Your key has no usable encryption subkey (expired or sign-only), so sign-in codes cannot be encrypted to it.")
+	}
+	// SEC706-1: the account-wide ownership proof may come from another browser; a password alone (all a phisher
+	// has) must not turn on a factor, so this browser must have decrypted a challenge to the saved key.
+	proved, err := pgpBindingProven(c, p)
+	if err != nil {
+		return actionResult{}, err
+	}
+	if !proved {
+		return actionResult{}, fail(http.StatusForbidden, "Decrypt a challenge with your PGP key in this browser before turning on PGP sign-in: start one below. Nothing was changed.")
+	}
+	var totp bool
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled FROM users WHERE id=$1", u.ID).Scan(&totp); err != nil {
+		return actionResult{}, err
+	}
+	if !totp && !p.TwoFactorSet {
+		if err = endOtherSessionsForFirstFactor(c); err != nil {
+			return actionResult{}, err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE users SET pgp_2fa=true WHERE id=$1", u.ID); err != nil {
 		return actionResult{}, err

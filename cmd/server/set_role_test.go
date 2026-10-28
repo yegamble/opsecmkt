@@ -49,6 +49,7 @@ func TestSetRoleCLI(t *testing.T) {
 	defer db.Close()
 	for _, q := range []string{
 		"INSERT INTO users(id,handle,password_hash,role) VALUES('a1','root_admin','x','admin'),('a2','spare_admin','x','admin'),('v1','some_vendor','x','vendor')",
+		"UPDATE users SET pgp_2fa=true WHERE id IN ('a2','v1')", // A-706: staff appointments need a second factor
 		"INSERT INTO sessions(token_hash,user_id,expires) VALUES('s1','a1',now()+interval '1 hour'),('s2','v1',now()+interval '1 hour')",
 		"INSERT INTO pending_logins(token_hash,user_id,expires) VALUES('p1','a1',now()+interval '10 minutes')",
 		"INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock) VALUES('l1','v1','Listing','Fixture','Hardware','Worldwide','physical',100000,500000000000,5)",
@@ -127,5 +128,38 @@ func TestSetRoleCLI(t *testing.T) {
 		role("v1") != "buyer" || count("SELECT count(*) FROM products WHERE vendor_id='v1' AND NOT archived") != 0 ||
 		count("SELECT count(*) FROM users WHERE id='v1' AND vendor_approved") != 0 {
 		t.Fatalf("selling revocation: %d %q %q", code, stdout, stderr)
+	}
+}
+
+// A-706 (SEC706-2): -set-role does not make an account without TOTP or PGP sign-in a moderator or administrator,
+// and says why; removing staff roles stays allowed.
+func TestSetRoleRefusesFactorlessStaffAppointment(t *testing.T) {
+	dsn := cliSchema(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec("INSERT INTO users(id,handle,password_hash,role) VALUES('k1','keeper_admin','x','admin'),('b1','plain_buyer','x','buyer'),('m1','plain_mod','x','moderator')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"plain_buyer", "moderator"}, {"plain_buyer", "admin"}, {"plain_mod", "admin"}} {
+		stdout, stderr, code := runServer(t, nil, append([]string{"-set-role"}, args...)...)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "has no second factor") {
+			t.Fatalf("%v: %d %q %q", args, code, stdout, stderr)
+		}
+	}
+	var buyer, mod string
+	if err = db.QueryRow("SELECT (SELECT role FROM users WHERE id='b1'),(SELECT role FROM users WHERE id='m1')").Scan(&buyer, &mod); err != nil || buyer != "buyer" || mod != "moderator" {
+		t.Fatalf("roles after refusals: %q %q %v", buyer, mod, err)
+	}
+	if _, stderr, code := runServer(t, nil, "-set-role", "plain_mod", "buyer"); code != 0 {
+		t.Fatalf("demotion of a factor-less moderator: %d %q", code, stderr)
+	}
+	if _, err = db.Exec("UPDATE users SET totp_enabled=true WHERE id='b1'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runServer(t, nil, "-set-role", "plain_buyer", "moderator"); code != 0 {
+		t.Fatalf("appointment with a factor: %d %q", code, stderr)
 	}
 }

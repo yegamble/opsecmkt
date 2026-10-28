@@ -35,7 +35,7 @@ func TestPasswordChangeConcurrentRevokedSession(t *testing.T) {
 	}
 	// Both requests have passed the password check and wait on the account row inside their transactions.
 	deadline := time.Now().Add(10 * time.Second)
-	for agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT totp_enabled,role,suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE%' AND wait_event_type='Lock'") < 2 {
+	for agInt(e, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT totp_enabled,pgp_2fa,role,suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE%' AND wait_event_type='Lock'") < 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("password changes did not both reach the account lock")
 		}

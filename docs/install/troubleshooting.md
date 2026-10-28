@@ -39,6 +39,12 @@ docker compose up -d --build --wait
 Your proxy rewrites `Host`. nginx: add `proxy_set_header Host $host;`.
 See [Configure the reverse proxy](clearnet.md#step-3-configure-the-reverse-proxy).
 
+## 403 "Staff actions need a second factor on your account"
+
+The moderator or administrator has neither an authenticator (TOTP) nor PGP sign-in on (A-706). Follow the page's
+link to `/totp` or `/pgp`, enrol, then submit the form again. After `-reset-admin-factors`, sign in with the
+password and enrol again. *Admin → Users → Staff roster* shows who still lacks one.
+
 ## Can't sign in (public domain)
 
 Cookies are Secure. Use `https://YOUR-DOMAIN`, not `http://127.0.0.1:8080`.

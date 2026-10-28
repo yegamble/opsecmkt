@@ -27,6 +27,7 @@ func TestRetentionAdministratorRecoveryUsesFreshAccount(t *testing.T) {
 	}
 	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {"recovery_operator"}, "password": {testPassword}})
 	e.check(w, 303)
+	agEnableTOTP(e, agStr(e, "SELECT id FROM users WHERE handle='recovery_operator'")) // A-706: appointed with a factor
 	if _, err := SetRole(t.Context(), e.DB, "recovery_operator", "admin"); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +120,7 @@ func TestSetRole(t *testing.T) {
 	e.check(e.do("GET", "/account", vendor, nil), 200)
 
 	// Adding an administrator: the account's existing session reaches /admin at once.
+	e.candidateFactor("role_buyer")
 	if got, err = SetRole(ctx, e.DB, "role_buyer", "admin"); err != nil || got != "Role of role_buyer changed from buyer to admin" {
 		t.Fatalf("promotion: %q %v", got, err)
 	}
@@ -152,7 +154,8 @@ func TestSetRole(t *testing.T) {
 	if want := []string{"Role changed from admin to buyer by host command", "Staff avatar removed when the role changed"}; !slices.Equal(e.audits(rootID), want) {
 		t.Fatalf("root audit %q, want %q", e.audits(rootID), want)
 	}
-	// It can sign in again with its password, as a buyer.
+	// It can sign in again with its password, as a buyer (without the fixture's PGP sign-in, staffFixtureFactor).
+	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", rootID)
 	if code, loc := loginStatus(e, "root_admin", testPassword); code != 303 || loc != "/" {
 		t.Fatalf("demoted administrator sign-in: %d %q", code, loc)
 	}

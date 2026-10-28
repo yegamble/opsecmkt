@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
-import { saveEncryptionKey, submitAndLoad, seedPGPAccess } from './db-helpers';
+import { passwordSignIn, saveEncryptionKey, submitAndLoad, seedPGPAccess } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // P3 order lifecycle against a real database with no payment provider configured.
@@ -83,11 +83,7 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   // The listing owner can still read the cancelled draft, which stays off incoming work.
   await page.goto('/account');
   await submitAndLoad(page, page.getByRole('main').getByRole('button', { name: 'Sign out', exact: true }));
-  await page.goto('/login');
-  await page.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
-  await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page.locator('.account-name')).toHaveText(ADMIN.handle);
+  await passwordSignIn(page, ADMIN.handle, ADMIN.password);
   await page.goto('/vendor-dashboard');
   await expect(page.getByRole('heading', { name: 'Incoming orders' })).toBeVisible();
   await expect(page.locator('main')).toContainText('Unfunded drafts and cancelled drafts are kept in your order history but do not appear as incoming work.');

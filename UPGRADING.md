@@ -15,6 +15,50 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Staff need a second factor before staff actions (A-706)
+
+No migration and no configuration change, but **existing moderators and administrators without a second factor
+must enrol one before they can act**. Every staff-only form (the actions only moderators and administrators may
+post: role changes, suspensions, bans, factor resets, settings, dispute resolution, listing and payment review,
+ticket assignment, image takedown, staff uploads and the like) is now refused with 403 and nothing changed while
+the acting account has neither an authenticator (TOTP) nor PGP sign-in turned on. The refusal links to `/totp` and
+`/pgp`. Strict PGP sign-in policy alone does not count: turn on PGP sign-in for the account (one confirmed form on
+`/pgp`); saving a new PGP key turns PGP sign-in off until the key is verified and it is turned on again. Forms
+buyers and vendors can also post (support-ticket replies, listings, messages, order steps) are not gated, even for
+staff.
+
+Before or right after upgrading, have each administrator and moderator enrol (`/totp`, or verify a key and turn on
+PGP sign-in on `/pgp`). The staff roster (*Admin → Users*) now has a *Second factor* column, the overview's
+*Users* link and checklist say how many staff lack one and whether you do, and `-status` prints the count on
+stderr (`warning: N active staff account(s) have no second factor ...`); its stdout line is unchanged.
+
+The change adds no lockout: enrolment, `/account`, the password change, sign-out and every page stay available
+without a factor, and so do the host commands (`-set-role`, `-bootstrap-admin`, `-reset-admin-password`,
+`-reset-admin-factors`, the restore gate). A new market's first administrator, created by `/setup` or
+`-bootstrap-admin`, enrols on `/totp` (the overview's first checklist step) before the first staff change. After
+`-reset-admin-factors` the administrator signs in with the password, re-enrols and can act again.
+
+Closing the password-only paths around the factor (fix round 1):
+
+- **New staff need a factor first.** The role form and `-set-role` refuse to make an account without TOTP or PGP
+  sign-in a moderator or an administrator ("has no second factor"; the account enrols first). Removing a staff role,
+  bans, and an administrator becoming a moderator stay allowed.
+- **Turning on PGP sign-in needs this browser's decryption.** The password plus an ownership proof made in another
+  browser no longer turns it on; decrypt a challenge on `/pgp` in the same browser first.
+- **The first factor ends other sessions.** Turning on an account's first factor (TOTP, or PGP sign-in without TOTP)
+  ends its other sessions and pending sign-ins, as a password change does; the browser that enrolled stays signed in.
+  The audit trail records "Ended N other session(s) and any pending sign-ins: first second factor turned on".
+- **Staff branches of shared forms are gated too.** An administrator editing, archiving, restoring or adding or
+  removing photos of another vendor's listing, staff replying to or changing the status of a ticket they did not
+  open, staff opening a ticket to a hidden colleague, and staff messaging an account outside the ordinary contact
+  rules all need the factor. Owners, ticket openers and ordinary contacts are unaffected.
+
+**Existing staff without a factor and without a PGP key are exposed until they enrol:** anyone who has such an
+account's password can sign in and enrol their own authenticator for it, and the account then has staff powers. If
+you cannot be sure the password is safe, demote the account on the host (`-set-role HANDLE buyer`), have its owner
+enrol TOTP (or add a key, decrypt a challenge and turn on PGP sign-in), and appoint it again. A new market's first
+administrator has the same window between `/setup` (or `-bootstrap-admin`) and enrolment: enrol immediately.
+
 ## A refused production start says why (serve --check-startup, A-694)
 
 No migration and no configuration change. The production app container keeps no logs (logging driver `none`), so

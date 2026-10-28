@@ -25,7 +25,7 @@ test('a moderator reviews escrow flags at 320 px; a hand refund is refused and a
   const vendor = await signedIn(browser, baseURL, vendorHandle, password, true);
   const admin = await signedIn(browser, baseURL, adminHandle, password, true, 320);
   try {
-    sql(`UPDATE users SET role='moderator' WHERE handle='${modHandle}'; UPDATE users SET role='vendor' WHERE handle='${vendorHandle}'; UPDATE users SET role='admin' WHERE handle='${adminHandle}';
+    sql(`UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${modHandle}'; UPDATE users SET role='vendor' WHERE handle='${vendorHandle}'; UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,archived)
         VALUES ('${productID}',(SELECT id FROM users WHERE handle='${vendorHandle}'),'Payment review fixture','Seeded by db-payment-review.spec.ts','Other','Worldwide','digital',100000,500000000000,0,true);
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)

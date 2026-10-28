@@ -584,7 +584,7 @@ func (a *App) refuseMultipartElsewhere(w http.ResponseWriter, r *http.Request, t
 // is not suspended (a suspended account's sessions never authenticate; suspension also deletes them).
 func (a *App) sessionUser(ctx context.Context, session string) (*User, error) {
 	u := &User{}
-	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.retention_restricted_at IS NOT NULL,u.vendor_approved,u.vendor_verified OR u.role='admin' FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.RetentionRestricted, &u.VendorApproved, &u.VendorVerified)
+	err := a.db.QueryRowContext(ctx, `SELECT u.id,u.handle,u.role,u.pgp,u.retention_restricted_at IS NOT NULL,u.vendor_approved,u.vendor_verified OR u.role='admin',u.totp_enabled OR u.pgp_2fa FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires>now() AND u.suspended_at IS NULL AND u.closed_at IS NULL`, digest(session)).Scan(&u.ID, &u.Handle, &u.Role, &u.PGP, &u.RetentionRestricted, &u.VendorApproved, &u.VendorVerified, &u.SecondFactor)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -663,6 +663,9 @@ func (a *App) storeImage(ctx context.Context, r *http.Request, session string, a
 		l, err := lockListing(c, f.id)
 		if err != nil {
 			var he *httpError
+			if errors.Is(err, errStaffFactorRequired) {
+				return "", err
+			}
 			if errors.As(err, &he) {
 				return "", &httpError{Code: he.Code, Msg: "Photo not saved: listing not found. Nothing was stored."}
 			}

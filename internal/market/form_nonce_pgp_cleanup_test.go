@@ -12,7 +12,7 @@ func TestPGP2FAConfirmedReceiptDoesNotReenableAfterDisable(t *testing.T) {
 	_, pub := testPGPKey(t, "nonce_pgp_owner")
 	agEnablePGP(e, uid, pub)
 	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", uid)
-	otherSession := agSession(e, uid)
+	e.pgpSessionKey(session) // this browser decrypted a challenge to the new key (SEC706-1)
 
 	page := e.do("GET", "/pgp", session, nil)
 	e.check(page, 200)
@@ -26,6 +26,8 @@ func TestPGP2FAConfirmedReceiptDoesNotReenableAfterDisable(t *testing.T) {
 	if !strings.Contains(first.Header().Get("Location"), "/pgp") || agInt(e, "SELECT count(*) FROM users WHERE id=$1 AND pgp_2fa", uid) != 1 {
 		t.Fatal("PGP sign-in was not enabled")
 	}
+	// The first factor ended any other session (SEC706-3); a session started after it is still not this receipt's.
+	otherSession := agSession(e, uid)
 	enableAudits := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE 'Turned on PGP sign-in verification (fingerprint % (confirmed with password)'", uid)
 	enableNotices := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'PGP sign-in verification was turned on%'", uid)
 	if enableAudits != 1 || enableNotices != 1 {
@@ -101,6 +103,7 @@ func TestPGP2FALostCommitAcknowledgementReplaysSavedResponse(t *testing.T) {
 	_, pub := testPGPKey(t, "nonce_pgp_lost_ack")
 	agEnablePGP(e, uid, pub)
 	agExec(e, "UPDATE users SET pgp_2fa=false WHERE id=$1", uid)
+	e.pgpSessionKey(session) // this browser decrypted a challenge to the new key (SEC706-1)
 	page := e.do("GET", "/pgp", session, nil)
 	e.check(page, 200)
 	form := url.Values{"enable": {"1"}, "password": {testPassword}, formNonceField: {renderedFormNonce(t, page.Body.String(), "/pgp/2fa")}}

@@ -301,6 +301,7 @@ func TestVendorVerifiedBadgeFollowsActiveVendor(t *testing.T) {
 	admin := e.setup()
 	_, viewer := e.user("vb_viewer", "buyer")
 	vendorID, _ := e.user("vb_vendor", "vendor")
+	e.candidateFactor("vb_vendor")
 	product := e.product(vendorID, "digital")
 	badge := func(want bool, when string) {
 		t.Helper()
@@ -458,6 +459,7 @@ func TestVendorRoleFormKeepsApplicationsConsistent(t *testing.T) {
 	// A-583 (QA544-2): a promotion to moderator or administrator withdraws an open application, audited and noted, so it
 	// leaves the queue instead of waiting there for a decision nobody can take. A demotion to buyer leaves it open.
 	staffID, staff := e.user("va_rolestaff", "buyer")
+	e.candidateFactor("va_rolestaff")
 	apply := func() string {
 		t.Helper()
 		e.check(e.do("POST", "/account/vendor-application", staff, url.Values{"action": {"apply"}}), 303)

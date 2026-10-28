@@ -489,7 +489,7 @@ func TestHoldRefundPartyRefused(t *testing.T) {
 	x.ageHold(order, 91)
 	f := x.holdRefundForm(admin, order)
 	buyer := x.partyOf(order, roleBuyer)
-	agExec(x.testEnv, "UPDATE users SET role='admin' WHERE id=$1", buyer)
+	agExec(x.testEnv, "UPDATE users SET role='admin',pgp_2fa=true WHERE id=$1", buyer)
 	bsess := x.sessOf(order, roleBuyer)
 	if strings.Contains(x.orderPage(order, bsess), `id="hold-refund"`) {
 		t.Fatal("the buyer's page offers the hold refund")

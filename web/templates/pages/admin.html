@@ -35,7 +35,7 @@ admin panel renders on exactly one section, and every page carries the section n
 <section class="panel" aria-labelledby="getting-started">
 <h2 id="getting-started">Get your marketplace ready</h2>
 <ol>
-<li><a class="text-link" href="/totp">Protect your administrator account with two-factor sign-in</a>.</li>
+<li>{{if .StaffFactorMissing}}<strong>Required before any staff action:</strong> <a class="text-link" href="/totp">turn on an authenticator</a> or <a class="text-link" href="/pgp">PGP sign-in</a> for your administrator account.{{else}}<a class="text-link" href="/totp">Protect your administrator account with two-factor sign-in</a>: a second factor is on.{{end}}</li>
 <li><a class="text-link" href="/account">Add your public PGP key</a>, then <a class="text-link" href="/pgp">verify ownership</a> so users can contact you securely.</li>
 <li><a class="text-link" href="/admin/payments#payment-providers">Check Monero escrow status</a> and choose whether to accept new Monero payments. {{if $.LiveNetwork}}This market is on mainnet: payments are real funds.{{else}}This market is on test networks.{{end}}</li>
 <li><a class="text-link" href="/vendor-dashboard">Publish your first listing</a>, or invite a user to register as a vendor and decide their application under <a class="text-link" href="/admin/vendors#vendors">Vendors: Vendor applications</a>.</li>
@@ -65,7 +65,7 @@ admin panel renders on exactly one section, and every page carries the section n
 <option value="moderator"{{if eq .RoleChoice "moderator"}} selected{{end}}>Moderator</option>
 </select>
 </label>
-<p class="help">Enter the handle exactly (it is case-sensitive) and choose buyer, vendor or moderator, or find the account in the <a class="text-link" href="#user-directory">user directory</a> above and change its role on its page. The first administrator is created during installation; administrator roles cannot be assigned or changed here. The operator adds and removes administrators on the server with the <code>-set-role</code> host command. Choosing vendor here makes the account a vendor at once, recorded as an approved application and closing any open one; applications themselves are decided under <a class="text-link" href="/admin/vendors#vendors">Vendors: Vendor applications</a>.</p>
+<p class="help">Enter the handle exactly (it is case-sensitive) and choose buyer, vendor or moderator, or find the account in the <a class="text-link" href="#user-directory">user directory</a> above and change its role on its page. Only an account that has turned on an authenticator or PGP sign-in can be made a moderator. The first administrator is created during installation; administrator roles cannot be assigned or changed here. The operator adds and removes administrators on the server with the <code>-set-role</code> host command. Choosing vendor here makes the account a vendor at once, recorded as an approved application and closing any open one; applications themselves are decided under <a class="text-link" href="/admin/vendors#vendors">Vendors: Vendor applications</a>.</p>
 {{template "confirm-fields" (and .Security .Security.TOTPEnabled)}}
 <button type="submit">Update role</button>
 </form>

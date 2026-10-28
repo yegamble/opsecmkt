@@ -259,7 +259,7 @@ func TestXMREscrowSettledByHand(t *testing.T) {
 		}
 	}
 	// An administrator who is a party to the order (here its vendor) is refused too.
-	agExec(x.testEnv, "UPDATE users SET role='admin' WHERE id=$1", x.vendor)
+	agExec(x.testEnv, "UPDATE users SET role='admin',pgp_2fa=true WHERE id=$1", x.vendor)
 	if code, body := x.settledByHand(parties[1], id, note); code != 403 || !strings.Contains(body, "party") {
 		t.Fatalf("an administrator party: %d %s", code, body)
 	}

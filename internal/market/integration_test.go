@@ -17,6 +17,7 @@ func TestPostgresMarketplaceFlow(t *testing.T) {
 	w := do("POST", "/setup", anon, setup)
 	check(w, 303)
 	admin := session(w)
+	agExec(e, "UPDATE users SET pgp_2fa=true WHERE handle='admin_user'") // A-706 fixture factor (staffFixtureFactor)
 	check(do("POST", "/setup", anon, setup), 403)
 	check(do("GET", "/setup", admin, nil), 403)
 	w = do("POST", "/register", anon, url.Values{"handle": {"buyer_one"}, "password": {"a-long-buyer-password"}})

@@ -32,7 +32,7 @@ test('administrator takes down a listing with a reason and only an administrator
   const visitorContext = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   const visitor = await visitorContext.newPage();
   try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
       UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         SELECT '${productID}',id,'${title}','Seeded by db-listing-takedown.spec.ts','Digital','Worldwide','digital',100000,500000000000,1 FROM users WHERE handle='${vendorHandle}';`);

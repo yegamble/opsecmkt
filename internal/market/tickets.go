@@ -100,14 +100,17 @@ func ticketStaffChoices(ctx context.Context, q ticketQueryer, user *User, adminO
 	return choices, rows.Err()
 }
 
-func ticketActorRole(c *actionCtx) (string, error) {
+// ticketActorRole reads the actor's current role and whether it has a second factor, locking the actor row. Staff
+// access (to tickets they did not open, and to hidden colleagues as recipients) needs the factor (A-706, SEC706-4).
+func ticketActorRole(c *actionCtx) (string, bool, error) {
 	var role string
-	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT role FROM users WHERE id=$1 AND suspended_at IS NULL AND closed_at IS NULL
-		AND retention_restricted_at IS NULL FOR SHARE NOWAIT`, c.User.ID).Scan(&role)
+	var factor bool
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT role,totp_enabled OR pgp_2fa FROM users WHERE id=$1 AND suspended_at IS NULL AND closed_at IS NULL
+		AND retention_restricted_at IS NULL FOR SHARE NOWAIT`, c.User.ID).Scan(&role, &factor)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", errForbidden
+		return "", false, errForbidden
 	}
-	return role, err
+	return role, factor, err
 }
 
 func ticketManageRole(t *TicketRecord, role string) bool {
@@ -115,13 +118,16 @@ func ticketManageRole(t *TicketRecord, role string) bool {
 }
 
 func ticketForAction(c *actionCtx) (*TicketRecord, string, error) {
-	role, err := ticketActorRole(c)
+	role, factor, err := ticketActorRole(c)
 	if err != nil {
 		return nil, "", err
 	}
 	t, err := readTicket(c.Ctx(), c.Tx, c.Form.Get("id"), c.User, true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", fail(404, "Ticket not found")
+	}
+	if err == nil && t.OpenerID != c.User.ID && !factor { // readable by staff role, not as its opener
+		return nil, "", errStaffFactorRequired
 	}
 	return t, role, err
 }
@@ -268,9 +274,12 @@ func ticketCreateAction(c *actionCtx) (actionResult, error) {
 	if err := requirePGPAccess(c); err != nil {
 		return actionResult{}, err
 	}
-	role, err := ticketActorRole(c)
+	role, factor, err := ticketActorRole(c)
 	if err != nil {
 		return actionResult{}, err
+	}
+	if !factor && ticketStaffUser(&User{Role: role}) {
+		role = "buyer" // without a factor, staff choose recipients as anyone else does (A-706)
 	}
 	if !c.A.allowWriteBudget("ticket-open:"+c.User.ID, 5) {
 		return actionResult{}, fail(429, "An account can open at most 5 tickets in 10 minutes. Try again later.")

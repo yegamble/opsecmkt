@@ -13,6 +13,7 @@ type RefusalView struct {
 	Back, BackLabel string      // the page the refused form or address was reached from; "/" at worst
 	SignIn          bool        // a 401 or an expired form to a browser not signed in: a sign-in that returns to Back
 	Echo            []EchoField // a refused post's long text fields, shown read-only so they can be copied
+	EnrolFactor     bool        // a staff action refused for a missing second factor (A-706): links to /totp and /pgp
 }
 
 // EchoField is one long text field of a refused post, as it was sent (bounded by its form's limit).
@@ -158,6 +159,7 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 	if a.mayEcho(r) {
 		v.Echo = refusalEcho(r.PostForm)
 	}
+	v.EnrolFactor = msg == staffFactorRequiredMessage && user != nil
 	d.Refusal = v
 	a.loadRefusalPage(r, &d)
 	d.Error = msg

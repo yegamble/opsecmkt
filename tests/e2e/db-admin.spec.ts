@@ -3,7 +3,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, seedPGPAccess, seedRecordedMoneroEscrow, setRole, signedIn, submitStatus, withinViewport } from './db-helpers';
+import { enrollTOTP, expectNotice, pgpFixture, RECIPIENT_FINGERPRINT, seedPGPAccess, seedRecordedMoneroEscrow, setRole, signedIn, submitStatus, totp, withinViewport } from './db-helpers';
 import { waitForStyles } from './styles';
 
 // Administrator forms submitted against a real database with JavaScript disabled. Each test signs the shared
@@ -542,4 +542,62 @@ test('user directory: search, open an account, suspend and restore it from its p
   await expect(admin.getByLabel('Recipient handle')).toHaveValue(handle);
   await admin.context().close();
   await account.context().close();
+});
+
+// A-706: only an account with a second factor is made a moderator. This one enrols a real authenticator (codes
+// computed here from the secret the page shows), is appointed, then turns TOTP off: its staff action is refused with
+// copy and links that work without JavaScript, it follows the link and enrols again, and the same form succeeds. The
+// staff roster follows each change.
+test('a staff action needs a second factor; enrolling TOTP from the refusal unblocks it', async ({ browser, baseURL }) => {
+  const handle = uniqueHandle('nofactor_mod');
+  const password = 'browser-no-factor-mod-123';
+  const moderator = await signedIn(browser, baseURL, handle, password, true);
+  const admin = await signedIn(browser, baseURL, ADMIN.handle, ADMIN.password, false);
+  // Without a factor the appointment is refused.
+  await admin.goto('/admin/users');
+  const roleForm = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
+  await roleForm.getByLabel('Account handle').fill(handle);
+  await roleForm.getByLabel('Role').selectOption('moderator');
+  await roleForm.getByLabel('Current password').fill(ADMIN.password);
+  expect(await submitStatus(admin, () => roleForm.getByRole('button', { name: 'Update role' }).click())).toBe(409);
+  await expect(admin.getByRole('alert')).toContainText(`${handle} has no second factor.`);
+
+  const secret = await enrollTOTP(moderator, password);
+  const enrolledStep = Math.floor(Date.now() / 30_000);
+  await setRole(admin, handle, 'moderator', ADMIN.password, false);
+  const rosterRow = async () => {
+    await admin.goto('/admin/users');
+    return admin.locator('section[aria-labelledby="staff-roster"] tbody tr', { hasText: handle });
+  };
+  await expect(await rosterRow()).toContainText('TOTP');
+
+  // Turning TOTP off (the next step's code; the enrolment spent this one) leaves the moderator without a factor.
+  await moderator.goto('/totp');
+  await moderator.getByLabel('Password', { exact: true }).fill(password);
+  await moderator.getByLabel('Authenticator code or recovery code').fill(totp(secret, enrolledStep + 1));
+  expect(await submitStatus(moderator, () => moderator.getByRole('button', { name: 'Turn off TOTP' }).click())).toBe(303);
+  await expect(await rosterRow()).toContainText('None: staff actions refused');
+  await expect(admin.locator('#staff-without-factor')).toContainText('have no second factor and cannot take staff actions');
+
+  await moderator.goto('/account');
+  // New staff start hidden from the public staff list; showing this moderator is the refused staff change.
+  const choice = moderator.locator('form[action="/account/staff-list"]');
+  await expect(choice.getByLabel('Hide me from the public staff list')).toBeChecked();
+  await choice.getByLabel('Hide me from the public staff list').uncheck();
+  expect(await submitStatus(moderator, () => choice.getByRole('button', { name: 'Save choice' }).click())).toBe(403);
+  await expect(moderator.getByRole('alert')).toHaveText('Staff actions need a second factor on your account. Turn on an authenticator (TOTP) or PGP sign-in (saving a new PGP key turns PGP sign-in off until you turn it back on), then submit the form again. Nothing was changed.');
+  await expect(moderator.getByRole('link', { name: 'Turn on PGP sign-in' })).toHaveAttribute('href', '/pgp');
+  await moderator.getByRole('link', { name: 'Set up an authenticator' }).click();
+  await expect(moderator).toHaveURL(/\/totp$/);
+  await enrollTOTP(moderator, password);
+
+  await moderator.goto('/account');
+  await expect(choice.getByLabel('Hide me from the public staff list')).toBeChecked(); // the refusal changed nothing
+  await choice.getByLabel('Hide me from the public staff list').uncheck();
+  await choice.getByRole('button', { name: 'Save choice' }).click();
+  await expectNotice(moderator, 'Staff list choice saved.');
+  await expect(choice.getByLabel('Hide me from the public staff list')).not.toBeChecked();
+  await expect(await rosterRow()).toContainText('TOTP');
+  await admin.context().close();
+  await moderator.context().close();
 });

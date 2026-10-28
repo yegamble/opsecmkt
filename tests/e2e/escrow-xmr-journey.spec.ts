@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { check, context, password, pressSubmit, register, reloadUntil, settlementStatus, shot, tabTo, typeInto } from './escrow-helpers';
-import { pgpFixture, seedPGPAccess } from './db-helpers';
+import { pgpFixture, seedPGPAccess, seedStaffFactor } from './db-helpers';
 
 // WR-escrow Phase 3, slice X-g2 (A-248; P3-R3 to P3-R8, P3-R11): the Monero escrow journey with JavaScript disabled at
 // 320 px, every form driven by the keyboard alone, against the real server and PostgreSQL. The escrow wallet-rpc and its
@@ -58,11 +58,17 @@ const setting = (key: string, on: boolean) => sql(on ? `INSERT INTO settings(key
 
 async function signIn(browser: Browser, baseURL: string | undefined, handle: string, pass: string): Promise<Page> {
   const page = await context(browser, baseURL);
-  await page.goto('/login');
-  await typeInto(page, page.getByLabel('Handle', { exact: true }), handle);
-  await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
-  await pressSubmit(page, page.getByRole('button', { name: 'Sign in' }));
-  await expect(page.locator('.account-name')).toHaveText(handle);
+  // The administrator's A-706 second factor is a fixture stand-in (seedStaffFactor), lifted for the password step.
+  const staffFactor = seedStaffFactor(handle, false);
+  try {
+    await page.goto('/login');
+    await typeInto(page, page.getByLabel('Handle', { exact: true }), handle);
+    await typeInto(page, page.getByLabel('Password', { exact: true }), pass);
+    await pressSubmit(page, page.getByRole('button', { name: 'Sign in' }));
+    await expect(page.locator('.account-name')).toHaveText(handle);
+  } finally {
+    if (staffFactor) seedStaffFactor(handle);
+  }
   // Reauthenticate this session to its existing binding; a returning buyer may use the other fixture key.
   const currentKey = sql(`SELECT pgp FROM users WHERE handle='${handle.replace(/'/g, "''")}'`);
   await seedPGPAccess(page, currentKey || undefined, process.env.E2E_ESCROW_XMR_DATABASE_URL);
@@ -174,6 +180,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await typeInto(admin, admin.getByLabel('Password', { exact: true }), password);
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
+  seedStaffFactor('xmr_admin'); // A-706: staff actions need a second factor (fixture stand-in for PGP sign-in)
   await admin.goto('/admin/security'); // A-542: the CAPTCHA switch is on Security & access
   await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
   await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));

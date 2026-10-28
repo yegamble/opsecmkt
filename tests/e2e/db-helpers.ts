@@ -32,14 +32,18 @@ export function pgpFixture(name: string): string {
 
 // Saves the public encryption key through the real profile form. Commerce and message fixtures also call
 // seedPGPAccess explicitly; saving alone does not prove decryption in this browser. Keep signedIn keyless.
+// A new key turns PGP sign-in off; a staff account that had the seedStaffFactor stand-in gets it back.
 export async function saveEncryptionKey(page: Page, password: string, armored = pgpFixture('recipient.pub.asc')): Promise<void> {
   await page.goto('/account');
+  const handle = (await page.locator('.account-name').innerText()).trim();
+  const staffFactor = staffFactorSeeded(handle);
   const profile = page.locator('form', { has: page.getByRole('button', { name: 'Save profile', exact: true }) });
   await profile.getByLabel('PGP public key').fill(armored);
   await profile.getByLabel('Current password', { exact: true }).fill(password);
   await submitAndLoad(page, profile.getByRole('button', { name: 'Save profile', exact: true }));
   await expect(page).toHaveURL(/\/account$/);
   await expectNotice(page, 'Profile saved.');
+  if (staffFactor) seedStaffFactor(handle);
 }
 
 
@@ -61,6 +65,25 @@ export async function seedPGPAccess(page: Page, armored = pgpFixture('recipient.
       UPDATE sessions SET pgp_access_key='${keyHash}' WHERE token_hash='${tokenHash}';`], { encoding: 'utf8' });
 }
 
+// A-706: staff need TOTP or PGP sign-in before any staff action. The shared browser fixtures cannot complete either
+// for every staff sign-in (the fixture keys' private halves were discarded, and a TOTP code allows one confirmation
+// per 30 seconds), so this SQL update stands in for a staff account that turned PGP sign-in on, as seedPGPAccess
+// stands in for a completed decryption. signedIn turns it off for the password step and on again afterwards, which
+// stands in for the completed PGP sign-in. db-admin.spec.ts checks the real refusal and enrolment.
+export function seedStaffFactor(handle: string, on = true, databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL): boolean {
+  if (!databaseURL) throw new Error('Staff factor fixture requires an isolated browser test database');
+  const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+  return execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `UPDATE users SET pgp_2fa=${on} WHERE handle=${literal(handle)} AND role IN ('admin','moderator') AND pgp_2fa<>${on} RETURNING 1`], { encoding: 'utf8' }).trim() === '1';
+}
+
+function staffFactorSeeded(handle: string, databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL): boolean {
+  if (!databaseURL) return false;
+  const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+  return execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `SELECT 1 FROM users WHERE handle=${literal(handle)} AND role IN ('admin','moderator') AND pgp_2fa`], { encoding: 'utf8' }).trim() === '1';
+}
+
 // A role-grant fixture must satisfy the same public-key prerequisite as a real prospective vendor.
 function seedVendorPublicKey(handle: string): void {
   const databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL;
@@ -74,17 +97,39 @@ function seedVendorPublicKey(handle: string): void {
 export async function signedIn(browser: Browser, baseURL: string | undefined, handle: string, password: string, register: boolean, width = 390): Promise<Page> {
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width, height: 900 } });
   const page = await context.newPage();
-  await page.goto(register ? '/register' : '/login');
+  if (!register) {
+    await passwordSignIn(page, handle, password);
+    return page;
+  }
+  await page.goto('/register');
   await page.getByLabel('Handle', { exact: true }).fill(handle);
   await page.getByLabel('Password', { exact: true }).fill(password);
-  await page.getByRole('button', { name: register ? 'Create account' : 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.locator('.account-name')).toHaveText(handle);
   return page;
 }
 
-// Submits the admin "Assign an account role" form for handle (a text input looked up on the server).
-export async function setRole(admin: Page, handle: string, role: string, adminPassword = ADMIN.password) {
+// Signs page in on /login with the password alone. A staff account's seedStaffFactor stand-in is lifted for the
+// password step and restored once signed in (standing in for its completed PGP sign-in).
+export async function passwordSignIn(page: Page, handle: string, password: string): Promise<void> {
+  const staffFactor = seedStaffFactor(handle, false);
+  try {
+    await page.goto('/login');
+    await page.getByLabel('Handle', { exact: true }).fill(handle);
+    await page.getByLabel('Password', { exact: true }).fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page.locator('.account-name')).toHaveText(handle);
+  } finally {
+    if (staffFactor) seedStaffFactor(handle);
+  }
+}
+
+// Submits the admin "Assign an account role" form for handle (a text input looked up on the server). Only an
+// account with a second factor can be made a moderator (A-706): unless staffFactor is false (the account enrolled
+// one itself), the candidate gets the seedStaffFactor stand-in first.
+export async function setRole(admin: Page, handle: string, role: string, adminPassword = ADMIN.password, staffFactor = true) {
   if (role === 'vendor') seedVendorPublicKey(handle);
+  if (role === 'moderator' && staffFactor) seedCandidateFactor(handle);
   await admin.goto('/admin/users');
   const form = admin.locator('form', { has: admin.getByRole('button', { name: 'Update role' }) });
   await form.getByLabel('Account handle').fill(handle);
@@ -93,6 +138,14 @@ export async function setRole(admin: Page, handle: string, role: string, adminPa
   await form.getByRole('button', { name: 'Update role' }).click();
   await expectNotice(admin, 'Account role saved.');
   await expect(admin).toHaveURL(/\/admin\/users$/);
+}
+
+// The seedStaffFactor stand-in for an account about to be appointed (any role).
+function seedCandidateFactor(handle: string): void {
+  const databaseURL = process.env.E2E_DATABASE_URL || process.env.E2E_ESCROW_XMR_DATABASE_URL;
+  if (!databaseURL) throw new Error('Staff factor fixture requires an isolated browser test database');
+  const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+  execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc', `UPDATE users SET pgp_2fa=true WHERE handle=${literal(handle)}`], { encoding: 'utf8' });
 }
 
 // A-117: the one-shot notice a successful form post leaves on the page it returns to, and the title it prefixes.

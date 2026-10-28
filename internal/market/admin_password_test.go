@@ -13,7 +13,7 @@ import (
 func TestResetAdminPassword(t *testing.T) {
 	e := newTestApp(t)
 	ctx := context.Background()
-	id, current := e.user("root_admin", "admin")
+	id, current := e.factorlessStaff("root_admin", "admin") // its sign-in below is password-only
 	other := agSession(e, id)
 	pending := agPending(e, id)
 	otherAdminID, otherAdmin := e.user("second_admin", "admin")

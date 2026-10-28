@@ -233,7 +233,7 @@ func TestAdminResetsSecondFactors(t *testing.T) {
 	otherAdminID, _ := e.user("reset_admin2", "admin")
 	agEnableTOTP(e, otherAdminID)
 	_, buyer := e.user("reset_buyer", "buyer")
-	_, mod := e.user("reset_mod", "moderator")
+	_, mod := e.factorlessStaff("reset_mod", "moderator") // listed by the reset panel only with a factor
 
 	// The reset panel lists only non-administrator accounts that have a second factor.
 	resetOptions := func() string {
