@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -151,6 +152,12 @@ func validateMaterial(dir string, c Config) error {
 			return errors.New("CA signing keys must stay offline; import a leaf TLS certificate and key")
 		}
 	}
+	return validateCAMaterial(dir, c)
+}
+
+// validateCAMaterial checks every imported CA bundle is public PEM and that the
+// upload CA is dedicated. Endpoint replacement reuses it without the leaf checks.
+func validateCAMaterial(dir string, c Config) error {
 	cas := map[string][]byte{}
 	for _, key := range []string{"UPLOAD_CA", "MONERO_RPC_CA", "DATABASE_CA"} {
 		if path := c.TLSFiles[key]; path != "" {
@@ -169,6 +176,19 @@ func validateMaterial(dir string, c Config) error {
 		}
 	}
 	return RefuseSharedUploadCA(cas["UPLOAD_CA"], cas["MONERO_RPC_CA"], cas["DATABASE_CA"])
+}
+
+// databaseURLWithCA points an imported PostgreSQL URL at the CA mounted into the
+// app container. Errors never include the URL, which carries the password.
+func databaseURLWithCA(value, mountedCA string) (string, error) {
+	u, err := url.Parse(value)
+	if err != nil {
+		return "", errors.New("database URL is invalid")
+	}
+	query := u.Query()
+	query.Set("sslrootcert", mountedCA)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }
 
 var errSharedUploadCA = errors.New("UPLOAD_CA must be a dedicated upload transport CA: it shares a certificate with MONERO_RPC_CA or DATABASE_CA")

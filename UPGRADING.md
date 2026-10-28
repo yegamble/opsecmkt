@@ -855,6 +855,114 @@ Release binaries now carry their commit; a Docker image built from source shows
 `development` without one. The 10-minute payment-provider outage notice now
 points to `/admin/payments#xmr-escrow-health` instead of the watcher logs.
 
+## Native endpoint, certificate and administrator Tor replacement (A-695)
+
+No migration or setting. Until now a native installation could not be pointed at a restored, point-in-time-recovered or
+rolled-back database (only `deploy init --database-url-file` imported `DATABASE_URL`), could not renew its TLS leaves
+(`plan`, `install`, `up`, `doctor` and `redeploy` refuse an expired leaf) and could not replace the administrator Tor
+image. Three explicit commands now do, each changing only what it names:
+
+- `deploy endpoint set --dir DIR --database-url-file FILE [--database-ca FILE]` replaces the imported external
+  PostgreSQL URL and, with `--database-ca`, its CA. The URL file must be a regular mode-`0600` file (no symlink) holding
+  a `postgres://` URL with `sslmode=verify-full`; with a CA, `sslrootcert` is rewritten to the CA's path inside the
+  container, as `init` does. A development installation's own Compose PostgreSQL is refused.
+- `deploy tls replace --dir DIR` with `--tls-cert`/`--tls-key`, `--upload-cert`/`--upload-key` and/or `--upload-ca`
+  replaces only that material. It checks the pair, the serverAuth and digitalSignature usages, the validity period and
+  the CA rules as setup does, and replaces only material the installation already uses.
+- `deploy redeploy --dir DIR --admin-tor-image IMAGE@sha256:DIGEST` replaces only the administrator Tor image and runs
+  `up -d --wait --wait-timeout 600 --no-deps tor-admin`; the identity volume, client authorization, application and
+  keys are unchanged. `redeploy` takes exactly one of `--app-image` and `--admin-tor-image`.
+
+`endpoint set` and `tls replace` take the installation lock, refuse while an application container exists (run
+`deploy down` first; it keeps every volume), recheck production storage bindings, and keep every other key, endpoint,
+pin and the installation receipt byte-identical. They start nothing and print no secret value. Ordinary redeployment
+still never changes an endpoint or key.
+
+### Rolling back a native installation
+
+Rolling back is not an image swap: migrations are one-way, and an older application image refuses a database that
+records a migration it does not include (`the database was upgraded by a newer release: ...`), changing nothing. Restore
+the pre-upgrade backup into a **new** database and point the installation at it. Everything written after the backup is
+lost from the rolled-back site. These steps use the [production layout](docs/install/production.md) (installation
+`/srv/opsecmkt/market-prod`, private inputs in `/srv/opsecmkt-inputs`); keep public gateway ingress closed until the
+last step.
+
+<!-- native-rollback-commands -->
+1. Stop the installation. It keeps every volume, key and the retention directory:
+
+   ```sh
+   ./opsecmkt deploy down --dir /srv/opsecmkt/market-prod
+   ```
+
+2. Create a new, empty database on the managed PostgreSQL server and, from this release's source checkout on an approved
+   backup/recovery host, restore the pre-upgrade backup into it (type `RESTORE` when asked). `scripts/restore.sh` uses
+   no `--clean` and one transaction, so a target that already holds the schema fails and changes nothing. It sets the
+   restore gate itself:
+
+   ```sh
+   export RESTORE_DATABASE_URL="$(cat /secure/opsecmkt/rollback-database.url)"
+   AGE_IDENTITY=/secure/offline/backup-key.txt \
+     ./scripts/restore.sh /secure/backups/pre-upgrade.dump.age
+   unset RESTORE_DATABASE_URL
+   ```
+
+   A provider point-in-time recovery or snapshot into a new database instead skips that gate; step 4 applies it.
+
+3. Write the restored database's URL into a new mode-`0600` file on the application host, in the format of
+   [production step 2](docs/install/production.md#2-create-and-verify-managed-postgresql) with `sslmode=verify-full`
+   and the host CA path, then point the installation at it:
+
+   ```sh
+   ./opsecmkt deploy endpoint set --dir /srv/opsecmkt/market-prod \
+     --database-url-file /srv/opsecmkt-inputs/database-rollback.url \
+     --database-ca /srv/opsecmkt-inputs/database-ca.pem
+   ```
+
+   Omit `--database-ca` to keep the imported CA.
+
+4. Only for a database **not** restored by `scripts/restore.sh` (point-in-time recovery, snapshot or manual
+   `pg_restore`), apply the restore protection of [section 6](#6-backups-now-need-the-wallets-too), using the
+   host-readable URL file (not `DIR/secrets/database-url`, which names the CA by its path inside the container):
+
+   ```sh
+   DATABASE_URL_FILE=/srv/opsecmkt-inputs/database-rollback.url ./opsecmkt -set-restore-gate
+   ```
+
+   Host commands never migrate the database; this release's binary accepts the older restored schema and refuses only
+   a database that records migrations it does not include.
+
+5. Start the previous application image (the `app_image` value of `operator.json` you recorded before the upgrade), then the rest of the
+   installation, including the administrator Tor service that `deploy down` stopped:
+
+   ```sh
+   ./opsecmkt deploy redeploy --dir /srv/opsecmkt/market-prod \
+     --app-image YOUR_PREVIOUS_APP_IMAGE_WITH_SHA256_DIGEST
+   ./opsecmkt deploy up --dir /srv/opsecmkt/market-prod
+   ```
+
+   The installation already mounts its current external retention directory; keep `RETENTION_ENABLED=on` so startup
+   replays it against the restored database.
+
+6. Over the private administrator onion, with public ingress still closed, reconcile the restored database with the
+   wallets as [the runbook](docs/testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) describes.
+
+7. Stop the installation again and clear the gate in a terminal, naming the administrator in whose name reconciliation
+   is asserted:
+
+   ```sh
+   ./opsecmkt deploy down --dir /srv/opsecmkt/market-prod
+   DATABASE_URL_FILE=/srv/opsecmkt-inputs/database-rollback.url \
+     ./opsecmkt -clear-restore-gate YOUR_ADMIN_HANDLE
+   ./opsecmkt deploy up --dir /srv/opsecmkt/market-prod
+   ```
+
+8. Verify Admin readiness, reopen public gateway ingress, and point `BACKUP_DATABASE_URL` in your backup job at the
+   restored database: backups follow `BACKUP_DATABASE_URL`, not the installation's URL.
+<!-- /native-rollback-commands -->
+
+The upgraded database is left untouched on the server in case you roll forward again: run `deploy endpoint set` with
+its URL file and `deploy redeploy --app-image` with the newer digest.
+
 ## Native production encryption prerequisite
 
 The native production controller now verifies guest-managed LUKS2 storage before
