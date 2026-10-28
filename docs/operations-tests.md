@@ -149,7 +149,10 @@ runs with `CLAMD_ADDRESS=clamd:3310` and the default 30-day signature age limit,
 - The only signature is `deploy/testdata/clamav-test.ndb`, a text file with one signature,
   `Opsecmkt.Test.Marker`, matching the marker string the Go and browser tests' fake clamd also looks for.
   The script packs it inside the pinned image, with no network, into an unsigned `daily.cud` built at that
-  moment (`sigtool --build=daily.cud --unsigned`). Checked with ClamAV 1.5.4: clamd then answers `VERSION` with
+  moment (`sigtool --build=daily.cud --unsigned`). sigtool refuses a build whose tar.gz MD5 starts with `00`
+  (about one run in 256) and its own retry repeats the same bytes within a second, so the script builds again
+  under a new builder name, up to six builds, for that refusal only (`tests/test_ci_smoke_clamav.py`).
+  Checked with ClamAV 1.5.4: clamd then answers `VERSION` with
   `ClamAV 1.5.4/1/<the .cud's build time>`, so `/admin/system` shows the database 0 days old and uploads are Ready on
   any calendar day. (Had it not, the fallback was the image's own signatures plus the test signature with
   `SCANNER_MAX_SIGNATURE_AGE_DAYS=90`; it is not needed.) The EICAR test string, assembled at run time and

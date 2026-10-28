@@ -49,7 +49,9 @@ class QualityWorkflowTest(unittest.TestCase):
             self.assertIn('uses: ./.github/actions/scan-image', block)
             self.assertIn('image-ref: ' + image, block)
         release = (ROOT / '.github/workflows/release.yaml').read_text()
-        self.assertIn('image-archive: opsecmkt.oci.tar', release)
+        # A-708: Trivy cannot open an OCI tar; the scan reads the layout unpacked from it (tests/test_ci_release.py).
+        self.assertIn('tar -xf opsecmkt.oci.tar -C "$layout"', release)
+        self.assertIn('image-archive: ${{ runner.temp }}/opsecmkt-oci\n', release)
         scanner = (ROOT / '.github/actions/scan-image/action.yml').read_text()
         self.assertIn("version: 'v0.76.0'", scanner)
         self.assertIn('--exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL', scanner)

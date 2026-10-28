@@ -76,10 +76,41 @@ jobs:
             BUILD_COMMIT=${{ github.sha }}
           # Built from scratch: no Actions cache feeds a release image.
           no-cache: true
+      # A-708: Trivy's --input opens a Docker archive tar or an OCI layout directory, never an OCI tar. Unpack the very
+      # opsecmkt.oci.tar that is compressed and published below, record its checksum for that step, and check that
+      # Trivy's choice (the first descriptor of each index) reaches the linux/amd64 image, not an attestation.
+      - name: Unpack the release OCI archive for scanning
+        run: |
+          layout="$RUNNER_TEMP/opsecmkt-oci"
+          # Trivy reads text after ':' or '@' in an --input path as a tag or digest.
+          [[ $layout != *[:@]* ]] || { echo "unusable layout path $layout" >&2; exit 1; }
+          mkdir "$layout"
+          tar -xf opsecmkt.oci.tar -C "$layout"
+          sha256sum opsecmkt.oci.tar > "$RUNNER_TEMP/scanned-oci.sha256"
+          python3 - "$layout" <<'PY'
+          import json, os, sys
+          layout = sys.argv[1]
+          def load(descriptor):
+              algorithm, _, digest = descriptor['digest'].partition(':')
+              with open(os.path.join(layout, 'blobs', algorithm, digest)) as blob:
+                  return json.load(blob)
+          with open(os.path.join(layout, 'index.json')) as index:
+              manifests = json.load(index).get('manifests') or []
+          while manifests and manifests[0].get('mediaType') == 'application/vnd.oci.image.index.v1+json':
+              manifests = load(manifests[0]).get('manifests') or []
+          if not manifests or manifests[0].get('mediaType') != 'application/vnd.oci.image.manifest.v1+json':
+              sys.exit('the release OCI layout does not lead Trivy to an image manifest')
+          manifest = load(manifests[0])
+          config = load(manifest['config'])
+          platform = '%s/%s' % (config.get('os'), config.get('architecture'))
+          if platform != 'linux/amd64' or not manifest.get('layers'):
+              sys.exit('the release OCI layout leads Trivy to a %s manifest, not the linux/amd64 image' % platform)
+          print('Trivy scans %s, the %s image of opsecmkt.oci.tar' % (manifests[0]['digest'], platform))
+          PY
       - name: Scan the actual release OCI archive
         uses: ./.github/actions/scan-image # zizmor: ignore[self-repository] -- scan this tagged checkout's release artifact with its reviewed composite action.
         with:
-          image-archive: opsecmkt.oci.tar
+          image-archive: ${{ runner.temp }}/opsecmkt-oci
           artifact-name: release-image-vulnerabilities
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -117,6 +148,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.identity.outputs.tag }}
         run: |
+          # Publish only the archive the scan read (A-708).
+          sha256sum --check --strict "$RUNNER_TEMP/scanned-oci.sha256"
           gzip -n opsecmkt.oci.tar
           python3 - <<'PY'
           import json, os

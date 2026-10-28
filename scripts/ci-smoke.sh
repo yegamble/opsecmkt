@@ -81,9 +81,18 @@ scanner_prepare() {
       cd /build
       cat > daily.ndb
       echo "OPSEC Market CI test signature; not for scanning anything else." > COPYING
-      # ClamAV 1.5.4 retries a 00-prefixed MD5 once, reading the builder again with scanf.
-      # Two whitespace-separated answers cover both attempts without a producer process.
-      sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build <<< "ci ci" >&2
+      # ClamAV 1.5 refuses a tar.gz MD5 that starts with 00 (1.1 to 1.4 cannot verify it) and retries once, but
+      # within the same second it packs the same bytes again (A-708). The builder name, given in SIGNDUSER so
+      # nothing is read from standard input, is packed in daily.info: a new name gives a new MD5. Only that
+      # refusal is retried, at most six builds (tests/test_ci_smoke_clamav.py).
+      for attempt in 1 2 3 4 5 6; do
+        if out=$(SIGNDUSER=ci$attempt sigtool --build=daily.cud --unsigned --cvd-version=1 --datadir=/build < /dev/null 2>&1); then
+          echo "$out" >&2
+          break
+        fi
+        echo "$out" >&2
+        [[ $out == *"MD5 starts with 00"* && $attempt -lt 6 ]] || exit 1
+      done
       sigtool --info daily.cud >&2
       cat daily.cud' < deploy/testdata/clamav-test.ndb > "$work/clamav/daily.cud"
   chmod 0755 "$work/clamav"

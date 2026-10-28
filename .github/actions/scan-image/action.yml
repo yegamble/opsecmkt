@@ -6,7 +6,7 @@ inputs:
     required: false
     default: ''
   image-archive:
-    description: Built OCI or Docker archive to scan (use this or image-ref).
+    description: Docker archive tar or OCI layout directory to scan; Trivy cannot open an OCI tar, so unpack it first (use this or image-ref).
     required: false
     default: ''
   artifact-name:
