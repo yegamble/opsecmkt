@@ -32,8 +32,8 @@ test('administrator holds listings; a rejected listing is resubmitted by editing
   const vendor = await signedIn(browser, baseURL, vendorHandle, 'browser-review-vendor-123', true);
   const buyer = await signedIn(browser, baseURL, uniqueHandle('review_buyer'), 'browser-review-buyer-123', true);
   try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
-      UPDATE users SET role='moderator' WHERE handle='${modHandle}';
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
+      UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${modHandle}';
       UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';`);
 
     // The administrator chooses hold for review on Admin → Vendors, confirmed with their password.

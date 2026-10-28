@@ -5,6 +5,7 @@
 <h1>{{.Title}}<span class="accent">.</span></h1>
 {{with .Refusal}}{{if .SignIn}}<p>You are not signed in, or your session has ended. Sign in, then go back to the form.</p>
 <p><a class="button primary refusal-sign-in" href="/login?next={{.Back}}">Sign in</a></p>
+{{end}}{{if .EnrolFactor}}<p><a class="button primary refusal-enrol-totp" href="/totp">Set up an authenticator</a> <a class="button refusal-enrol-pgp" href="/pgp">Turn on PGP sign-in</a></p>
 {{end}}<p><a class="text-link refusal-back" href="{{.Back}}">{{.BackLabel}}</a></p>
 {{with .Echo}}<section class="stack" aria-labelledby="refusal-echo">
 <h2 id="refusal-echo">Your text, to copy</h2>

@@ -40,8 +40,8 @@ test('the other party replies once and the desk names who holds encrypted eviden
     await seedPGPAccess(vendor);
     // A shipped escrow order: this suite seeds its funding and shipping, then exercises live dispute forms.
     sql(`UPDATE users SET role='vendor' WHERE handle='${vendorHandle}';
-      UPDATE users SET role='moderator' WHERE handle='${holderHandle}';
-      UPDATE users SET role='admin' WHERE handle='${resolverHandle}';
+      UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${holderHandle}';
+      UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${resolverHandle}';
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         SELECT '${productID}',id,'Dispute record fixture','Seeded by db-disputes.spec.ts','Hardware','Worldwide','physical',100000,500000000000,1 FROM users WHERE handle='${vendorHandle}';
       INSERT INTO orders(id,buyer_id,product_id,currency,amount,state)

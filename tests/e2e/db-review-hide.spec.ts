@@ -22,7 +22,7 @@ test('administrator hides a review from the public pages and restores it', async
   const visitorContext = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   const visitor = await visitorContext.newPage();
   try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
       INSERT INTO users(id,handle,password_hash,role) VALUES ('${buyerID}','${buyer}','!','buyer'),('${vendorID}','${vendor}','!','vendor');
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         VALUES ('${productID}','${vendorID}','Review moderation fixture','Seeded by db-review-hide.spec.ts','Other','Worldwide','physical',100000,500000000000,1);
@@ -110,7 +110,7 @@ test('a banned buyer\'s review leaves the public pages and rating until the ban 
   const visitorContext = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   const visitor = await visitorContext.newPage();
   try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
       INSERT INTO users(id,handle,password_hash,role) VALUES ('${bannedID}','${banned}','!','buyer'),('${otherID}','${other}','!','buyer'),('${vendorID}','${vendor}','!','vendor');
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
         VALUES ('${productID}','${vendorID}','Banned reviewer fixture','Seeded by db-review-hide.spec.ts','Other','Worldwide','physical',100000,500000000000,1);

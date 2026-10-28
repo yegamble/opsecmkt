@@ -174,7 +174,7 @@ test('public staff list and decision avatar when shown', async ({ browser, baseU
     await expect(link).not.toHaveCSS('outline-style', 'none');
   };
   try {
-    sql(`UPDATE users SET role='moderator', staff_hidden=false WHERE handle='${modHandle}'`);
+    sql(`UPDATE users SET role='moderator',pgp_2fa=true, staff_hidden=false WHERE handle='${modHandle}'`);
     // The avatar through the real upload route (the suite's fake clamd scans it), as the moderator.
     await moderator.goto('/account');
     const form = new FormData();

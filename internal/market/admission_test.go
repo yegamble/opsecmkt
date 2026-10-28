@@ -220,7 +220,7 @@ func TestSignedInPublicFloodLeavesStaffPosts(t *testing.T) {
 	if w := postAs(a, flooder, "/test/public-slow"); w.Code != 503 {
 		t.Fatalf("one more public post from the flooder: %d", w.Code)
 	}
-	if w := postAs(a, &User{ID: "admin", Role: "admin"}, "/test/admin-change"); w.Code != 303 {
+	if w := postAs(a, &User{ID: "admin", Role: "admin", SecondFactor: true}, "/test/admin-change"); w.Code != 303 {
 		t.Fatalf("administrator's change during a signed-in public-post flood: %d %q", w.Code, w.Body.String())
 	}
 }

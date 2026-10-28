@@ -21,7 +21,7 @@ test('a moderator records what was done about a refused Monero deposit at 320 px
   const mod = await signedIn(browser, baseURL, modHandle, password, true, 320);
   const buyer = await signedIn(browser, baseURL, buyerHandle, password, true);
   try {
-    sql(`UPDATE users SET role='moderator' WHERE handle='${modHandle}';
+    sql(`UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${modHandle}';
       INSERT INTO users(id,handle,password_hash,role) VALUES ('${hex(16)}','${vendorHandle}','x','vendor');
       INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock,archived)
         VALUES ('${productID}',(SELECT id FROM users WHERE handle='${vendorHandle}'),'Refused deposit fixture','Seeded by db-xmr-collision.spec.ts','Other','Worldwide','digital',100000,500000000000,0,true);

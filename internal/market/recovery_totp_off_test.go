@@ -40,7 +40,7 @@ func TestRecoveryCodeSignInTurnsTOTPOff(t *testing.T) {
 		t.Run(role, func(t *testing.T) {
 			e := newTestApp(t)
 			handle := "a154_off_" + role
-			id, _ := e.user(handle, role)
+			id, _ := e.factorlessStaff(handle, role) // TOTP below is its only factor (an administrator too)
 			_, recovery := agEnableTOTP(e, id)
 			a154Codes(e, id, 2)
 			// A pending secret, an unrevealed code list and a used step are all cleared.

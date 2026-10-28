@@ -97,6 +97,9 @@ type actionCtx struct {
 	// can be claimed or replayed. It must be read-only and must not require the
 	// original transaction's pre-change state.
 	ReceiptAuthorize func(*actionCtx) error
+	// StaffOnly is set for an action whose Roles are a subset of {moderator, admin}: confirmedTxWith then refuses
+	// it when the locked actor row has neither TOTP nor PGP sign-in on (A-706).
+	StaffOnly bool
 }
 
 func (c *actionCtx) Ctx() context.Context { return c.R.Context() }
@@ -551,6 +554,13 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 			a.refuse(w, r, u, 403, roleRequired(spec.Roles))
 			return
 		}
+		// A-706: a staff-only action needs TOTP or PGP sign-in, refused here as the session loaded it, before
+		// the action does any work (a password check, a lookup, a wallet status read). The locked actor row decides:
+		// the A-222 re-read below, or confirmedTxWith for an OwnTx action.
+		if staffOnlyRoles(spec.Roles) && !u.SecondFactor {
+			a.refuse(w, r, u, http.StatusForbidden, staffFactorRequiredMessage)
+			return
+		}
 	}
 	if spec.OneAtATime && u != nil {
 		done, ok := a.enterOneAtATime(r.URL.Path, u.ID)
@@ -575,7 +585,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	ctx := r.Context()
 	c := &actionCtx{A: a, W: w, R: r, User: u, Token: token, Form: r.PostForm,
 		ConfirmedFormNonce: spec.ConfirmedFormNonce, FactorFormNonce: spec.FactorFormNonce,
-		OwnFormNonce: spec.OwnFormNonce, ReceiptAuthorize: spec.ReceiptAuthorize}
+		OwnFormNonce: spec.OwnFormNonce, ReceiptAuthorize: spec.ReceiptAuthorize,
+		StaffOnly: u != nil && staffOnlyRoles(spec.Roles)}
 	if !spec.OwnTx {
 		tx, err := a.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -589,15 +600,19 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, u *User, token string
 	// demoted or suspended. Lock and re-read the caller in the action's transaction
 	// before any role-gated staff change. OwnTx actions use confirmedTx or their own
 	// locked recheck; keeping this first avoids target-row/actor-row lock inversions.
+	// A-706: the same locked read refuses a staff-only action when the actor has
+	// neither TOTP nor PGP sign-in on.
 	var res actionResult
 	var repeated bool
 	var err error
 	if c.Tx != nil && u != nil && len(spec.Roles) > 0 && (u.Role == "admin" || u.Role == "moderator") {
 		var role string
-		var suspended bool
-		err = c.Tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", u.ID).Scan(&role, &suspended)
+		var suspended, factor bool
+		err = c.Tx.QueryRowContext(ctx, "SELECT role,suspended_at IS NOT NULL,totp_enabled OR pgp_2fa FROM users WHERE id=$1 FOR NO KEY UPDATE", u.ID).Scan(&role, &suspended, &factor)
 		if errors.Is(err, sql.ErrNoRows) || err == nil && (role != u.Role || suspended) {
 			err = errAccountChanged
+		} else if err == nil && c.StaffOnly && !factor {
+			err = errStaffFactorRequired
 		}
 	}
 	if err == nil && spec.FormNonce {

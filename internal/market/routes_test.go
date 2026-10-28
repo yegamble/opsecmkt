@@ -63,8 +63,11 @@ func TestActionDispatch(t *testing.T) {
 		{"/test/mod", nil, 401, "Sign in required"},
 		{"/test/mod", &User{ID: "b", Role: "buyer"}, 403, "Moderator access required"},
 		{"/test/mod", &User{ID: "v", Role: "vendor"}, 403, "Moderator access required"},
-		{"/test/mod", &User{ID: "m", Role: "moderator"}, 303, ""},
-		{"/test/mod", &User{ID: "a", Role: "admin"}, 303, ""},
+		{"/test/mod", &User{ID: "m", Role: "moderator", SecondFactor: true}, 303, ""},
+		{"/test/mod", &User{ID: "a", Role: "admin", SecondFactor: true}, 303, ""},
+		// A-706: a staff-only action is refused, before it runs, to staff without TOTP or PGP sign-in.
+		{"/test/mod", &User{ID: "m0", Role: "moderator"}, 403, staffFactorRequiredMessage},
+		{"/test/mod", &User{ID: "a0", Role: "admin"}, 403, staffFactorRequiredMessage},
 		{"/test/signed", nil, 401, "Sign in required"},
 		{"/test/signed", &User{ID: "b", Role: "buyer"}, 303, ""},
 		{"/test/public", nil, 303, ""},

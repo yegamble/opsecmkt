@@ -305,13 +305,17 @@ func confirmedTxWith(c *actionCtx, opts *confirmation, run func(c *actionCtx) (a
 	// The account row is locked, with or without a confirmation, and its role and suspension read again: a demotion
 	// or suspension committed after this request's session was loaded refuses the change (A-156). Either one locks
 	// this row too, so it is waited for.
-	var totp, suspended, retentionRestricted bool
+	// A staff-only action also needs TOTP or PGP sign-in on this locked row (A-706; post() checked it before Run).
+	var totp, pgpSignIn, suspended, retentionRestricted bool
 	var role, currentHash string
-	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,role,suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &role, &suspended, &currentHash, &retentionRestricted); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT totp_enabled,pgp_2fa,role,suspended_at IS NOT NULL OR closed_at IS NOT NULL,password_hash,retention_restricted_at IS NOT NULL FROM users WHERE id=$1 FOR NO KEY UPDATE", uid).Scan(&totp, &pgpSignIn, &role, &suspended, &currentHash, &retentionRestricted); err != nil {
 		return actionResult{}, err
 	}
 	if role != c.User.Role || suspended {
 		return actionResult{}, errAccountChanged
+	}
+	if c.StaffOnly && !totp && !pgpSignIn {
+		return actionResult{}, errStaffFactorRequired
 	}
 	if retentionRestricted && (c.R == nil || !retentionActionAllowed(c.R.URL.Path)) {
 		return actionResult{}, fail(403, retentionRestrictedMessage)

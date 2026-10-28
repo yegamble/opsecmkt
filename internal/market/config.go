@@ -239,16 +239,17 @@ func isInstalled(ctx context.Context, db *sql.DB) (bool, error) {
 	return installed, err
 }
 
-// Status reports, read-only, whether setup has completed and the highest applied migration (0 when none).
+// Status reports, read-only, whether setup has completed, the highest applied migration (0 when none) and how many
+// active staff accounts have no second factor, so are refused staff actions (A-706; 0 before the users table exists).
 // Errors carry a class only, never DATABASE_URL or driver text (for -status).
-func Status(ctx context.Context, dsn string) (installed bool, schema int, err error) {
+func Status(ctx context.Context, dsn string) (installed bool, schema, staffWithoutFactor int, err error) {
 	db, err := OpenDB(dsn)
 	if err != nil {
-		return false, 0, err
+		return false, 0, 0, err
 	}
 	defer db.Close()
 	if err = db.PingContext(ctx); err != nil {
-		return false, 0, errors.New("database connection failed: " + connectErrorClass(err))
+		return false, 0, 0, errors.New("database connection failed: " + connectErrorClass(err))
 	}
 	// A database that was never migrated has neither table: not installed, schema 0.
 	var settings, migrations bool
@@ -259,10 +260,18 @@ func Status(ctx context.Context, dsn string) (installed bool, schema int, err er
 	if err == nil && migrations {
 		err = db.QueryRowContext(ctx, "SELECT coalesce(max(version), 0) FROM schema_migrations").Scan(&schema)
 	}
-	if err != nil {
-		return false, 0, errors.New("database status query failed: " + connectErrorClass(err))
+	// An older schema (before users.closed_at, migration 112) is counted once this binary has migrated it.
+	var closedAt bool
+	if err == nil && installed {
+		err = db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users' AND column_name='closed_at')").Scan(&closedAt)
 	}
-	return installed, schema, nil
+	if err == nil && closedAt {
+		err = db.QueryRowContext(ctx, staffWithoutFactorSQL).Scan(&staffWithoutFactor)
+	}
+	if err != nil {
+		return false, 0, 0, errors.New("database status query failed: " + connectErrorClass(err))
+	}
+	return installed, schema, staffWithoutFactor, nil
 }
 
 // refuseBitcoinEnv fails before database migrations or node connections. Passive

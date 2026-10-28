@@ -29,7 +29,7 @@ func caseVariant(handle string, mask int) string {
 
 func TestRegisterAndSetupNeverSpendSignInBudget(t *testing.T) {
 	e := newTestApp(t)
-	id, _ := e.user("lock_victim", "admin")
+	id, _ := e.factorlessStaff("lock_victim", "admin")
 	login := url.Values{"handle": {"lock_victim"}, "password": {testPassword}}
 	for range 10 {
 		agExpect(e, "/register", randomToken(), url.Values{"handle": {"lock_victim"}, "password": {"a-new-long-password"}}, 400, "Handle unavailable")
@@ -88,7 +88,7 @@ func TestCorrectSignInsSpendNoBudget(t *testing.T) {
 
 func TestFailedPasswordsPauseSignInWithExplanation(t *testing.T) {
 	e := newTestApp(t)
-	id, _ := e.user("paused_user", "admin")
+	id, _ := e.factorlessStaff("paused_user", "admin")
 	for i := range 10 {
 		agExpect(e, "/login", randomToken(), url.Values{"handle": {"paused_user"}, "password": {"wrong-password-" + string(rune('a'+i))}}, 401, "Invalid handle or password")
 	}

@@ -25,7 +25,7 @@ func TestResetAdminFactors(t *testing.T) {
 	agExec(e, "UPDATE users SET totp_secret='sealed-under-the-old-key',totp_last_step=99,totp_pending='sealed-pending',recovery_reveal='sealed-codes',recovery_reveal_until=now()+interval '10 minutes' WHERE id=$1", id)
 	otherAdminID, otherAdmin := e.user("second_admin", "admin")
 	agEnableTOTP(e, otherAdminID)
-	e.user("plain_admin", "admin")
+	e.factorlessStaff("plain_admin", "admin")
 	vendorID, vendor := e.user("factor_vendor", "vendor")
 	agEnableTOTP(e, vendorID)
 

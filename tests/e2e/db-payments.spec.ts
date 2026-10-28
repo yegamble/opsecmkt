@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 import { ADMIN, uniqueHandle } from './db-fixtures';
-import { signedIn } from './db-helpers';
+import { passwordSignIn, signedIn } from './db-helpers';
 
 // No wallet or node RPC runs here. The normal database suite explicitly pauses intake
 // for unfunded draft coverage; migration tests separately verify fresh escrow defaults.
@@ -24,10 +24,7 @@ test('fresh payment surfaces offer escrow only and removed pooled routes cannot 
     }
     expect(sql('SELECT (SELECT count(*) FROM payment_addresses)::text||\':\'||(SELECT count(*) FROM payouts)::text')).toBe(before);
     const admin = await browser.newPage({ baseURL, javaScriptEnabled: false });
-    await admin.goto('/login');
-    await admin.getByLabel('Handle', { exact: true }).fill(ADMIN.handle);
-    await admin.getByLabel('Password', { exact: true }).fill(ADMIN.password);
-    await admin.getByRole('button', { name: 'Sign in' }).click();
+    await passwordSignIn(admin, ADMIN.handle, ADMIN.password);
     await admin.goto('/admin/payments');
     await expect(admin.getByRole('heading', { name: 'Escrow status and payment intake' })).toBeVisible();
     for (const currency of ['XMR']) {

@@ -27,7 +27,7 @@ type oracleProbe struct {
 func TestPublicAdminSignInIsNoPasswordOracle(t *testing.T) {
 	e := newTestApp(t)
 	e.A.adminSocket = "/run/market-admin/http.sock"
-	id, _ := e.user("oracle_admin", "admin")
+	id, _ := e.factorlessStaff("oracle_admin", "admin") // TOTP below is its only factor
 	agEnableTOTP(e, id)
 	token := randomToken() // one browser for every probe, so its CSRF and cookies are the same
 	count := func(key string) int {

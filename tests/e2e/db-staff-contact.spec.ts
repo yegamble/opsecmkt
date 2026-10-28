@@ -43,8 +43,8 @@ test('administrator publishes a staff contact that every promised page shows as 
   };
   try {
     await seedPGPAccess(buyer);
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}';
-      UPDATE users SET role='moderator' WHERE handle='${modHandle}';
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}';
+      UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${modHandle}';
       UPDATE users SET suspended_at=now() WHERE handle='${suspectHandle}';
       INSERT INTO notifications(id,user_id,body) SELECT md5(random()::text)||md5(random()::text), id,
         'Your XMR payout address was changed. If you did not make this change, someone else may know your password: change it and contact the market staff.'

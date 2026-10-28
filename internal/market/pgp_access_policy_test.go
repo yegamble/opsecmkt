@@ -156,12 +156,18 @@ func TestPGPStrictLoginCannotBeReplacedByTOTPOrRecovery(t *testing.T) {
 func TestPGPPolicyRequiresAdministratorProofBeforeStrictLogin(t *testing.T) {
 	e := newTestApp(t)
 	userID, token := e.keylessUser("access_admin", "admin")
+	// A-706: without a second factor the staff change is refused before any PGP check.
+	agExpect(e, "/admin/pgp-access", token, url.Values{settingAllowLoginWithoutPGP: {"false"}, "password": {testPassword}}, 403, staffFactorRequiredMessage)
+	key, public := testPGPKey(t, "access-admin")
+	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	proveAccess(e, userID, token, key)
+	e.check(e.do("POST", "/pgp/2fa", token, url.Values{"enable": {"1"}, "password": {testPassword}}), 303)
+	// With PGP sign-in on but this browser's decryption proof gone, strict login is still refused.
+	agExec(e, "UPDATE sessions SET pgp_access_key='' WHERE token_hash=$1", digest(token))
 	agExpect(e, "/admin/pgp-access", token, url.Values{settingAllowLoginWithoutPGP: {"false"}, "password": {testPassword}}, 403, "This browser has not completed PGP authentication")
 	if agStr(e, "SELECT value FROM settings WHERE key=$1", settingAllowLoginWithoutPGP) != "true" {
 		t.Fatal("an administrator without PGP proof enabled strict login")
 	}
-	key, public := testPGPKey(t, "access-admin")
-	e.check(e.do("POST", "/account", token, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
 	proveAccess(e, userID, token, key)
 	e.check(e.do("POST", "/admin/pgp-access", token, url.Values{settingAllowLoginWithoutPGP: {"false"}, "password": {testPassword}}), 303)
 	if agStr(e, "SELECT value FROM settings WHERE key=$1", settingAllowLoginWithoutPGP) != "false" {

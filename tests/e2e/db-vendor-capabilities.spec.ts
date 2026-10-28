@@ -21,7 +21,7 @@ test('moderator selling approval retains moderation and can be revoked independe
   const policy = sql(`SELECT value FROM settings WHERE key='vendor_approval'`);
   const bond = sql(`SELECT value FROM settings WHERE key='vendor_bond_xmr'`);
   try {
-    sql(`UPDATE users SET role='admin' WHERE handle='${adminHandle}'; UPDATE users SET role='moderator' WHERE handle='${modHandle}';
+    sql(`UPDATE users SET role='admin',pgp_2fa=true WHERE handle='${adminHandle}'; UPDATE users SET role='moderator',pgp_2fa=true WHERE handle='${modHandle}';
       UPDATE settings SET value='manual' WHERE key='vendor_approval'; UPDATE settings SET value='0' WHERE key='vendor_bond_xmr'`);
     expect((await mod.goto('/vendor-dashboard'))?.status()).toBe(403);
     // Selling approval requires a usable encryption key, including for moderators.

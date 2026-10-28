@@ -212,8 +212,8 @@ func TestXMRResolveRefusedToPartyAdministrator(t *testing.T) {
 			order, dispute := w.disputedFor(w.buyerID, w.buyer, w.vendorID, w.vendor, w.buyer, "The licence key was never delivered to me.")
 			seen := resolverSeen(w, order)
 			partyID := w.x.partyOf(order, party)
-			agExec(w.e, "UPDATE users SET role='admin' WHERE id=$1", partyID)
-			defer agExec(w.e, "UPDATE users SET role=$2 WHERE id=$1", partyID, party)
+			agExec(w.e, "UPDATE users SET role='admin',pgp_2fa=true WHERE id=$1", partyID)
+			defer agExec(w.e, "UPDATE users SET role=$2,pgp_2fa=false WHERE id=$1", partyID, party)
 			sess := w.x.sessOf(order, party)
 			for _, outcome := range []string{"release", "refund"} {
 				w.x.refused(order, "/resolve", sess, resolverForm(dispute, outcome, seen), 403, "You cannot make that change to this order")
