@@ -31,7 +31,16 @@ with isolated uploads, ClamAV uses the engine version in the upload gateway's la
 scanner report (A-552); other inventory is operator-reported. Missing, invalid, stale and unknown states
 remain warnings. The worker never installs updates. The deployment controller
 retains existing service references for application-only redeployment; see
-[Service topology and sizing](install/service-topology.md).
+[Service topology and sizing](install/service-topology.md). Explicit, separately
+invoked commands replace only what they name: `deploy endpoint set` the imported
+database URL/CA, `deploy tls replace` the TLS leaves or upload CA, and
+`deploy redeploy --admin-tor-image` the administrator Tor image (A-695,
+`TestEndpointSetReplacesDatabaseURLAndCAOnly`,
+`TestEndpointSetRefusesInsecureURLAndUnsafeFile`,
+`TestTLSReplaceAcceptsRenewedLeafAndRefusesMismatchedKey`,
+`TestRedeployAdminTorImageOnly`; fake-Docker unit tests, no live Docker or
+database run). [Rolling back a native installation](../UPGRADING.md#rolling-back-a-native-installation)
+uses them.
 
 Optional Tor administrator ingress uses a separate Unix HTTP socket and a
 client-authorized admin onion; when enabled, the public listener refuses setup,
