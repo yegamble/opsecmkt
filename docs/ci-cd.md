@@ -46,7 +46,11 @@ the scan. The documented operator builds ([binary installation](install/binary.m
 pass the same day with `--pull`, and `scripts/install.sh` passes it to Compose.
 CI's application image also carries `BUILD_VERSION=ci` and the commit, and
 `scripts/ci-smoke.sh` checks that `version` and `/admin/system` name them. Release packaging additionally scans the actual OCI archive before creating the
-draft. No registry push is required for these scans.
+draft. Trivy `--input` opens a Docker archive or an OCI layout directory, not an OCI tar, so packaging unpacks
+into a layout directory the same `opsecmkt.oci.tar` that is then compressed into `opsecmkt.oci.tar.gz`, checks
+that Trivy's first-descriptor choice reaches the linux/amd64 image rather than an attestation, and scans that
+directory with the same gate. Its checksum, recorded before the scan, is checked again before compression, so
+a changed archive is never published. No registry push is required for these scans.
 
 The [scheduled security workflow](../.github/workflows/security.yaml) runs weekly
 (Monday at 09:23 UTC) and on manual request. It reuses the same dependency audits,
