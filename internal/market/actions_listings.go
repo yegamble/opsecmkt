@@ -15,6 +15,14 @@ func init() {
 // maxDeliveryContent matches the manual delivery limit (characters).
 const maxDeliveryContent = 32000
 
+// A-711: a reusable download without content would be published as delivered automatically, while checkout refuses
+// it (escrowEligible). The create and edit forms and the digital delivery method form refuse it with these.
+const (
+	reusableContentRequired     = "Reusable download content: enter the content every buyer receives, or choose another digital delivery method."
+	reusableContentRequiredEdit = "Reusable download content: enter the content every buyer receives. To stop sending it, choose another digital delivery method under Digital unit inventory first."
+	reusableModeNeedsContent    = "Digital delivery method: save the reusable download content in the listing form first, then choose a reusable download. Nothing was changed."
+)
+
 // listingInput is a validated listing form shared by create (/listings) and edit (/listings/update).
 type listingInput struct {
 	Title, Description, Category, Region, Kind, DeliveryContent string
@@ -108,6 +116,9 @@ func validateListing(f url.Values) (listingInput, error) {
 		add("delivery_content", "Reusable download content: use at most "+strconv.Itoa(maxDeliveryContent)+" characters.")
 	case in.DeliveryContent != "" && in.Kind == "physical":
 		add("delivery_content", "Reusable download content: only a digital listing can have it. Clear it, or choose Digital as the fulfillment type.")
+	case in.DeliveryContent == "" && in.Kind == "digital" && f.Get("digital_delivery_mode") == "reusable":
+		// The create form chooses the method; the edit form leaves it to the method form (listingUpdateAction).
+		add("delivery_content", reusableContentRequired)
 	}
 	if len(problems) > 0 {
 		return listingInput{}, problems

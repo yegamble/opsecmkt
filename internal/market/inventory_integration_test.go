@@ -145,7 +145,13 @@ func TestListingUpdateValidation(t *testing.T) {
 			}
 		}
 	}
-	// Whitespace-only content is stored as empty (no automatic delivery).
+	// Whitespace-only content is blank: a reusable download refuses it (A-711, TestReusableModeRequiresContent) and keeps
+	// its content; with another digital delivery method it is stored as empty.
+	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"kind": "digital", "delivery_content": " \n "})), 400)
+	if err := e.DB.QueryRow("SELECT delivery_content FROM products WHERE id=$1", p).Scan(&dc); err != nil || dc != secret {
+		t.Fatalf("refused blank reusable content stored %q %v", dc, err)
+	}
+	e.check(e.do("POST", "/listings/digital-mode", s, url.Values{"id": {p}, "mode": {"manual"}}), 303)
 	e.check(e.do("POST", "/listings/update", s, inventoryForm(p, map[string]string{"kind": "digital", "delivery_content": " \n "})), 303)
 	if err := e.DB.QueryRow("SELECT delivery_content FROM products WHERE id=$1", p).Scan(&dc); err != nil || dc != "" {
 		t.Fatalf("blank delivery content stored as %q %v", dc, err)

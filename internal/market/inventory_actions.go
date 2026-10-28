@@ -130,6 +130,18 @@ func listingUpdateAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, listingFormRefusal(c, listingProblems{{"kind", "Fulfillment type: this listing has automatic delivery content that only its vendor can remove, so it must stay digital."}})
 		}
 	}
+	// A-711: a digital reusable download keeps content to send. Its vendor's edit cannot blank it (the method form
+	// changes the method first); a listing that becomes digital with none starts with manual delivery, as a new one does.
+	if in.Kind == "digital" && mode == "reusable" && in.DeliveryContent == "" {
+		if l.Kind == "digital" && l.VendorID == c.User.ID {
+			return actionResult{}, listingFormRefusal(c, listingProblems{{"delivery_content", reusableContentRequiredEdit}})
+		}
+		if l.Kind != "digital" {
+			if _, err = c.Tx.ExecContext(ctx, "UPDATE products SET digital_delivery_mode='manual' WHERE id=$1", l.ID); err != nil {
+				return actionResult{}, err
+			}
+		}
+	}
 	if in.Kind != l.Kind {
 		// Orders read the fulfillment type from the listing; changing it would change their shipping/delivery path.
 		var open int
