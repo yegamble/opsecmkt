@@ -101,6 +101,37 @@ func insertXMRRelease(c *actionCtx, orderID, dest string) error {
 	return err
 }
 
+// xmrLiveOutcomeSQL is SQL that is true while the order with id expression order has a release or a refund that is
+// not superseded: its one outcome (xmr_settlements_one_outcome, whose index answers it).
+func xmrLiveOutcomeSQL(order string) string {
+	return "EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=" + order + " AND s.kind IN ('release','refund') AND s.state<>'superseded')"
+}
+
+// xmrClaimDueSQL is SQL, over an orders alias o, that is true while the vendor of o may claim its escrow (step 1 of
+// the file comment, A-710): the release fits (settlementFits("release"): completed, or resolved with outcome release)
+// and no outcome is live. The order page's claim form and the vendor desk's "Claim your payment" both use it, so they
+// cannot disagree; the claim action itself rechecks settlementFits under the order row lock.
+func xmrClaimDueSQL(o string) string {
+	return "((" + o + ".state='completed' OR " + o + ".state='resolved' AND COALESCE((SELECT d.outcome FROM disputes d WHERE d.order_id=" + o + ".id),'')='release') AND NOT " +
+		xmrLiveOutcomeSQL(o+".id") + ")"
+}
+
+// xmrClaimCue ends the notice of a move that leaves a Monero escrow order's release to be claimed (xmrClaimCueCtx).
+const xmrClaimCue = "Nothing is paid to the vendor until the vendor claims it: under Claim the escrowed coins on the order page, the vendor gives a fresh address from their own Monero wallet."
+
+// xmrClaimCueCtx adds xmrClaimCue to the notices of order's move to `to`, a decision or concession for the vendor,
+// when it is a Monero escrow order with no live outcome (A-710): the vendor has to claim the release. The dispute
+// row is locked first, and no release can be requested before the move (the claim needs the outcome, a shipment a
+// paid order), so the read stays true until the move commits.
+func xmrClaimCueCtx(ctx context.Context, q rowQuerier, orderID, to string) (context.Context, error) {
+	var unclaimed bool
+	err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR') AND NOT "+xmrLiveOutcomeSQL("$1"), orderID).Scan(&unclaimed)
+	if err != nil || !unclaimed {
+		return ctx, err
+	}
+	return withNoticeDetail(ctx, orderID, to, xmrClaimCue), nil
+}
+
 // xmrEscrowClaimAction: the vendor requests the release of a completed Monero escrow order (step 1 of the file comment).
 func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {

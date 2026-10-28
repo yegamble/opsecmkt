@@ -705,11 +705,35 @@ func queryOrders(ctx context.Context, a *App, query string, args ...any) ([]Orde
 
 // loadIncomingOrders shows all current vendor work, newest change first, plus a bounded closed history.
 // Drafts and cancellations without an escrow or a payment (cancelledCustomerWork) are buyer-side abandoned checkout
-// attempts.
-func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+// attempts. Above it, the "Waiting for you" section (loadVendorWaiting) is never capped; with ?payouts=unconfirmed the
+// table lists only the Monero escrow orders that may hold coins (xmrMayHoldSQL), every one of them (A-710).
+func loadIncomingOrders(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if d.User == nil {
 		return nil
 	}
+	if err := loadVendorWaiting(ctx, a, d); err != nil {
+		return err
+	}
+	var err error
+	if d.PayoutFilter = r.URL.Query().Get("payouts") == "unconfirmed"; d.PayoutFilter {
+		if d.IncomingOrders, err = queryOrders(ctx, a, orderQuery+" WHERE p.vendor_id=$1 AND "+xmrMayHoldSQL+" ORDER BY o.updated DESC,o.id DESC", d.User.ID); err != nil {
+			return err
+		}
+	} else if err = loadIncomingHistory(ctx, a, d); err != nil {
+		return err
+	}
+	if err = loadDeskPayouts(ctx, a, d); err != nil {
+		return err
+	}
+	if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1 AND o.state=$2", d.User.ID, statePaid).Scan(&d.NeedsAction); err != nil {
+		return err
+	}
+	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM disputes d JOIN orders o ON o.id=d.order_id
+		JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1 AND d.status='Open'`, d.User.ID).Scan(&d.VendorOpenDisputes)
+}
+
+// loadIncomingHistory fills the desk table: all active work and the newest historyLimit terminal orders.
+func loadIncomingHistory(ctx context.Context, a *App, d *PageData) error {
 	ctxQ := `p.vendor_id=$1 AND (
 		o.state IN ('awaiting_payment','paid','shipped','delivered','disputed') OR
 		o.id IN (SELECT o2.id FROM orders o2 JOIN products p2 ON p2.id=o2.product_id WHERE p2.vendor_id=$1 AND (
@@ -747,11 +771,122 @@ func loadIncomingOrders(ctx context.Context, a *App, _ *http.Request, d *PageDat
 		orders = kept
 	}
 	d.IncomingOrders = orders
-	if err = a.db.QueryRowContext(ctx, "SELECT count(*) FROM orders o JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1 AND o.state=$2", d.User.ID, statePaid).Scan(&d.NeedsAction); err != nil {
+	return nil
+}
+
+// loadVendorWaiting fills the desk's "Waiting for you" section (A-710): open disputes the buyer opened that the vendor
+// has not replied to (Dispute.Responder and the reply on record, as the reply form decides), paid orders to fulfil by
+// their ship-by time, then Monero escrow orders the vendor may claim (xmrClaimDueSQL, the order page's claim form).
+// None of it is capped: it is open work, and an unclaimed order stays listed however much history follows it.
+func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT d.order_id,`+disputeRecordCols+` FROM disputes d JOIN orders o ON o.id=d.order_id
+		JOIN products p ON p.id=o.product_id`+disputeReplyJoin+` WHERE p.vendor_id=$1 AND d.status='Open'`, d.User.ID)
+	if err != nil {
 		return err
 	}
-	return a.db.QueryRowContext(ctx, `SELECT count(*) FROM disputes d JOIN orders o ON o.id=d.order_id
-		JOIN products p ON p.id=o.product_id WHERE p.vendor_id=$1 AND d.status='Open'`, d.User.ID).Scan(&d.VendorOpenDisputes)
+	var replies []string
+	for rows.Next() {
+		var id string
+		var v Dispute
+		if err = rows.Scan(&id, &v.Opener, &v.ReplyRole, &v.Reply, &v.ReplyCreated); err != nil {
+			rows.Close()
+			return err
+		}
+		if v.Responder() == roleVendor && v.Reply == "" {
+			replies = append(replies, id)
+		}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	orders, err := queryOrders(ctx, a, orderQuery+` WHERE p.vendor_id=$1 AND (o.state='paid' OR o.state='disputed' AND o.id=ANY($2) OR
+		`+xmrClaimDueSQL("o")+` AND EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=o.id AND es.coin='XMR'))
+		ORDER BY CASE o.state WHEN 'disputed' THEN 0 WHEN 'paid' THEN 1 ELSE 2 END,(SELECT es.ship_by FROM escrows es WHERE es.order_id=o.id) NULLS LAST,o.updated,o.id`,
+		d.User.ID, replies)
+	if err != nil || len(orders) == 0 {
+		return err
+	}
+	ids := make([]string, 0, len(orders))
+	for _, o := range orders {
+		ids = append(ids, o.ID)
+	}
+	type shipBy struct {
+		at     string
+		passed bool
+	}
+	due := map[string]shipBy{}
+	rows, err = a.db.QueryContext(ctx, `SELECT order_id,to_char(ship_by,'YYYY-MM-DD HH24:MI "UTC"'),ship_by<=now() FROM escrows WHERE order_id=ANY($1) AND ship_by IS NOT NULL`, ids)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		var s shipBy
+		if err = rows.Scan(&id, &s.at, &s.passed); err != nil {
+			rows.Close()
+			return err
+		}
+		due[id] = s
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	for _, o := range orders {
+		w := vendorWaitingFor(o)
+		if o.State == statePaid {
+			w.ShipBy, w.ShipByPassed = due[o.ID].at, due[o.ID].passed
+		}
+		d.VendorWaiting = append(d.VendorWaiting, w)
+	}
+	return nil
+}
+
+// vendorWaitingFor is the "Waiting for you" entry of o, an order loadVendorWaiting selected: what the vendor does next.
+func vendorWaitingFor(o Order) VendorWaiting {
+	switch {
+	case o.State == stateDisputed:
+		return VendorWaiting{Order: o, Action: "Reply to dispute", Anchor: "order-dispute"}
+	case o.State == statePaid && o.Kind == "physical":
+		return VendorWaiting{Order: o, Action: "Mark shipped", Anchor: "xmr-escrow-ship"}
+	case o.State == statePaid:
+		return VendorWaiting{Order: o, Action: "Fulfil this order"}
+	}
+	return VendorWaiting{Order: o, Action: "Claim your payment", Anchor: "xmr-escrow-claim"}
+}
+
+// loadDeskPayouts labels each Monero escrow row of the desk table with its payout state (xmrPayoutLabel, A-710), in
+// one query bounded by the rows listed; xmr_settlements_one_outcome's index answers the latest release.
+func loadDeskPayouts(ctx context.Context, a *App, d *PageData) error {
+	var ids []string
+	for _, o := range d.IncomingOrders {
+		if o.xmrEscrow() {
+			ids = append(ids, o.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,`+disputeOutcomeSQL+`,COALESCE(r.state,''),COALESCE(r.send_error,''),`+xmrClaimDueSQL("o")+`
+		FROM orders o LEFT JOIN LATERAL (SELECT s.state,s.send_error FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded'
+		ORDER BY s.id DESC LIMIT 1) r ON true WHERE o.id=ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	d.DeskPayouts = map[string]string{}
+	for rows.Next() {
+		var id, state, outcome, release, wait string
+		var claimDue bool
+		if err = rows.Scan(&id, &state, &outcome, &release, &wait, &claimDue); err != nil {
+			return err
+		}
+		if label := xmrPayoutLabel(state, outcome, release, wait, claimDue); label != "" {
+			d.DeskPayouts[id] = label
+		}
+	}
+	return rows.Err()
 }
 
 func queryDisputes(ctx context.Context, a *App, query string, args ...any) ([]Dispute, error) {
@@ -972,6 +1107,7 @@ func previewVendorOrders(d *PageData) {
 	o.ID, o.Buyer, o.BuyerID, o.Vendor, o.VendorID = previewIncomingID, "sample_buyer", "sample-buyer", d.User.Handle, d.User.ID
 	o.State, o.Status = statePaid, stateLabel(statePaid)
 	d.IncomingOrders, d.NeedsAction = []Order{o}, 1
+	d.VendorWaiting = []VendorWaiting{vendorWaitingFor(o)} // the paid order waits for the vendor (A-710)
 }
 
 func previewDisputes(d *PageData) {

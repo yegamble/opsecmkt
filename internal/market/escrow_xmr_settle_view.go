@@ -248,6 +248,37 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 	}
 }
 
+// xmrPayoutLabel is the vendor desk's short form of xmrSettlementStatus for a Monero escrow order in state with
+// dispute outcome outcome (A-710): release and wait are the state and send_error of its latest release that is not
+// superseded ("" when none), claimDue is xmrClaimDueSQL. The order page says why in full. "" when no payout is due yet
+// (unpaid, or paid and not yet shipped).
+func xmrPayoutLabel(state, outcome, release, wait string, claimDue bool) string {
+	switch {
+	case claimDue:
+		return "Waiting for your claim"
+	case release == "" && (settlementFits("refund", state, outcome) || state == stateCompleted || state == stateResolved):
+		// A cancelled order, a refund decision, or a hold refund (completed or resolved -> cancelled) supersedes the release.
+		return "None: refund to the buyer"
+	case state == stateDisputed && (release == "" || release == "requested"):
+		return "Waiting for the dispute decision"
+	case release == "" && state == stateDelivered:
+		return "Waiting for buyer or deadline"
+	case release == "":
+		return ""
+	case (release == "requested" || release == "built") && (wait == xmrVendorClosed || restoreHeld(wait)):
+		return "Held"
+	case release == "requested" && !settlementFits("release", state, outcome):
+		return "Waiting for buyer or deadline" // requested at shipment: built once the buyer confirms or the deadline passes
+	case release == "requested" || release == "built":
+		return "Requested"
+	case release == "relayed":
+		return "Sent"
+	case release == "confirmed":
+		return "Confirmed"
+	}
+	return "Not sent – see order" // failed, or spent outside the market (external)
+}
+
 // xmrRelayConfirmedText follows a held settlement's status once an administrator confirmed its relay.
 const xmrRelayConfirmedText = "An administrator checked that this transaction was not already relayed or replaced; the market relays it once on its next pass if the daemon does not have it."
 
