@@ -348,7 +348,9 @@ func TestXMREscrowRegtestWallets(t *testing.T) {
 
 // TestXMREscrowRegtestFunding: a buyer takes a Monero escrow through the real checkout form (no RPC) and the funder pays
 // its price in one transaction. In the pool it is recorded at 0 confirmations; after 9 blocks it is recorded at 9 and
-// nothing counts; after the 10th the digital order completes on funding (content delivered, no payout).
+// nothing counts; after the 10th the digital order is delivered (content delivered, no payout) and its 48-hour dispute
+// window opens (A-709): the vendor's claim is refused. When the window has ended, the watcher's pass completes the
+// order, and the vendor's claim is requested through the real claim form.
 func TestXMREscrowRegtestFunding(t *testing.T) {
 	r := newXMRRegtest(t)
 	r.mustPoll()
@@ -373,16 +375,29 @@ func TestXMREscrowRegtestFunding(t *testing.T) {
 	r.mineTo(tx, 10)
 	heights = r.synced()
 	r.mustPoll()
-	if got := confs(); got != "10 true" || r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 ||
+	if got := confs(); got != "10 true" || r.state(order) != stateDelivered || agInt(r.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 ||
 		agInt(r.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1", order) != 0 {
 		t.Fatalf("at 10 confirmations (%s): %q %s", heights, got, r.state(order))
 	}
-	t.Log("at 10 confirmations: credited, the digital order completed on funding, content delivered, no payout")
+	claim := r.funderAddress()
+	if code, body := r.xmrClaim(order, r.vendorSess, claim, testPassword); code != 409 || !strings.Contains(body, errClaimState.Error()) {
+		t.Fatalf("a claim in the dispute window: %d %s", code, body)
+	}
+	t.Log("at 10 confirmations: credited, the digital order delivered and in its dispute window, content delivered, no payout, no claim")
+	r.forceDeadline(order, "release_at=now()-interval '1 minute'")
+	r.mustPoll()
+	if r.state(order) != stateCompleted || !anyContains(r.events(order), "delivered>completed system "+digitalWindowNote) {
+		t.Fatalf("after the dispute window: %s %q", r.state(order), r.events(order))
+	}
+	if code, body := r.xmrClaim(order, r.vendorSess, claim, testPassword); code != 303 || len(r.xmrSettlements(order)) != 1 {
+		t.Fatalf("the claim after completion: %d %s; settlements %v", code, body, r.xmrSettlements(order))
+	}
+	t.Log("after the dispute window: completed by the watcher's pass, the vendor's claim requested")
 }
 
 // TestXMREscrowRegtestTwoAccountsOneTx: one transaction pays two escrows of the same wallet; after 10 blocks there are
 // two payments rows of that transaction, one per account (idx 2^62 + wallet·2^32 + account), each its own order's, and
-// both orders complete.
+// both orders are funded (delivered, in their dispute windows: A-709).
 func TestXMREscrowRegtestTwoAccountsOneTx(t *testing.T) {
 	r := newXMRRegtest(t)
 	r.mustPoll()
@@ -403,9 +418,9 @@ func TestXMREscrowRegtestTwoAccountsOneTx(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("payments rows of transaction %s (%s):\n got %v\nwant %v", tx, heights, got, want)
 	}
-	if r.state(a) != stateCompleted || r.state(b) != stateCompleted {
+	if r.state(a) != stateDelivered || r.state(b) != stateDelivered {
 		t.Fatalf("orders %s %s (%s; confirmations %v)", r.state(a), r.state(b), heights,
 			agStrings(t, r.testEnv, "SELECT confirmations::text FROM payments WHERE txid=$1", tx))
 	}
-	t.Logf("transaction %s paid accounts %d and %d of wallet %d: two payments rows, orders %s and %s completed", tx, account(a), account(b), wallet, shortID(a), shortID(b))
+	t.Logf("transaction %s paid accounts %d and %d of wallet %d: two payments rows, orders %s and %s funded and delivered", tx, account(a), account(b), wallet, shortID(a), shortID(b))
 }

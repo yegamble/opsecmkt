@@ -58,9 +58,11 @@ var transitions = map[string]map[string][]string{
 var transitionKind = map[[2]string]string{{statePaid, stateShipped}: "physical", {statePaid, stateDelivered}: "digital"}
 
 // escrowOnly restricts a move by one role to escrow orders (Order.Escrow; A-244, ARCH-4): the system completes an
-// escrow order (a digital order on funding, escrow_watch.go; a physical one at its release deadline, escrow_deadline.go),
+// escrow order (a digital Bitcoin order on funding, escrow_transition.go; a digital Monero one at the end of its dispute
+// window, A-709, and a physical one at its release deadline, escrow_deadline.go, escrow_xmr_deadline.go),
 // never a pooled one, whose completion stays the buyer's; and the buyer of a paid physical escrow order cancels it once
-// the vendor has not shipped it in time (P2-R5, escrow_deadline.go). On a pooled order these edges are refused (403).
+// the vendor has not shipped it in time (P2-R5, escrow_deadline.go), or of a paid digital Monero one once the vendor
+// has not delivered it in time (A-709). On a pooled order these edges are refused (403).
 var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}: true, {stateShipped, stateCompleted, roleSystem}: true,
 	{statePaid, stateCancelled, roleBuyer}: true}
 
@@ -70,10 +72,11 @@ var escrowOnly = map[[3]string]bool{{stateDelivered, stateCompleted, roleSystem}
 var buyerCompleteRefused = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
 
 // xmrConfirmOnly is the one exception to buyerCompleteRefused (P3-R7): the buyer of a shipped Monero escrow order, which
-// has no party signatures, confirms receipt with a password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and
-// that action alone marks its move (withConfirmReceipt). Every other escrow order, and a Monero one through the plain
-// Complete form, still meets buyerCompleteRefused.
-var xmrConfirmOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true}
+// has no party signatures, or of a delivered digital one in its dispute window (A-709), confirms receipt with a
+// password step-up (/escrow-xmr/confirm, escrow_xmr_release.go), and that action alone marks its move
+// (withConfirmReceipt). Every other escrow order, and a Monero one through the plain Complete form, still meets
+// buyerCompleteRefused.
+var xmrConfirmOnly = map[[3]string]bool{{stateShipped, stateCompleted, roleBuyer}: true, {stateDelivered, stateCompleted, roleBuyer}: true}
 
 type confirmReceiptCtx struct{}
 

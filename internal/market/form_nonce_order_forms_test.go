@@ -94,6 +94,7 @@ func TestFormNonceDraftDisputeReplyAndReviewFormsReplay(t *testing.T) {
 	address := w.x.mustCheckout(completed)
 	w.x.fake.payAddress(address, hex64("nonce-completed-"+completed), xmrListingPrice, 10)
 	w.x.mustPoll()
+	w.x.endWindows() // A-709: completed when its dispute window ends
 	beforeReviewPage := submissionCount(t, e)
 	completedPage := e.do("GET", orderPage(completed), buyer, nil)
 	e.check(completedPage, 200)

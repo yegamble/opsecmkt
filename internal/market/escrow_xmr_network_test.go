@@ -104,6 +104,7 @@ func TestXMREscrowStagenetTags(t *testing.T) {
 	}
 	x.fake.payAddress(addr, hex64("tags deposit"), xmrListingPrice, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("funded order on stagenet: %s", x.state(order))
 	}
@@ -376,7 +377,7 @@ func TestXMREscrowSkipsWhileNotSynced(t *testing.T) {
 			if s := x.state(unpaid); s != stateCancelled {
 				t.Fatalf("the expired order after a synced pass: %s", s)
 			}
-			if s := x.state(paid); s != stateCompleted {
+			if s := x.state(paid); s != stateDelivered { // funded and delivered: its dispute window opens (A-709)
 				t.Fatalf("the paid order after a synced pass: %s", s)
 			}
 			if s := x.settlementOf(done, "release"); s.State != "relayed" {
@@ -451,7 +452,7 @@ func TestXMREscrowSkipsWhileTipUnreadable(t *testing.T) {
 	}
 	x.fake.edit(func(f *fakeXMREscrow) { f.tipErr = false })
 	x.mustPoll()
-	if x.state(unpaid) != stateCancelled || x.state(paid) != stateCompleted {
+	if x.state(unpaid) != stateCancelled || x.state(paid) != stateDelivered {
 		t.Fatalf("after a pass that read the tip: %s %s", x.state(unpaid), x.state(paid))
 	}
 }

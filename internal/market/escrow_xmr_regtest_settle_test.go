@@ -185,15 +185,20 @@ func (r *xmrRegtest) checkoutReal() (order, addr string) {
 	return order, agStrings(r.t, r.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
 }
 
-// completedReal is a digital order paid its price and mined to 10 confirmations: completed on funding.
+// completedReal is a digital order paid its price and mined to 10 confirmations: delivered on funding, then completed
+// by the watcher's deadline step when its dispute window ends (endWindows, A-709).
 func (r *xmrRegtest) completedReal() (order, addr string) {
 	r.t.Helper()
 	order, addr = r.checkoutReal()
 	r.pay(map[string]int64{addr: xmrListingPrice})
 	r.mine(10 + xmrMineMargin)
 	r.mustPoll()
-	if r.state(order) != stateCompleted {
+	if r.state(order) != stateDelivered {
 		r.t.Fatalf("funded order: %s (deposits %v)", r.state(order), r.depositConfs(order))
+	}
+	r.endWindows()
+	if r.state(order) != stateCompleted {
+		r.t.Fatalf("after its dispute window: %s", r.state(order))
 	}
 	return order, addr
 }
@@ -203,9 +208,11 @@ func (r *xmrRegtest) depositConfs(order string) []string {
 	return agStrings(r.t, r.testEnv, "SELECT left(txid,12)||':'||confirmations||':'||escrow_left_out FROM payments WHERE order_id=$1 ORDER BY created,id", order)
 }
 
-// releaseReal requests order's release to a fresh funder subaddress (as the vendor's claim does, slice X-e).
+// releaseReal requests order's release to a fresh funder subaddress (as the vendor's claim does, slice X-e). A claim
+// follows completion, so a digital order still in its dispute window is completed first (endWindows, A-709).
 func (r *xmrRegtest) releaseReal(order string) int64 {
 	r.t.Helper()
+	r.endWindows()
 	var id int64
 	if err := r.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2) RETURNING id", order, r.funderAddress()).Scan(&id); err != nil {
 		r.t.Fatal(err)
@@ -326,6 +333,7 @@ func TestXMREscrowRegtestTopUp(t *testing.T) {
 	topUp := r.pay(map[string]int64{addr: 20000000000})
 	r.mine(4) // the price has at least 10 confirmations, the top-up at most 4
 	r.mustPoll()
+	r.endWindows()
 	if r.state(order) != stateCompleted {
 		t.Fatalf("funded: %s (deposits %v)", r.state(order), r.depositConfs(order))
 	}
@@ -387,7 +395,7 @@ func TestXMREscrowRegtestReorg(t *testing.T) {
 
 // fundedByTwoReal is a digital order funded with its price in two transactions mined in separate blocks, the first
 // thr+6 confirmations deep when the second is paid and the second mined to exactly thr+xmrMineMargin confirmations: both
-// credited, the order completed. It returns the order and the two transactions.
+// credited, the order completed when its dispute window ends (endWindows). It returns the order and the two transactions.
 func (r *xmrRegtest) fundedByTwoReal() (order, deep, shallow string) {
 	r.t.Helper()
 	thr := r.A.escrowXMR.confirmations
@@ -397,6 +405,7 @@ func (r *xmrRegtest) fundedByTwoReal() (order, deep, shallow string) {
 	shallow = r.pay(map[string]int64{addr: xmrListingPrice - xmrListingPrice/2})
 	r.mineTo(shallow, thr+xmrMineMargin)
 	r.mustPoll()
+	r.endWindows()
 	if r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != 2 {
 		r.t.Fatalf("funded by two transactions: %s (deposits %v)", r.state(order), r.depositConfs(order))
 	}
@@ -1075,6 +1084,7 @@ func (r *xmrRegtest) staleRingReal(p *xmrRPCProxy, daemonC string) (order string
 	r.mineAllTo(deposits, 10+xmrMineMargin)
 	r.synced()
 	r.mustPoll()
+	r.endWindows()
 	if r.state(order) != stateCompleted || agInt(r.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != xmrStaleRingDeposits {
 		t.Fatalf("funded by %d deposits: %s (deposits %v)", xmrStaleRingDeposits, r.state(order), r.depositConfs(order))
 	}

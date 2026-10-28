@@ -194,7 +194,7 @@ func TestReputationLabelTable(t *testing.T) {
 	if !slices.Equal(got, codes) {
 		t.Fatalf("rule rows %v, want %v", got, codes)
 	}
-	for i, want := range []string{"30 completed (buyer confirmed 20, release deadline 6, digital on funding 4) of 30 funded; 0 held releases refunded to the buyer after a ban", "20 distinct buyers of completed orders (20 of funded orders)",
+	for i, want := range []string{"30 completed (buyer confirmed 20, release deadline 6, digital dispute window ended 4) of 30 funded; 0 held releases refunded to the buyer after a ban", "20 distinct buyers of completed orders (20 of funded orders)",
 		"20 distinct buyers for 30 completed and 2 non-delivery refunds, disputes lost or held releases refunded: 62% of 32", "2 non-delivery refunds (buyer no-ship cancels 2, vendor cancellations of paid orders 0) against 30 completed: 6% of 32",
 		"0 disputes lost (decided refund 0, vendor conceded 0; won: decided release 0, buyer conceded 0) against 30 completed: 0% of 30",
 		"0 of 20 counted reviews at 2 stars or fewer: 0%", "1 listings now (taken down 1, rejected 0)"} {
@@ -482,7 +482,7 @@ func TestReputationAdminOnly(t *testing.T) {
 	_, moderator := e.user("rep_only_mod", "moderator")
 	page := e.body("GET", "/admin/users?handle=rep_only_vendor", admin, nil, 200)
 	mustContain(t, page, `id="user-reputation"`, "over retained history", "nothing is stored", repHigh, repStrongRecord, repFewCompleted,
-		"26 completed (buyer confirmed 18, release deadline 4, digital on funding 4) of 26 funded", "below 5%", "AT_RISK at 3 or more and 20% or more")
+		"26 completed (buyer confirmed 18, release deadline 4, digital dispute window ended 4) of 26 funded", "below 5%", "AT_RISK at 3 or more and 20% or more")
 	// A buyer's account page has no reputation panel.
 	mustNotContain(t, e.body("GET", "/admin/users?handle=rep_only_buyer", admin, nil, 200), `id="user-reputation"`)
 	for who, s := range map[string]string{"vendor": f.vendorSess, "buyer": buyer, "moderator": moderator, "guest": randomToken()} {

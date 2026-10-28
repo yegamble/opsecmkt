@@ -23,10 +23,11 @@ import (
 //     allows it (escrow_xmr_settle.go), the rule escrow_market_may_sign (migration 081) enforces when 084 stores its
 //     transaction. A release requested at shipment therefore waits until the order is completed or decided for the
 //     vendor; a decision for the buyer supersedes it (escrowSettleTerminal).
-//  4. Confirm receipt (/escrow-xmr/confirm): the buyer of a shipped order gives their password; under the order row lock,
-//     rechecked shipped with no dispute, the order moves shipped -> completed by the buyer through xmrConfirmOnly, the
-//     one exception to buyerCompleteRefused. A completed order cannot be disputed. Otherwise the release deadline completes
-//     it (escrow_xmr_deadline.go).
+//  4. Confirm receipt (/escrow-xmr/confirm): the buyer of a shipped order, or of a delivered digital one in its dispute
+//     window (A-709), gives their password; under the order row lock, rechecked shipped or delivered with no dispute, the
+//     order moves to completed by the buyer through xmrConfirmOnly, the one exception to buyerCompleteRefused. A completed
+//     order cannot be disputed. Otherwise the release deadline or the dispute window's end completes it
+//     (escrow_xmr_deadline.go); the vendor of a digital order then claims (step 1).
 //
 // No step makes an RPC: addresses are parsed offline (checkXMRFormAddress).
 
@@ -50,12 +51,13 @@ var (
 var (
 	errXMRClaimRefund    = fail(409, "That is the buyer's refund address for this order, not an address of your own wallet. Give a fresh address from your own wallet. Nothing was changed.")
 	errConfirmOnlyBuyer  = fail(403, "Only the buyer confirms receipt of this order.")
-	errConfirmNotShipped = fail(409, "Only a shipped order's receipt can be confirmed. Reload the page. Nothing was changed.")
+	errConfirmNotShipped = fail(409, "Only a shipped or delivered order's receipt can be confirmed. Reload the page. Nothing was changed.")
 	errConfirmDisputed   = fail(409, "This order is disputed: an administrator decides it, and the decision settles the escrow, so receipt cannot be confirmed now. Nothing was changed.")
 	errXMRReleaseFinal   = fail(409, "The release to the vendor already has its transaction, built by the market from this order's escrow account, so the escrow pays the vendor and the dispute cannot be decided for the buyer. Decide it for the vendor. Nothing was changed.")
 	xmrShippedNote       = "Release requested at shipment (Monero escrow): the vendor gave the address the release pays. Nothing is built or sent before the order is completed: when the buyer confirms receipt, or at the release deadline if the buyer has neither confirmed receipt nor opened a dispute, the market builds the release from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it."
 	xmrClaimNote         = "Vendor requested the escrow claim (Monero escrow): the market builds the release from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it. Nothing is sent yet."
 	xmrConfirmedNote     = "Receipt confirmed by the buyer (Monero escrow): the order is completed, and the market builds the release of the escrowed coins to the address the vendor gave when marking it shipped, and sends it. This cannot be undone."
+	xmrConfirmedDigital  = "Receipt confirmed by the buyer (Monero escrow): the order is completed, and the vendor claims the escrowed coins from the order page. This cannot be undone."
 )
 
 // xmrClaimForm reads a vendor's Monero claim address from the form, parsed offline (checkXMRFormAddress).
@@ -100,6 +102,9 @@ func insertXMRRelease(c *actionCtx, orderID, dest string) error {
 	}
 	return err
 }
+
+// xmrClaimCue ends the notice of a move that leaves a Monero escrow order's release to be claimed (xmrClaimCueCtx).
+const xmrClaimCue = "Nothing is paid to the vendor until the vendor claims it: under Claim the escrowed coins on the order page, the vendor gives a fresh address from their own Monero wallet."
 
 // xmrEscrowClaimAction: the vendor requests the release of a completed Monero escrow order (step 1 of the file comment).
 func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
@@ -231,7 +236,8 @@ func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, e
 	return p, nil
 }
 
-// xmrConfirmReceiptAction: the buyer of a shipped Monero escrow order confirms receipt (step 4 of the file comment).
+// xmrConfirmReceiptAction: the buyer of a shipped, or delivered digital, Monero escrow order confirms receipt (step 4 of
+// the file comment).
 func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
@@ -245,18 +251,23 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, errConfirmOnlyBuyer
 		}
 		// Checked in a statement after the lock, so a dispute committed while this waited is seen (releaseIfDue's rule).
-		var shipped, disputed bool
-		if err = c.Tx.QueryRowContext(ctx, "SELECT o.state='shipped',EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) FROM orders o WHERE o.id=$1", o.ID).Scan(&shipped, &disputed); err != nil {
+		var state string
+		var disputed bool
+		if err = c.Tx.QueryRowContext(ctx, "SELECT o.state,EXISTS(SELECT 1 FROM disputes d WHERE d.order_id=o.id) FROM orders o WHERE o.id=$1", o.ID).Scan(&state, &disputed); err != nil {
 			return actionResult{}, err
 		}
 		switch {
 		case disputed:
 			return actionResult{}, errConfirmDisputed
-		case !shipped:
+		case state != stateShipped && state != stateDelivered:
 			return actionResult{}, errConfirmNotShipped
 		}
 		notice := "escrow-xmr-confirmed"
 		detail, note := "The buyer confirmed receipt (Monero escrow): the market builds the release of the escrowed coins to the address you gave when marking the order shipped, and sends it.", xmrConfirmedNote
+		if state == stateDelivered { // A-709: a digital order has no release yet; its vendor claims
+			notice = "escrow-xmr-received"
+			detail, note = "The buyer confirmed receipt (Monero escrow): claim the escrowed coins on the order page with a fresh address.", xmrConfirmedDigital
+		}
 		// A-652d: while the vendor is banned the release is held (xmrReleaseHeld), so the notes say so. A ban committed
 		// after this read leaves the usual wording; the order page then shows the hold.
 		if banned, err := orderVendorBanned(ctx, c.Tx, o.ID); err != nil {
@@ -272,7 +283,7 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 			note = "Receipt confirmed by the buyer (Monero escrow): the order is completed. " + xmrHeldNote + " " + holdRefundLater(days)
 		}
 		ctx = withNoticeDetail(withConfirmReceipt(ctx), o.ID, stateCompleted, detail)
-		if _, err = c.A.transition(ctx, c.Tx, o.ID, stateShipped, stateCompleted, c.User, note); err != nil {
+		if _, err = c.A.transition(ctx, c.Tx, o.ID, state, stateCompleted, c.User, note); err != nil {
 			return actionResult{}, err
 		}
 		return actionResult{Redirect: orderPage(o.ID), Notice: notice,

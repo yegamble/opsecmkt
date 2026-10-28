@@ -12,11 +12,12 @@
 #     retained, having no order).
 #   Funding: a buyer takes a Monero escrow through the real checkout form; the funder pays its price; in the pool it is
 #     recorded at 0 confirmations; at 9 confirmations (as the daemon counts them) nothing counts; at 10 the digital
-#     order completes on funding (content delivered, no payout). Each leg waits until the escrow wallet has refreshed to
+#     order is delivered (content delivered, no payout) into its 48-hour dispute window, in which the vendor's claim is
+#     refused; once the window has ended the watcher's pass completes it and the claim is requested (A-709). Each leg waits until the escrow wallet has refreshed to
 #     the daemon's height before a pass, and mines in batches of 20 within a two-minute RPC bound, retrying a failed
 #     generateblocks up to 5 times from the height the daemon reached.
 #   TwoAccountsOneTx: one transaction pays two escrows; at 10 confirmations there are two payments rows of it, one per
-#     escrow account, each its own order's, and both orders complete.
+#     escrow account, each its own order's, and both orders are funded (delivered, in their dispute windows).
 #
 # Slice X-e leg (internal/market/escrow_xmr_regtest_physical_test.go), the App's escrow wallet-rpc behind a proxy that
 # counts each RPC method:

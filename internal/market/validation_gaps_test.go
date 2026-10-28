@@ -170,9 +170,10 @@ func TestDeliverTwiceKeepsFirstContent(t *testing.T) {
 	w.expect("/orders/deliver", w.vendor, form("order_id", order, "content", "second licence key"), 409, "")
 	content := commerceDelivery(w.e, order)
 	deliveries := w.count("SELECT count(*) FROM deliveries WHERE order_id=$1", order)
-	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='delivered'", order)
+	events := w.count("SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state='delivered' AND from_state<>'delivered'", order)
 	state := w.state(order)
-	if content != "first licence key" || deliveries != 1 || events != 1 || state != stateCompleted {
+	// A-709: the delivery leaves the escrow order delivered, in its dispute window.
+	if content != "first licence key" || deliveries != 1 || events != 1 || state != stateDelivered {
 		t.Fatalf("second delivery changed data: content=%q deliveries=%d delivered events=%d state=%s", content, deliveries, events, state)
 	}
 }

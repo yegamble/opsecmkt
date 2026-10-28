@@ -55,14 +55,15 @@ func (x *xmrEscrowEnv) outputsOf(id int64) []string {
 	return agStrings(x.t, x.testEnv, "SELECT role||':'||address||':'||amount FROM xmr_settlement_outputs WHERE settlement_id=$1 ORDER BY n", id)
 }
 
-// completed is a digital order funded with the price in one deposit at 10 confirmations, completed on funding, and its
-// escrow address and deposit transaction.
+// completed is a digital order funded with the price in one deposit at 10 confirmations, delivered on funding and
+// completed at the end of its dispute window (A-709, endWindows), and its escrow address and deposit transaction.
 func (x *xmrEscrowEnv) completed() (order, addr, txid string) {
 	x.t.Helper()
 	order, addr = x.freshCheckout(x.digital(x.vendor))
 	txid = hex64("deposit " + order)
 	x.fake.payAddress(addr, txid, xmrListingPrice, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		x.t.Fatalf("funded order: %s", x.state(order))
 	}
@@ -70,9 +71,11 @@ func (x *xmrEscrowEnv) completed() (order, addr, txid string) {
 }
 
 // release requests order's release to a fresh vendor claim address, as the vendor's claim does (slice X-e), and
-// returns the settlement and the address.
+// returns the settlement and the address. A claim follows completion, so a digital order still in its dispute window
+// is completed first (endWindows, A-709).
 func (x *xmrEscrowEnv) release(order string) (int64, string) {
 	x.t.Helper()
+	x.endWindows()
 	claim := testXMRAddr("claim "+order, true)
 	var id int64
 	if err := x.DB.QueryRow("INSERT INTO xmr_settlements(order_id,kind,destination) VALUES($1,'release',$2) RETURNING id", order, claim).Scan(&id); err != nil {
@@ -528,6 +531,7 @@ func TestXMREscrowFeeAndReturnBuilt(t *testing.T) {
 			order, addr := x.freshCheckout(x.digital(x.vendor))
 			x.fake.payAddress(addr, hex64("deposit "+order), xmrListingPrice+excess, 10)
 			x.mustPoll()
+			x.endWindows()
 			if x.state(order) != stateCompleted {
 				t.Fatalf("funded order: %s", x.state(order))
 			}

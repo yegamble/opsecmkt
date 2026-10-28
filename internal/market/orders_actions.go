@@ -308,6 +308,9 @@ func deliverAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, errForbidden
 	}
 	if o.State != statePaid || o.Kind != "digital" {
+		if o.Escrow && o.Kind == "digital" {
+			return actionResult{}, deliverConflict(c, o.ID) // A-709: the buyer's cancel past the delivery deadline came first
+		}
 		return actionResult{}, errConflict
 	}
 	if err = insertDelivery(c.Ctx(), c.Tx, &o, content); err != nil {

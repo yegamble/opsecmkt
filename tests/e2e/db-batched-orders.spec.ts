@@ -103,7 +103,7 @@ test('published empty stock is optional in discovery and drafts record a bounded
 
 // The paid Monero escrow is a database fixture; no wallet or chain is connected.
 // Fulfillment itself uses the vendor's real single-submission form, and digital
-// escrow delivery completes the order under the existing settlement policy.
+// escrow delivery leaves the order delivered for its 48-hour dispute window (A-709).
 test('a vendor delivers all manual digital units once on a scrolling order page', async ({ browser, baseURL }) => {
   test.setTimeout(90_000);
   const vendorHandle = uniqueHandle('manual_vendor');
@@ -128,7 +128,7 @@ test('a vendor delivers all manual digital units once on a scrolling order page'
     await submitAndLoad(vendor, form.getByRole('button', { name: 'Deliver digital content', exact: true }));
     await expect(vendor.locator('form[action="/orders/deliver"]')).toHaveCount(0);
     expect(sql(`SELECT count(*) FROM deliveries WHERE order_id='${order}'`)).toBe('1');
-    expect(sql(`SELECT state FROM orders WHERE id='${order}'`)).toBe('completed');
+    expect(sql(`SELECT state FROM orders WHERE id='${order}'`)).toBe('delivered');
     await buyer.goto(`/order?id=${order}`);
     const delivered = buyer.getByRole('textbox', { name: 'Digital delivery', exact: true });
     await expect(delivered).toHaveCount(1);

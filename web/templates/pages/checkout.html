@@ -9,7 +9,7 @@
 <p>No funds are collected at this step.</p>
 </div>
 </div>{{with .Product}}
-{{if eq .Kind "digital"}}<p class="help">{{if eq .DigitalDeliveryMode "manual"}}The vendor delivers all purchased digital items together on the order status page after payment.{{else}}Digital items are delivered together on the order status page after payment confirmation.{{end}}</p>{{end}}<div class="detail-layout">
+{{if eq .Kind "digital"}}<p class="help">{{if eq .DigitalDeliveryMode "manual"}}The vendor delivers all purchased digital items together on the order status page after payment.{{else}}Digital items are delivered together on the order status page after payment confirmation.{{end}}{{if $.XMREscrowOn}} With Monero escrow, {{if eq .DigitalDeliveryMode "manual"}}the vendor must deliver within 72 hours of payment, or you may cancel the order for a refund to your refund address; {{end}}after delivery you have 48 hours to check the content and open a dispute, or to confirm receipt, before the order completes and the vendor can claim the coins.{{end}}</p>{{end}}<div class="detail-layout">
 <section class="panel">
 <h2>{{.Title}}</h2>
 <p>{{.Description}}</p>

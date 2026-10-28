@@ -317,7 +317,7 @@ func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
 
 	// The vendor delivers one by hand and requests an escrow refund for the other.
 	e.check(e.do("POST", "/orders/deliver", x.vendorSess, form("order_id", deliver, "content", "Delivered by hand.")), 303)
-	if x.state(deliver) != stateCompleted || commerceDelivery(e, deliver) != "Delivered by hand." {
+	if x.state(deliver) != stateDelivered || commerceDelivery(e, deliver) != "Delivered by hand." {
 		t.Fatal("manual delivery after a takedown failed")
 	}
 	e.check(e.do("POST", "/orders/cancel", x.vendorSess, payoutConfirmed(form("order_id", cancel, "from", statePaid), xmrListingPrice)), 303)
@@ -332,7 +332,7 @@ func TestAdminTakedownStopsAutoDelivery(t *testing.T) {
 	againAddr := x.mustCheckout(again)
 	x.fake.payAddress(againAddr, hex64("a163-again"), xmrListingPrice, 10)
 	x.mustPoll()
-	if x.state(again) != stateCompleted || commerceDelivery(e, again) != secret {
+	if x.state(again) != stateDelivered || commerceDelivery(e, again) != secret {
 		t.Fatalf("restored listing not delivered automatically: %s", x.state(again))
 	}
 }

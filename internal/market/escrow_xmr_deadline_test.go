@@ -302,7 +302,8 @@ func TestXMREscrowOrdersBannerUnder72h(t *testing.T) {
 // P2-R5 for Monero: a paid physical Monero escrow order gets ship_by = paid time + its dispatch window + 48 h. Before it
 // the buyer's cancel is refused with the time stated, and the page says when it opens; from it the buyer cancels, and
 // the cancel requests the refund to the refund address (escrowSettleTerminal). A paid digital order offers no buyer
-// cancel. The panel states the window before and after it opens.
+// cancel before its delivery deadline (A-709, TestXMREscrowDigitalManualDeliveryWindow). The panel states the window
+// before and after it opens.
 func TestXMREscrowNoShipCancel(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -345,7 +346,7 @@ func TestXMREscrowNoShipCancel(t *testing.T) {
 	if got := x.xmrSettlements(order); x.state(order) != stateCancelled || len(got) != 1 || got[0] != "refund requested "+testXMRAddr("refund "+order, true) {
 		t.Fatalf("after the cancel: order %s, settlements %v", x.state(order), got)
 	}
-	// A digital order left paid: no ship_by, no buyer cancel.
+	// A digital order left paid: no buyer cancel before its delivery deadline, 72 hours from payment (A-709).
 	digital, digitalSess := x.undeliveredXMR()
 	if code, _ := x.xmrBuyerCancel(digital, digitalSess); code != 409 {
 		t.Fatalf("a buyer cancel of a paid digital Monero escrow order: %d", code)

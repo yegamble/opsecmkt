@@ -16,7 +16,7 @@ import (
 // TestXMREscrowRegtestFundingReorg is the real-chain leg).
 
 // fundedTwice is a digital order funded with its price in two deposits, the first deeper than the second, both at the
-// confirmation threshold or above (both credited, completed on funding), with the vendor's claim requested through the
+// confirmation threshold or above (both credited; delivered on funding and completed when its dispute window ends), with the vendor's claim requested through the
 // claim form: the order, the two deposits and the release.
 func (x *xmrEscrowEnv) fundedTwice() (order, first, second string, release int64) {
 	x.t.Helper()
@@ -26,6 +26,7 @@ func (x *xmrEscrowEnv) fundedTwice() (order, first, second string, release int64
 	x.fake.payAddress(addr, first, xmrListingPrice/2, thr+10)
 	x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, thr+2)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != 2 {
 		x.t.Fatalf("funded in two deposits: %s, deposits %v", x.state(order), x.creditedRows(order))
 	}

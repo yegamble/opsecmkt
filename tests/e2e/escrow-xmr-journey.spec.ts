@@ -124,13 +124,18 @@ async function checkout(buyer: Page, request: APIRequestContext) {
   expect(escrow.startsWith('8')).toBeTruthy(); // an account's address 0 is a subaddress
   return { escrow, refund, url: buyer.url() };
 }
-// A funded escrow order of the listing: paid (physical) or completed (digital).
+// A funded escrow order of the listing: paid (physical), or completed (digital: delivered on funding, then completed by
+// the watcher once its 48-hour dispute window, moved into the past here, has ended; A-709).
 async function funded(buyer: Page, request: APIRequestContext, title: string) {
   await draft(buyer, title);
   const order = await checkout(buyer, request);
   await deposit(request, order.escrow, price);
   await mine(request, 10);
-  await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText(title === digitalTitle ? 'Completed' : 'Paid', { timeout: 500 }); });
+  await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText(title === digitalTitle ? 'Delivered' : 'Paid', { timeout: 500 }); });
+  if (title === digitalTitle) {
+    moveClock(order.url, "release_at=now()-interval '1 minute'");
+    await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
+  }
   return order;
 }
 // The vendor marks a paid physical order shipped with a fresh claim address and the password.
@@ -240,7 +245,8 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await expect(figure(buyer, 'Escrow status')).toContainText('Waiting for a deposit');
   await shot(buyer, info, '02-awaiting-payment');
 
-  // Funding: in the pool, at 9 confirmations it still waits; at 10 the digital order completes on funding.
+  // Funding: in the pool, at 9 confirmations it still waits; at 10 the digital order is delivered and its 48-hour
+  // dispute window opens (A-709).
   const dep = (await deposit(request, first.escrow, price)).txid;
   await reloadUntil(buyer, async () => { await expect(figure(buyer, 'Escrow status')).toContainText('Deposit seen. Waiting for 10 confirmations.', { timeout: 500 }); });
   await expect(buyer.locator('main')).toContainText('The full price has been seen.');
@@ -252,7 +258,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await expect(figure(buyer, 'Escrow status')).toContainText('Deposit seen. Waiting for 10 confirmations.');
   await shot(buyer, info, '03-nine-confirmations');
   await mine(request, 1);
-  await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
+  await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Delivered', { timeout: 500 }); });
   const delivery = buyer.getByRole('textbox', { name: 'Digital delivery', exact: true });
   await expect(delivery).toHaveValue(/^-----BEGIN PGP MESSAGE-----[\s\S]+-----END PGP MESSAGE-----\s*$/);
   await expect(buyer.locator('main')).toContainText("Encrypted to the buyer's PGP public key.");
@@ -261,9 +267,24 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
     AND d.content LIKE '-----BEGIN PGP MESSAGE-----%' AND strpos(d.content,'LICENCE-XMR-ESCROW-0001')=0
     FROM deliveries d JOIN orders o ON o.id=d.order_id JOIN users u ON u.id=o.buyer_id
     WHERE d.order_id='${orderID(first.url)}'`)).toBe('t');
-  await expect(figure(buyer, 'Escrow status')).toContainText('Funded and completed');
+  await expect(figure(buyer, 'Escrow status')).toContainText('Funded and delivered');
   await expect(row.locator('td').nth(3)).toHaveText('Confirmed');
-  await shot(buyer, info, '04-completed-on-funding');
+  // The dispute window: the buyer may dispute or confirm receipt early; the vendor has no claim before completion.
+  await expect(buyer.getByRole('heading', { name: 'Dispute window' })).toBeVisible();
+  await expect(buyer.locator('main')).toContainText('Check the delivered content now.');
+  await expect(buyer.getByRole('heading', { name: 'Confirm receipt' })).toBeVisible();
+  await expect(buyer.locator('summary', { hasText: 'Open a dispute' })).toHaveCount(1);
+  await shot(buyer, info, '04-delivered-dispute-window');
+  await vendor.goto(first.url);
+  await expect(vendor.getByRole('heading', { name: 'Claim the escrowed coins' })).toHaveCount(0);
+  await expect(vendor.locator('main')).toContainText('no claim is possible before then');
+  // Its end: the watcher completes the order, and the dispute form is gone.
+  moveClock(first.url, "release_at=now()-interval '1 minute'");
+  await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
+  await expect(figure(buyer, 'Escrow status')).toContainText('Funded and completed');
+  await expect(buyer.locator('.order-timeline')).toContainText('dispute window ended');
+  await expect(buyer.locator('summary', { hasText: 'Open a dispute' })).toHaveCount(0);
+  await shot(buyer, info, '04b-completed-after-dispute-window');
 
   // The vendor's claim: a fresh address and the password step-up; a wrong password is refused and changes nothing.
   await vendor.goto(first.url);

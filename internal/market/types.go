@@ -802,19 +802,23 @@ type EscrowCosignerView struct{ Who, Key string }
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
 // VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d), and
-// then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f).
+// then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f). Digital: the
+// order is a delivered digital Monero escrow order and At ends its dispute window (A-709). closed: it has passed and no
+// restore recheck is pending, so a dispute is refused (lateDispute) and not offered.
 type EscrowDeadlineView struct {
-	At, Left                     string
-	Due, Rechecked, VendorClosed bool
-	HoldRefundDays               int
+	At, Left                              string
+	Due, Rechecked, VendorClosed, Digital bool
+	HoldRefundDays                        int
+	closed                                bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
 // (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer; XMR for a
-// Monero escrow order (escrow_xmr_deadline.go).
+// Monero escrow order (escrow_xmr_deadline.go); Digital for a delivered digital one, whose At ends its dispute window
+// (A-709).
 type DeadlineBanner struct {
 	OrderID, Short, At, Left string
-	Buyer, XMR               bool
+	Buyer, XMR, Digital      bool
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its

@@ -40,6 +40,7 @@ func TestXMRSettleWaitsCountedEpisode(t *testing.T) {
 	x.fake.payAddress(addr, funded, xmrListingPrice, 10)
 	x.fake.payAddress(addr, pool, xmrListingPrice/4, 0)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("funded order: %s", x.state(order))
 	}
