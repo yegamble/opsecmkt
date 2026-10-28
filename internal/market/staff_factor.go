@@ -42,13 +42,11 @@ func endPendingSignInsBeforeFirstFactor(c *actionCtx) error {
 
 // endOtherSessionsForFirstFactor runs, under the account lock, when a change turns on the account's first second
 // factor (SEC706-3): every other session of the account, including one a phisher started with the password alone,
-// ends, and so do pending sign-ins, as on a password change. This browser's session stays: a confirmed form receipt
-// cannot replay a rotated cookie.
+// ends, as on a password change; endPendingSignInsBeforeFirstFactor ended the pending sign-ins before the lock (a
+// password-only sign-in racing this one rechecks the factors under the account lock and is refused). This
+// browser's session stays: a confirmed form receipt cannot replay a rotated cookie.
 func endOtherSessionsForFirstFactor(c *actionCtx) error {
 	ctx, tx, uid := c.Ctx(), c.Tx, c.User.ID
-	if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", uid); err != nil {
-		return err
-	}
 	ended, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2", uid, digest(c.Token))
 	if err != nil {
 		return err
