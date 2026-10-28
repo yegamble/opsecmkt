@@ -76,11 +76,33 @@ func (e *testEnv) pendingSignIn(handle string) (string, *http.Cookie) {
 	return anon, &http.Cookie{Name: "pending", Value: pending}
 }
 
+// A-703: the warning is in /register's password help, before the button, and on /login: no one, including the
+// market staff, can reset a lost password.
 func TestRegistrationExplainsThereIsNoPasswordReset(t *testing.T) {
 	e := newTestApp(t)
 	e.user("registration_notice", "buyer") // registration is available only after first-run setup
+	const noReset = "There is no password reset. No one, including the market staff, can reset a lost password"
 	page := e.body("GET", "/register", randomToken(), nil, 200)
-	mustContain(t, page, "There is no password reset.")
+	beforeButton, _, ok := strings.Cut(page, `<button class="primary" type="submit">`)
+	if !ok {
+		t.Fatal("/register without its submit button")
+	}
+	mustContain(t, beforeButton, noReset+": if you lose this one, you cannot sign in to this account.")
+	login := e.body("GET", "/login", randomToken(), nil, 200)
+	mustContain(t, login, noReset+"; only the operator on the server can, and only for an administrator account.", `aria-describedby="signin-password-help"`)
+}
+
+// A-703: under the strict policy (PGP decryption at every sign-in) /register says the new account must decrypt with
+// this key's private key right after it is created and at every sign-in; with browse-only sign-in allowed it does not.
+func TestRegistrationExplainsStrictPGPSignIn(t *testing.T) {
+	e := newTestApp(t)
+	e.user("registration_strict", "buyer")
+	const strict = "This market requires PGP decryption at every sign-in: right after the account is created, and at every sign-in after that, you decrypt a message encrypted to this key with its private key."
+	mustNotContain(t, e.body("GET", "/register", randomToken(), nil, 200), strict)
+	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+	page := e.body("GET", "/register", randomToken(), nil, 200)
+	beforeButton, _, _ := strings.Cut(page, `<button class="primary" type="submit">`)
+	mustContain(t, beforeButton, strict)
 }
 
 func TestTOTPEnrollmentChallengeAndRecovery(t *testing.T) {

@@ -13,7 +13,9 @@ import (
 // free text) is the path behind every "contact the market staff". It is shown as text, never as a link, on /canary,
 // in the suspended sign-in refusal, as the lost-factors line on /challenge, under a notification that asks its
 // reader to contact the staff (the payout-address change notice among them), as "Can't read the image?" help beside
-// the CAPTCHA on /login and /register (with, A-517, what to do without the image), in the "Selling needs an
+// the CAPTCHA on /login and /register (with, A-517, what to do without the image), otherwise (A-703) as "Locked out
+// or reporting a stolen account?" on /login and the closed /register (a members-only /canary redirects a signed-out
+// reader to /login, so this is the place they can always reach), in the "Selling needs an
 // administrator to give your account the vendor role" line on /register, in the expired-, unreadable- and (strict
 // policy) missing-key sign-in refusals (pgpKeyRefusal, strictKeyRefusal), and (A-279)
 // with a taken-down listing on the vendor desk, its edit page and its restore refusal, with a photo the malware
@@ -48,31 +50,38 @@ func staffContactSentence(contact string) string {
 
 // A-702: a signed-out reader is usually locked out of an account and writing to staff to get back in. When the contact
 // is a bare handle they can still reach it from a new account; and they are told what staff will ask for, and what
-// staff never ask for, so a phishing "staff member" asking for a password or private key is recognisable.
+// staff never ask for, so a phishing "staff member" asking for a password or private key is recognisable. A-703: while
+// registrations are closed there is no new account to message it from, so they are told that instead.
 const (
 	staffContactNewAccount = "That is a market handle: you can message it from a new account once that account has a PGP key."
+	staffContactNoAccount  = "That is a market handle, and new registrations are closed, so only an existing account can message it."
 	staffContactReady      = "Have ready your account's handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key."
 )
 
-// staffContactSignedOut is staffContactSentence for a reader who is not signed in: the sign-in refusals, and /challenge
-// (the "staff-contact" partial followed by PageData.StaffContactSignedOut).
-func staffContactSignedOut(contact string) string {
-	return staffContactSentence(contact) + " " + staffContactSignedOutLines(contact)
+// staffContactSignedOut is staffContactSentence for a reader who is not signed in: the sign-in refusals, and /challenge,
+// /login and the closed /register (the "staff-contact" partial followed by PageData.StaffContactSignedOut).
+func staffContactSignedOut(contact string, registrationOpen bool) string {
+	return staffContactSentence(contact) + " " + staffContactSignedOutLines(contact, registrationOpen)
 }
 
-func staffContactSignedOutLines(contact string) string {
-	if staffContactNeedsAccount(contact) {
+func staffContactSignedOutLines(contact string, registrationOpen bool) string {
+	switch {
+	case !staffContactNeedsAccount(contact):
+		return staffContactReady
+	case registrationOpen:
 		return staffContactNewAccount + " " + staffContactReady
 	}
-	return staffContactReady
+	return staffContactNoAccount + " " + staffContactReady
 }
 
-// StaffContactSignedOut is what a page for a signed-out reader adds after the "staff-contact" partial (A-702).
+// StaffContactSignedOut is what a page for a signed-out reader adds after the "staff-contact" partial (A-702). The
+// read-only preview has no site-access policy and is taken as open.
 func (d PageData) StaffContactSignedOut() string {
+	open := d.Access == nil || d.Access.RegistrationOpen
 	if d.StaffContact == nil {
-		return staffContactSignedOutLines("")
+		return staffContactSignedOutLines("", open)
 	}
-	return staffContactSignedOutLines(d.StaffContact.Text)
+	return staffContactSignedOutLines(d.StaffContact.Text, open)
 }
 
 // staffContactSetting reads the setting through q (the caller's transaction, when one is open); "" while unset.
@@ -94,13 +103,17 @@ func staffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
 	return staffContactSentence(contact), nil
 }
 
-// signedOutStaffContactRefusal is the staff-contact lines for a sign-in refusal (staffContactSignedOut).
+// signedOutStaffContactRefusal is the staff-contact lines for a sign-in refusal (staffContactSignedOut). A missing
+// registrations row counts as closed, as registrationAllowedTx and siteAccessFromSettings read it.
 func signedOutStaffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
-	contact, err := staffContactSetting(ctx, q)
+	var contact string
+	var open bool
+	err := q.QueryRowContext(ctx, "SELECT COALESCE((SELECT value FROM settings WHERE key=$1),''), COALESCE((SELECT value FROM settings WHERE key=$2),'')='open'",
+		settingStaffContact, settingRegistrations).Scan(&contact, &open)
 	if err != nil {
 		return "", err
 	}
-	return staffContactSignedOut(contact), nil
+	return staffContactSignedOut(contact, open), nil
 }
 
 // suspendedRefusal refuses sign-in to an account an administrator suspended, or banned (A-546: closed, without the
