@@ -4,23 +4,26 @@ ClamAV 1.5 refuses a daily.cud whose tar.gz MD5 starts with 00 (ClamAV 1.1-1.4 c
 but within the same second it packs the same bytes again, so the container job failed about once in 256 runs.
 The script now builds again under a new builder name, which changes the packed daily.info and so the MD5, only for
 that refusal and only a bounded number of times. These tests run the script's in-container shell (the single-quoted
-`bash -c` program of scanner_prepare) with its /build directory moved to a temporary one: against a stub sigtool
-for the retry paths, and against the real sigtool when one is installed, checking the database's version stays 1
-(the scanner leg expects "daily database 1 built <time>" on /admin/system).
+`bash -c` program of scanner_prepare) with its /build directory moved to a temporary one, against a stub sigtool
+for the retry paths. Nothing here skips (the Operations job fails on any skipped Python test): the real sigtool runs
+in the container job's scanner leg, inside the pinned clamd image, where scanner_prepare checks the header it wrote
+(version 1, one signature, unsigned, a retry builder name, an MD5 that is not 00-prefixed) before the leg expects
+"daily database 1 built <time>" on /admin/system. That header check is run here against a header the real
+ClamAV 1.5.4 sigtool wrote with this program, and against altered copies.
 """
 from pathlib import Path
 import os
 import re
-import shutil
 import stat
 import subprocess
 import tempfile
-import time
 import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 SMOKE = (REPOSITORY / 'scripts' / 'ci-smoke.sh').read_text()
 NDB = (REPOSITORY / 'deploy' / 'testdata' / 'clamav-test.ndb').read_bytes()
+# Written by Homebrew ClamAV 1.5.4 sigtool (the pinned image's version) running this program on 2026-10-28.
+REAL_HEADER = 'ClamAV-VDB:28 Oct 2026 08-20 -0400:1:1:234:119e9811928485d0d88ae0febef8a2a6:X:ci1:1793190007'
 REFUSAL = 'The tar.gz MD5 starts with 00, which will fail to verify in ClamAV 1.1 -> 1.4: 00ab'
 
 STUB = '''#!/bin/sh
@@ -85,19 +88,29 @@ class ClamavTestDatabaseBuildTest(unittest.TestCase):
         self.assertIn(b"Can't open file COPYING", result.stderr)
         self.assertEqual(result.stdout, b'')
 
-    @unittest.skipUnless(shutil.which('sigtool'), 'sigtool (ClamAV) is not installed')
-    def test_the_real_sigtool_builds_version_1_now(self):
-        result, _ = self.run_program()
-        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
-        header = result.stdout[:512].decode().rstrip().split(':')
-        # ClamAV-VDB:<date>:<version>:<signatures>:<flevel>:<md5>:<dsig>:<builder>:<unix time>
-        self.assertEqual(header[0], 'ClamAV-VDB')
-        self.assertEqual(header[2], '1')
-        self.assertEqual(header[3], '1')
-        self.assertFalse(header[5].startswith('00'))
-        self.assertRegex(header[7], r'^ci[1-6]$')
-        self.assertLessEqual(abs(time.time() - int(header[8])), 120)
+    def check_header(self, header):
+        """scanner_prepare's host-side check of the built daily.cud, run on a file holding this header."""
+        lines = SMOKE[SMOKE.index('  header=$(head -c 512'):].splitlines()[:3]
+        self.assertTrue(lines[2].lstrip().startswith('[[ $header =~ $re'), lines)
+        program = 'fail() { echo "FAIL: $*" >&2; exit 1; }\n' + '\n'.join(lines) + '\necho accepted\n'
+        with tempfile.TemporaryDirectory() as work:
+            (Path(work) / 'clamav').mkdir()
+            (Path(work) / 'clamav' / 'daily.cud').write_bytes(header.ljust(512).encode() + b'\x1f\x8b')
+            return subprocess.run(['bash', '-c', program], env=dict(os.environ, work=work), capture_output=True,
+                                  text=True)
 
+    def test_the_container_job_checks_the_real_sigtool_header(self):
+        result = self.check_header(REAL_HEADER)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'accepted\n')
+        fields = REAL_HEADER.split(':')
+        for index, value in ((2, '2'), (3, '0'), (5, '00' + fields[5][2:]), (6, 'signature'), (7, 'ci'),
+                             (7, 'ci7'), (7, 'clamav')):
+            altered = ':'.join(fields[:index] + [value] + fields[index + 1:])
+            with self.subTest(altered=altered):
+                result = self.check_header(altered)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('unexpected test signature database header', result.stderr)
 
 if __name__ == '__main__':
     unittest.main()
