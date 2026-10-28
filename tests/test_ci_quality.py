@@ -26,7 +26,8 @@ class QualityWorkflowTest(unittest.TestCase):
         self.assertIn('workflow_call:', self.ci)
         release = (ROOT / '.github/workflows/release.yaml').read_text()
         self.assertIn('uses: ./.github/workflows/ci.yaml', job_block(release, 'verify'))
-        self.assertIn('needs: verify', job_block(release, 'package'))
+        # A-696: the identity job (tag and main-branch check) runs first; packaging still waits for the whole CI.
+        self.assertIn('needs: [identity, verify]', job_block(release, 'package'))
 
     def test_scheduled_security_reuses_dependency_gates_without_the_integration_matrix(self):
         scheduled = (ROOT / '.github/workflows/security.yaml').read_text()

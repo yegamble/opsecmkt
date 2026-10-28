@@ -300,20 +300,27 @@ func (a *App) xmrEscrowNetShort() string {
 // runs; the watcher retries. A wallet-rpc with no wallet open (-13) is not a failure: the daemon is checked and escrow
 // is ready; each wallet is checked by recheckEscrowXMRNetwork right after open_wallet, and no wallet call is made until
 // it returns nil.
+// escrowXMRSetup reads the escrow configuration and makes the checks that need neither the database nor a wallet
+// (initEscrowXMR's first step, which CheckStartup repeats): the mainnet opt-in, the public seed key and the RPC URLs.
+// With escrow off, key and rpc are nil.
+func escrowXMRSetup(live bool) (cfg escrowXMRConfig, key *xmrSeedKey, rpc *xmrEscrowRPC, err error) {
+	if cfg, err = escrowXMRConfigFromEnv(os.Getenv); err != nil || !cfg.on {
+		return
+	}
+	if live && !cfg.mainnet {
+		err = errXMRMainnetOptIn
+		return
+	}
+	if key, err = loadXMRSeedKey(cfg.seedKeyPath); err != nil {
+		return
+	}
+	rpc, err = newXMREscrowRPC(cfg.walletURL, cfg.daemonURL)
+	return
+}
+
 func (a *App) initEscrowXMR(ctx context.Context) error {
-	cfg, err := escrowXMRConfigFromEnv(os.Getenv)
+	cfg, key, rpc, err := escrowXMRSetup(a.live)
 	if err != nil || !cfg.on {
-		return err
-	}
-	if a.live && !cfg.mainnet {
-		return errXMRMainnetOptIn
-	}
-	key, err := loadXMRSeedKey(cfg.seedKeyPath)
-	if err != nil {
-		return err
-	}
-	rpc, err := newXMREscrowRPC(cfg.walletURL, cfg.daemonURL)
-	if err != nil {
 		return err
 	}
 	rpc.mainnet = a.live // the market's class decides which daemon checkDaemon accepts (A-460)

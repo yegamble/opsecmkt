@@ -95,12 +95,31 @@ obtain the real digest from Docker; `DIGEST` in the table describes the format.
    ```
 
 3. **Build and publish the image.** Run from the checkout directory containing
-   `Dockerfile`. This example targets a Linux AMD64 application host:
+   `Dockerfile`. This example targets a Linux AMD64 application host. The first
+   command fails if a tracked file differs from the checked-out commit; do not
+   continue until it succeeds, so the recorded commit is what the image contains:
 
    ```sh
-   docker build --platform linux/amd64 -t "$APP_REPOSITORY:$APP_TAG" .
+   test -z "$(git status --porcelain --untracked-files=no)"
+   APP_COMMIT=$(git rev-parse --verify 'HEAD^{commit}')
+   docker build --pull --platform linux/amd64 \
+     --build-arg SECURITY_REFRESH="$(date -u +%F)" \
+     --build-arg BUILD_VERSION="$APP_TAG" --build-arg BUILD_COMMIT="$APP_COMMIT" \
+     -t "$APP_REPOSITORY:$APP_TAG" .
+   docker run --rm --network none "$APP_REPOSITORY:$APP_TAG" version
    docker push "$APP_REPOSITORY:$APP_TAG"
    ```
+
+   `--pull` resolves the digest-pinned base images from the registry instead of
+   a local copy, and the build day in `SECURITY_REFRESH` rebuilds the layer that
+   applies Debian security updates, so that layer is never older than the day of
+   the build, even when an earlier build left it in the cache. `BUILD_VERSION`
+   (letters, digits and `. _ + -`, at most 64 characters) and `BUILD_COMMIT` (the
+   full lowercase commit) are what the image's `version` command and
+   `/admin/system` report; the build refuses other values. The `version` line
+   must print `opsecmkt YOUR_REVIEWED_RELEASE_OR_COMMIT commit` followed by
+   `APP_COMMIT`; stop if it does not. Without the two build arguments, the image
+   reports `development` and no commit.
 
    Retain the successful push's digest with the source revision and build record.
    For another host architecture, choose its matching single platform and verify
@@ -149,6 +168,28 @@ obtain the real digest from Docker; `DIGEST` in the table describes the format.
    [complete new-install command](production.md#4-initialize-and-start-the-application).
    Prepare payment flags before that one production initialization. Existing
    installations use `redeploy`, never a second `init`.
+
+## Building and publishing the Tor image
+
+Production Tor exposure needs a Tor image for `--admin-tor-image`, and the
+gateway host's public Tor service can run the same image. Build
+`deploy/Dockerfile.tor` from the same reviewed checkout, in the shell where you
+set `APP_REGISTRY` and `APP_TAG` above:
+
+```sh
+TOR_REPOSITORY="$APP_REGISTRY/YOUR_TEAM/opsecmkt-tor"
+docker build --pull --platform linux/amd64 --build-arg SECURITY_REFRESH="$(date -u +%F)" -t "$TOR_REPOSITORY:$APP_TAG" -f deploy/Dockerfile.tor deploy
+docker push "$TOR_REPOSITORY:$APP_TAG"
+```
+
+As for the application image, `--pull` and the build day make the build apply
+the day's Debian security updates instead of reusing a cached layer. Obtain and
+check the full digest reference with step 4 above, using `TOR_REPOSITORY` in
+place of `APP_REPOSITORY`; the expected entrypoint is
+`["tor","-f","/etc/tor/torrc"]`. Rebuild both images with these commands when
+Debian publishes a security fix for a package they contain; a rebuilt image
+changes nothing until you redeploy it. Replacing the gateway's public Tor image keeps its onion identity
+([steps](tor.md#replace-the-gateways-public-tor-image)).
 
 ## Initializing a development deployment
 
@@ -319,7 +360,7 @@ Redeploy the app with a reviewed digest:
 ./opsecmkt deploy status --dir ./market-prod
 ```
 
-`redeploy` records the desired image, updates the generated Compose definition, and invokes `up --no-deps app` with a readiness wait. It targets only the application service. It does not restart or regenerate worker services, worker configuration, secrets, data volumes, endpoints, or the retention directory. If startup fails, it retains the desired image and current private state for inspection. Correct the cause and repeat `redeploy` with the intended digest. There is no automatic rollback or fallback to an unreviewed image.
+`redeploy` records the desired image, updates the generated Compose definition, and invokes `up --no-deps app` with a readiness wait. It targets only the application service. It does not restart or regenerate worker services, worker configuration, secrets, data volumes, endpoints, or the retention directory. If startup fails, it retains the desired image and current private state for inspection. Production keeps no application container logs, so a production `redeploy` (and `up`/`install`) that does not become ready runs the app image once with `serve --check-startup` and prints its refusal, redacted, before failing; for example a database migrated by a newer release prints the `upgraded by a newer release … 999_…` line and points to `UPGRADING.md` "Rolling back". Run `deploy doctor --dir DIR --start-check` to repeat that check. Correct the cause and repeat `redeploy` with the intended digest. There is no automatic rollback or fallback to an unreviewed image.
 
 For a replacement **production application host**, stop the old application cleanly before starting its replacement. Transfer the retained configuration/key material and current external persistent retention ledger through an authenticated encrypted channel directly onto verified encrypted storage. The new production start commands require a persistent encrypted operator installation; do not restore it into the older tmpfs/RAM-unlocked layout. Preserve permissions, the saved project/context identity, application key, Monero wallet secret, seed recipient, audit signing key, TLS trust roots, dependency-report verification pin, and remote database/Monero/gateway URLs. Configure the saved local Docker context on the new host, and ensure its runtime UID/GID can read the retained private files.
 
@@ -349,14 +390,14 @@ A development installation also contains local database and wallet **Docker volu
 | Command | Result |
 | --- | --- |
 | `deploy plan --dir DIR` | Validates private configuration and prints topology without secret values. Starts nothing. |
-| `deploy doctor --dir DIR` | Validates configuration, checks production storage bindings and Docker Compose availability. Does not prove remote connectivity or physical host separation. |
+| `deploy doctor --dir DIR [--start-check]` | Validates configuration, checks production storage bindings and Docker Compose availability. `--start-check` also runs the app image once (`compose run --rm --no-deps -T app serve --check-startup`, at most 60 seconds) and prints, redacted, whether it would start or the startup refusal (configuration, database connection, serving lock, recorded migrations, install state, retention ledger); it migrates and keeps nothing. Does not prove wallet, scanner or gateway readiness, remote connectivity or physical host separation. |
 | `deploy install` or `deploy up --dir DIR` | Regenerates private runtime inputs and starts the same project with a bounded readiness wait. Preserves every key and data volume. |
 | `deploy redeploy --dir DIR --app-image IMAGE@sha256:DIGEST` | Updates and starts only the app; preserves worker configuration and all keys. Requires an existing installation. |
 | `deploy status --dir DIR` | Shows this project's containers and health. |
 | `deploy logs --dir DIR` | Development: prints at most 100 recent lines per service, with known secret values and URL credential fragments redacted. Production: explains that persistent application container logs are disabled; use administrator diagnostics and status. |
 | `deploy down --dir DIR` | Stops/removes project containers and networks. Retains every persistent volume and private installation file. |
 
-Add `--dir DIR` to every command when using a non-default directory. Configuration is strict JSON in `operator.json`; unknown fields/settings are refused. Generated Compose JSON is an implementation artifact: edit the operator configuration, then run `plan` and `up`. Never change the saved project or Docker context identity after installation. For a replacement host, configure the retained context name against its intended engine. Concurrent mutations fail while the installation's process lock is held; the operating system releases that lock if the process exits.
+Add `--dir DIR` to every command when using a non-default directory. Configuration is strict JSON in `operator.json`; unknown fields/settings are refused. Generated Compose JSON is an implementation artifact. Change a non-secret `settings` entry in `operator.json`, then run `plan` and `up`; do not hand-edit managed key, URL or certificate files or their paths. Replace the database URL with `deploy endpoint set`, TLS material with `deploy tls replace` and the administrator Tor image with `deploy redeploy --admin-tor-image` (see the [CLI reference](cli-reference.md#deployment-commands)). Never change the saved project or Docker context identity after installation. For a replacement host, configure the retained context name against its intended engine. Concurrent mutations fail while the installation's process lock is held; the operating system releases that lock if the process exits.
 
 Production app containers use Docker's `none` logging driver, without log rotation options. This prevents Docker from retaining their standard output/error stream. Development keeps bounded `json-file` rotation. Use the administrator's bounded in-memory diagnostics and `deploy status` for production troubleshooting; a process restart clears that memory. This control does not govern the host's journal, proxy, Tor, database, Monero or separate worker logs, and does not guarantee that no timestamps exist elsewhere. Configure those hosts separately.
 

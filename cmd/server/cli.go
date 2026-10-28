@@ -55,7 +55,8 @@ With no arguments in an interactive terminal, guided setup opens automatically.
 `
 
 // buildVersion and buildCommit are set at link time by release builds (-X main.buildVersion=<tag>
-// -X main.buildCommit=<commit>); the admin dependency table shows both (A-553).
+// -X main.buildCommit=<commit>) and by the Dockerfile's BUILD_VERSION and BUILD_COMMIT arguments (A-696); the admin
+// dependency table shows both (A-553), and `version` prints them.
 var buildVersion, buildCommit = "development", ""
 
 // command handles operator commands before legacy server flags are parsed.
@@ -84,15 +85,24 @@ func command(args []string, in io.Reader, out, errOut io.Writer) (bool, error) {
 		if len(args) != 1 {
 			return true, errors.New("version takes no arguments")
 		}
-		version := buildVersion
-		if b, ok := debug.ReadBuildInfo(); ok && version == "development" {
+		// The same identity /admin/system shows (market.marketBuild): the link-time tag and commit, or "development"
+		// with the toolchain's vcs.revision for a build from a git checkout (A-696).
+		version, commit := buildVersion, buildCommit
+		if version == "" {
+			version = "development"
+		}
+		if b, ok := debug.ReadBuildInfo(); ok && commit == "" {
 			for _, s := range b.Settings {
 				if s.Key == "vcs.revision" {
-					version = s.Value
+					commit = s.Value
 				}
 			}
 		}
-		fmt.Fprintln(out, "opsecmkt", version)
+		if commit == "" {
+			fmt.Fprintln(out, "opsecmkt", version)
+		} else {
+			fmt.Fprintln(out, "opsecmkt", version, "commit", commit)
+		}
 		return true, nil
 	case "keys":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -186,6 +196,7 @@ func configureServe(args []string, errOut io.Writer) error {
 	f := flag.NewFlagSet("serve", flag.ContinueOnError)
 	f.SetOutput(errOut)
 	preview := f.Bool("preview", false, "read-only sample UI, no database")
+	checkStartup := f.Bool("check-startup", false, "run the startup checks (configuration, database connection, serving lock, recorded migrations, install state, retention ledger), print each result and exit 0 when the server would start or 1 with the refusal; migrates, serves and writes nothing")
 	options := map[string]string{
 		"branding-upload-origin": "BRANDING_UPLOAD_ORIGIN", "official-addresses": "OFFICIAL_ADDRESSES",
 		"site-access": "INITIAL_SITE_ACCESS", "registrations": "INITIAL_REGISTRATIONS",
@@ -269,6 +280,9 @@ func configureServe(args []string, errOut io.Writer) error {
 		if v := os.Getenv("ADDR"); v != "" {
 			_ = os.Setenv("PREVIEW_ADDR", v)
 		}
+	}
+	if *checkStartup {
+		os.Args = append(os.Args, "-check-startup")
 	}
 	return nil
 }

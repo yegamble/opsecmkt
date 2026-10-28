@@ -70,6 +70,18 @@ The directory holds the selected storefront identity; `127.0.0.1:8080` is the lo
 
 When moving an existing public service, stop its previous instance before activating the retained identity on the replacement. Verify the new host's `hostname` matches the authenticated full address. Preserve old identity evidence if any key file is missing or mismatched; generating a replacement would change the address. No native command automatically exports/adopts a running service's volume, transfers its identity, or provisions this remote host.
 
+### Replace the gateway's public Tor image
+
+A [rebuilt Tor image](binary.md#building-and-publishing-the-tor-image) replaces only the container. Keep the identity: the `HiddenServiceDir` volume or directory, its owner and modes, and the Tor configuration stay exactly as they are. On the gateway host, set `TOR_IMAGE` to the new repository-plus-`@sha256:` reference and replace `PUBLIC_TOR` with the running container's name:
+
+```sh
+docker pull "$TOR_IMAGE"
+docker exec PUBLIC_TOR cat /var/lib/tor/public-market/hostname
+docker run --rm --network none --volumes-from PUBLIC_TOR "$TOR_IMAGE" --verify-config
+```
+
+The first line fetches the image by digest. The second prints the current address; keep it. The third checks the new Tor against the same mounted configuration and identity without network access (add the old container's `--user` if it sets one). Then change only the image reference in the gateway's supervisor unit or Compose file and recreate that one container with the same mounts, user, network and flags. Afterwards, `docker exec PUBLIC_TOR cat /var/lib/tor/public-market/hostname` must print the same address. If it differs or Tor does not start, stop the new container and start the previous image on the same identity. Never delete or recreate the identity volume, and never generate a replacement key for it: that changes the storefront's address.
+
 ### Generate the administrator's client key
 
 On the administrator's trusted client machine, create independent authorization outputs in existing private/public directories:

@@ -30,7 +30,9 @@ Commands:
   plan      validate and print a topology summary without secrets; starts nothing
   install   generate private Compose inputs and start the configured services
   up        resume/start the same installation without rotating keys
-  redeploy  replace only the app image; preserve workers/endpoints/keys
+  redeploy  replace only the app image (--app-image) or only administrator Tor (--admin-tor-image); preserve workers/endpoints/keys
+  endpoint  set: replace only the imported external database URL (and its CA) of a stopped installation
+  tls       replace: replace only the named TLS leaves or upload CA of a stopped installation
   status    show this installation's container status
   down      stop/remove this installation's containers; retains every data volume
   logs      print the last 100 log lines (redacted; no follow)
@@ -61,6 +63,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if command == "init" {
 		return initialize(ctx, args[1:], out, errOut)
 	}
+	if command == "endpoint" {
+		return runEndpoint(ctx, args[1:], out, errOut)
+	}
+	if command == "tls" {
+		return runTLSReplace(ctx, args[1:], out, errOut)
+	}
 	switch command {
 	case "plan", "install", "up", "redeploy", "status", "down", "logs", "doctor":
 	default:
@@ -69,9 +77,11 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	flags := flag.NewFlagSet("deploy "+command, flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	directory := flags.String("dir", "./opsecmkt-deployment", "private installation directory")
-	var appImage *string
+	startCheck := startCheckFlag(command, flags)
+	var appImage, adminTorImage *string
 	if command == "redeploy" {
 		appImage = flags.String("app-image", "", "replacement app image including @sha256:digest")
+		adminTorImage = flags.String("admin-tor-image", "", "replacement private administrator Tor image including @sha256:digest; replaces only tor-admin")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -82,8 +92,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
-	if appImage != nil && !imagePattern.MatchString(*appImage) {
-		return errors.New("redeploy requires --app-image with an explicit sha256 digest")
+	if appImage != nil {
+		if err := checkRedeployImages(*appImage, *adminTorImage); err != nil {
+			return err
+		}
 	}
 	dir, err := installationPath(*directory)
 	if err != nil {
@@ -139,7 +151,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if _, err := privateFile(filepath.Join(dir, "compose.json"), 2<<20); err != nil {
 			return errors.New("redeploy requires existing runtime configuration; run install first")
 		}
-		cfg.AppImage = *appImage
+		service, done, err := redeployTarget(&cfg, *appImage, *adminTorImage)
+		if err != nil {
+			return err
+		}
 		if err := validate(dir, cfg); err != nil {
 			return err
 		}
@@ -157,10 +172,13 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if err := atomicWrite(filepath.Join(dir, "compose.json"), compose, 0600); err != nil {
 			return err
 		}
-		if err := dockerCall(ctx, dir, cfg, out, errOut, "up", "-d", "--wait", "--wait-timeout", "600", "--no-deps", "app"); err != nil {
+		if err := dockerCall(ctx, dir, cfg, out, errOut, "up", "-d", "--wait", "--wait-timeout", "600", "--no-deps", service); err != nil {
+			if service == "app" {
+				return explainStartFailure(ctx, dir, cfg, out, errOut, err)
+			}
 			return err
 		}
-		_, err = fmt.Fprintln(out, "application redeployed; worker services, endpoints, keys and volumes retained")
+		_, err = fmt.Fprintln(out, done)
 		return err
 	}
 	if command == "plan" {
@@ -173,8 +191,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if err := dockerCall(ctx, dir, cfg, out, errOut, "version"); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(out, "configuration valid; Docker Compose reachable; host separation and remote service readiness require deployment verification")
-		return err
+		if _, err = fmt.Fprintln(out, "configuration valid; Docker Compose reachable; host separation and remote service readiness require deployment verification"); err != nil || !*startCheck {
+			return err
+		}
+		return runStartupCheck(ctx, dir, cfg, out, errOut)
 	}
 	if command == "install" || command == "up" {
 		if cfg.Mode == "prod" {
@@ -194,7 +214,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			return err
 		}
 		if err := dockerCall(ctx, dir, cfg, out, errOut, "up", "-d", "--wait", "--wait-timeout", "600"); err != nil {
-			return err
+			return explainStartFailure(ctx, dir, cfg, out, errOut, err)
 		}
 		_, err = fmt.Fprintln(out, "configured containers started; run deploy status and complete first-run administrator setup")
 		return err
@@ -514,14 +534,11 @@ func initialize(ctx context.Context, args []string, out, errOut io.Writer) error
 		if err != nil {
 			return err
 		}
-		u, err := url.Parse(value)
+		value, err = databaseURLWithCA(value, "/run/opsecmkt-secrets/database-ca.pem")
 		if err != nil {
-			return errors.New("database URL is invalid")
+			return err
 		}
-		query := u.Query()
-		query.Set("sslrootcert", "/run/opsecmkt-secrets/database-ca.pem")
-		u.RawQuery = query.Encode()
-		if err := os.WriteFile(filepath.Join(stage, cfg.SecretFiles["DATABASE_URL"]), []byte(u.String()+"\n"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(stage, cfg.SecretFiles["DATABASE_URL"]), []byte(value+"\n"), 0600); err != nil {
 			return err
 		}
 	}

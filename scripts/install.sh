@@ -60,7 +60,7 @@ CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS I
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
 ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY ESCROW_XMR_TOR_RELAY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
-ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE LOG_DRIVER TOR_VERSION'
+ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE LOG_DRIVER TOR_VERSION OPSECMKT_BUILD_VERSION OPSECMKT_BUILD_COMMIT OPSECMKT_SECURITY_REFRESH'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
 # COMPOSE_FILE are derived from the install instead; secrets are never invented (APP_SECRET_KEY is copied from
@@ -430,12 +430,34 @@ same_dir() {
   [[ -d $1 && $(cd "$1" 2>/dev/null && pwd -P) == "$(pwd -P)" ]]
 }
 
+# build_identity: the app image's build arguments, which compose.yaml passes to the Dockerfile (A-696). The commit only
+# when git names one for this checkout and no tracked file differs from it, the tag only when it names that commit
+# exactly, and always the build day, so the image's apt-get upgrade layer is never older than a day. Without git, or
+# outside a checkout, the image says "development" with no commit, as before.
+build_identity() {
+  local commit changes tag pattern='^[0-9a-f]{40}([0-9a-f]{24})?$'
+  OPSECMKT_SECURITY_REFRESH=$(date -u +%F)
+  export OPSECMKT_SECURITY_REFRESH
+  unset OPSECMKT_BUILD_VERSION OPSECMKT_BUILD_COMMIT
+  command -v git > /dev/null 2>&1 || return 0
+  commit=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2> /dev/null) || return 0
+  [[ $commit =~ $pattern ]] || return 0
+  changes=$(git status --porcelain --untracked-files=no 2> /dev/null) || return 0
+  [[ -z $changes ]] || return 0
+  export OPSECMKT_BUILD_COMMIT=$commit
+  pattern='^[0-9A-Za-z._+-]{1,64}$'
+  if tag=$(git describe --tags --exact-match HEAD 2> /dev/null) && [[ $tag =~ $pattern ]]; then
+    export OPSECMKT_BUILD_VERSION=$tag
+  fi
+}
+
 # up_wait [OPTION...]: docker compose up -d OPTION... --wait, except that with the malware scanner on it waits
 # for every service but clamd and then starts clamd without waiting. Nothing depends on the scanner (ruling C1),
 # so a clamd that never becomes healthy (out of memory, a bad upstream build) must not stop init, upgrade,
 # add-mirror or setup-token part-way; uploads are refused until it answers, and status shows it.
 up_wait() {
   local listing line services=()
+  build_identity
   if ! has_item "$(env_value COMPOSE_PROFILES)" scanner; then
     docker compose up -d "$@" --wait
     return

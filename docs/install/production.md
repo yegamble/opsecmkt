@@ -175,7 +175,7 @@ Transfer files over an authenticated encrypted connection:
 
 Leaf private keys must be mode `0600`. Restrict access to their service account. The gateway receives no database credentials, application secret, audit signing secret or wallet secret.
 
-For encrypted audit exports or payments, also [generate a recovery OpenPGP pair offline](binary.md#importing-and-generating-keys). Copy only its public half to the required host. Record renewal dates for every certificate; generated leaf certificates default to one year.
+For encrypted audit exports or payments, also [generate a recovery OpenPGP pair offline](binary.md#importing-and-generating-keys). Copy only its public half to the required host. Record renewal dates for every certificate; generated leaf certificates default to one year. Replace them before expiry as [Renew TLS certificates](#renew-tls-certificates) describes.
 
 ## 4. Initialize and start the application
 
@@ -383,6 +383,21 @@ systemctl is-active opsecmkt-gateway
 
 Expect `active`. On another service manager, preserve the same account, arguments, permissions and restart behavior. Confirm recovery after a controlled restart of the gateway and application hosts.
 
+The unit discards the gateway's output (`StandardOutput=null`, `StandardError=null`), so a gateway that keeps
+restarting shows only `activating (auto-restart)` or `failed` in `systemctl status`. To read its refusal, stop the
+unit and run its `ExecStart` command in the foreground as the service account, with exactly the unit's arguments:
+
+```sh
+systemctl stop opsecmkt-gateway
+sudo -u opsecmkt-gateway /usr/local/bin/opsecmkt upload-gateway --addr 127.0.0.1:8080 --app-url https://app.internal:8080 --app-ca /etc/opsecmkt-gateway/app-ca.pem --backend-url https://app.internal:8443 --ca /etc/opsecmkt-gateway/upload-ca.pem --cert /etc/opsecmkt-gateway/gateway-client.pem --key /etc/opsecmkt-gateway/gateway-client.key --clamd-address 127.0.0.1:3310
+```
+
+A configuration or certificate refusal is printed to the terminal and the command exits; nothing is written to a
+log. If it keeps running without output, it started: press Ctrl-C and `systemctl start opsecmkt-gateway` again. Do
+not leave it running in the foreground, and review the output before sharing it, because request errors printed
+while it serves can name addresses. For the application host, use `deploy doctor --dir DIR --start-check`
+(below); a failed `install`, `up` or `redeploy` runs that check by itself.
+
 `--app-ca` authenticates ordinary application HTTPS. `--ca`, `--cert` and `--key` authenticate the mutual-TLS upload backend. These are separate connections; omitting the application CA commonly causes proxy certificate failures. Use normal hostname verification throughout.
 
 ### Attach public ingress
@@ -451,6 +466,22 @@ Never rerun `init`, format a device or change a key to repair an ordinary restar
 Enable managed database backups and point-in-time recovery if your service offers them. Record retention and restoration procedures. Managed-database backups do not include application keys, the external retention ledger or gateway identities. VM snapshots may include those sensitive files, but do not replace coordinated encrypted recovery backups or verification of consistency and retention.
 
 **A provider point-in-time recovery or snapshot restore skips the payment restore gate.** Only `scripts/restore.sh` sets it automatically. A database restored any other way comes back with no recovery gate and no settlement holds: the escrow watcher relays restored settlements as soon as the application starts, and free escrow accounts the live wallet already handed out can be offered again. The market retires those accounts itself only when the live wallet holds an account the restored records lack (A-556), and Monero escrow checkout opens only after the watcher's first full pass after each start, so this covers checkouts from then on; a claim made after the restore point with no account created after it is not detected, and nothing holds the settlements. Before pointing the application at such a database, keep it stopped with the native controller (`./opsecmkt deploy down --dir /srv/opsecmkt/market-prod`; an `opsecmkt serve` process supervised directly is stopped through its service manager), not with Compose commands. Apply the protection of [UPGRADING.md section 6](../../UPGRADING.md#6-backups-now-need-the-wallets-too) to the restored database with `DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -set-restore-gate` (the host-readable URL file above with its host CA path pointed at the restored database; not `/srv/opsecmkt/market-prod/secrets/database-url`, which names the CA by its path inside the container; it refuses while an application of this release runs, and earlier releases are not detected), then run `deploy up` with public gateway ingress still closed and follow the [reconciliation procedure](../testnet-runbook.md#reconcile-a-restored-database-before-enabling-payouts) before clearing the gate with `-clear-restore-gate HANDLE` in a terminal, with the application stopped again.
+
+To point the installation at a restored, point-in-time-recovered or rolled-back database, write that database's URL
+into a new mode-`0600` URL file in the step 2 format (`sslmode=verify-full`, host CA path) and, with the installation
+stopped, run:
+
+```sh
+./opsecmkt deploy endpoint set --dir /srv/opsecmkt/market-prod \
+  --database-url-file /srv/opsecmkt-inputs/database-restored.url \
+  --database-ca /srv/opsecmkt-inputs/database-ca.pem
+```
+
+It replaces only the installation's database URL and, with `--database-ca`, its CA; every other key, endpoint, pin and
+the installation receipt stay byte-identical. It refuses, changing nothing, while the installation lock is held or an
+application container exists, and for a URL without `sslmode=verify-full` or a symlinked or group/world-readable URL file. Apply the restore gate as
+above if the database needs it, then start with `deploy up`. To return to an older release, follow
+[Rolling back a native installation](../../UPGRADING.md#rolling-back-a-native-installation).
 
 Confirm that the current original instance has enrolled retention state before relying on rollback backups. Step 4 enables it for a new instance. For an existing never-enrolled market, follow [retention enrollment](../retention.md#enabling-the-service) on its current original database first. An old restored database cannot initialize an empty ledger, even if its backup predates enrollment.
 
@@ -530,7 +561,7 @@ docker inspect --format '{{with index .State "Health"}}{{json .Status}}{{else}}n
 
 ### Upgrade the application
 
-Review release migrations and gateway compatibility, take verified backups and keep the current retention ledger. Then replace only the application image:
+Review release migrations and gateway compatibility, take verified backups and keep the current retention ledger. Record the current `app_image` value of `/srv/opsecmkt/market-prod/operator.json`; a rollback needs it. Then replace only the application image:
 
 ```sh
 ./opsecmkt deploy plan --dir /srv/opsecmkt/market-prod
@@ -541,12 +572,47 @@ Review release migrations and gateway compatibility, take verified backups and k
 
 `redeploy` preserves the installation's endpoints, keys, project, context and worker configuration. It does not reinstall the managed database, scanner, gateway or Monero services. Schema migrations can prevent image-only rollback; use the [app redeployment and recovery procedure](service-topology.md#redeploying-only-the-application).
 
-Refresh scanner signatures by reviewing and replacing the scanner image on the gateway host. The native controller has no `refresh-scanner` command. Renew leaf certificates before expiry and schedule database/OS maintenance independently.
+Schema migrations are one-way: an older image refuses a database that records a newer migration. To return to an older
+release, follow [Rolling back a native installation](../../UPGRADING.md#rolling-back-a-native-installation).
+
+To replace only the private administrator Tor image (for example a reviewed Tor security release), run:
+
+```sh
+./opsecmkt deploy redeploy --dir /srv/opsecmkt/market-prod \
+  --admin-tor-image YOUR_NEW_ADMIN_TOR_IMAGE_WITH_SHA256_DIGEST
+```
+
+It recreates only `tor-admin`; its identity volume, client authorization, the application and every key are kept.
+
+Refresh scanner signatures by reviewing and replacing the scanner image on the gateway host. The native controller has no `refresh-scanner` command. Schedule database/OS maintenance independently.
+
+### Renew TLS certificates
+
+Generated leaf certificates default to one year, and `plan`, `install`, `up`, `doctor` and `redeploy` refuse an expired
+leaf. Before expiry, issue replacement leaves on the issuing workstation as in step 3 (same CA and `--host`), transfer
+them into `/srv/opsecmkt-inputs` (keys mode `0600`) and replace them with the installation stopped:
+
+```sh
+./opsecmkt deploy down --dir /srv/opsecmkt/market-prod
+./opsecmkt deploy tls replace --dir /srv/opsecmkt/market-prod \
+  --tls-cert /srv/opsecmkt-inputs/app.pem --tls-key /srv/opsecmkt-inputs/app.key \
+  --upload-cert /srv/opsecmkt-inputs/backend.pem --upload-key /srv/opsecmkt-inputs/backend.key
+./opsecmkt deploy up --dir /srv/opsecmkt/market-prod
+```
+
+Name only what you replace; each certificate needs its key. `tls replace` checks the pair, the serverAuth and
+digitalSignature usages, the validity period and the CA rules as `init` does, replaces only material the installation
+already uses, and keeps every other key, endpoint, pin and the installation receipt. It refuses while the installation
+lock is held or an application container exists: replaced files are read when the app starts, and `deploy up` would not
+recreate an unchanged running container. `--upload-ca` replaces the upload client CA; the gateway's client certificate
+must chain to it, and a new application or backend CA must also reach the gateway's own configuration. A gateway
+client-certificate renewal happens on the gateway host only.
 
 ## Troubleshooting
 
 | Symptom | Check and correction |
 | --- | --- |
+| App `unhealthy` or `Restarting` after `install`, `up` or `redeploy` | The command prints the app's startup check (`serve --check-startup`) before failing, because the production app keeps no container logs. Repeat it with `./opsecmkt deploy doctor --dir /srv/opsecmkt/market-prod --start-check`. A database from a newer release prints the `upgraded by a newer release` line: follow [UPGRADING.md, Rolling back](../../UPGRADING.md#5-rolling-back). A check that passes points at a step it does not run: applying pending migrations (`MIGRATION_TIMEOUT`), wallet RPC, the scanner, listeners or readiness. |
 | Database timeout or connection refused | Verify private endpoint resolution, actual service port, routes and both provider/host allowlists. Test from the application host. |
 | Database TLS or hostname failure | Use the service's matching hostname, correct CA and `sslmode=verify-full`. Check the CA path in the relevant host or container. |
 | Gateway returns `503`, or public proxy returns `502` | Check application health, private DNS/ports and `--app-ca`. Verify the application server certificate matches `--app-url`. |
