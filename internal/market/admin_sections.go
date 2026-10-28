@@ -87,6 +87,9 @@ func (d PageData) AdminSectionAlert(slug string) string {
 		if v := d.VendorAdmin; v != nil && v.QueueTotal > 0 {
 			alerts = append(alerts, strconv.Itoa(v.QueueTotal)+" open vendor application(s) await a decision or bond.")
 		}
+		if a := d.StaffAttention; a != nil && a.ListingReviews > 0 { // A-686: reviewed on the moderation desk
+			alerts = append(alerts, strconv.Itoa(a.ListingReviews)+" listing(s) await review.")
+		}
 	case "payments":
 		if n := d.XMREscrowNode; n != nil && (n.Mismatch != nil || n.NotReady != "" || n.NotSynced != "" || n.TorHold != "") || d.XMREscrowHealth.Attention() {
 			alerts = append(alerts, "Monero escrow needs attention.")

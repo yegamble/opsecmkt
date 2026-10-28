@@ -152,7 +152,8 @@ func TestModerationListingSkipsModelWhenEnabled(t *testing.T) {
 	if n := agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE kind NOT IN ('listing','upload') AND (reason_codes ? 'MODEL_NOT_USED' OR failure_class<>'')`); n != 0 {
 		t.Fatalf("%d modelled proposals lack a successful model result", n)
 	}
-	if got := agStr(e, `SELECT disposition FROM moderation_suggestions WHERE kind='review'`); got != string(moderation.AutoApply) {
+	// A clean model result still waits for a human (A-684).
+	if got := agStr(e, `SELECT disposition FROM moderation_suggestions WHERE kind='review'`); got != string(moderation.QueueHuman) {
 		t.Fatalf("review routed %s with a clean model result", got)
 	}
 	if n := agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE kind IN ('dispute','payment_flag') AND disposition='ESCALATE_ADMIN'`); n != 2 {
@@ -189,7 +190,7 @@ func TestModerationListingSkipsModelWhenEnabled(t *testing.T) {
 }
 
 // A decision stored under moderation-v4 keeps its bytes and still renders after
-// the v5 worker runs, beside a new v5 listing decision (A-651).
+// the current worker runs, beside a new listing decision (A-651).
 func TestModerationStoredV4DecisionStaysReadable(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("moderation_v4_admin", "admin")
@@ -235,8 +236,8 @@ func TestModerationStoredV4DecisionStaysReadable(t *testing.T) {
 	if got := agStr(e, `SELECT input::text||decision::text||reason_codes::text||output_hash||prompt_version FROM moderation_suggestions WHERE id=$1`, decision.ID); got != stored {
 		t.Fatal("the stored v4 decision changed")
 	}
-	if n := agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE target_id=$1 AND prompt_version='moderation-v5' AND reason_codes ? 'MODEL_NOT_USED'`, p); n != 1 {
-		t.Fatalf("v5 listing decisions: %d", n)
+	if n := agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE target_id=$1 AND prompt_version=$2 AND reason_codes ? 'MODEL_NOT_USED'`, p, moderation.PromptVersion); n != 1 {
+		t.Fatalf("current-protocol listing decisions: %d", n)
 	}
 	e.A.adminSocket = "/run/test-private-admin/http.sock"
 	page := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)

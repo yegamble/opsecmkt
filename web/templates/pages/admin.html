@@ -31,6 +31,7 @@ admin panel renders on exactly one section, and every page carries the section n
 
 {{define "admin-overview"}}{{/* A-648: counts only on the private administrator connection; never an account, target or time. */}}
 {{with .ModerationBudget}}<div class="alert" role="status" id="moderation-budget"><strong>{{.Text}}</strong>{{if .Private}} <a class="text-link" href="/admin/moderation">Open the private moderation panel</a>.{{end}}</div>{{end}}
+{{with .ModerationWorkerStale}}<div class="alert" role="status" id="moderation-worker-stale"><strong>{{.}}</strong> <a class="text-link" href="/admin/moderation">Open the private moderation panel</a>.</div>{{end}}
 <section class="panel" aria-labelledby="getting-started">
 <h2 id="getting-started">Get your marketplace ready</h2>
 <ol>

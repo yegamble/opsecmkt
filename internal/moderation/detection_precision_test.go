@@ -56,7 +56,7 @@ func TestExternalDestinationBlocksAutomaticHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if d.Disposition != QueueHuman || !slices.Contains(d.ReasonCodes, "HUMAN_REVIEW") {
+			if d.Disposition != QueueHuman || !slices.Contains(d.ReasonCodes, "HUMAN_REVIEW") || !slices.Contains(d.ReasonCodes, "EXTERNAL_DESTINATION") {
 				t.Fatalf("external destination reached %s: %+v", d.Disposition, d)
 			}
 			if slices.Contains(d.ReasonCodes, "INJECTION_SUSPECTED") || d.Proposal.InjectionSuspected {
@@ -75,10 +75,11 @@ func TestExternalDestinationBlocksAutomaticHistory(t *testing.T) {
 	if err != nil || !slices.Contains(d.ReasonCodes, "OFF_PLATFORM_CONTACT") || d.Disposition != QueueHuman || calls.Load() != 0 {
 		t.Fatalf("same-clause solicitation lost its deterministic finding: %+v calls=%d %v", d, calls.Load(), err)
 	}
-	// An ordinary review without a destination still reaches automatic history.
+	// An ordinary review without a destination carries no destination signal;
+	// its clean model result still waits for a human (A-684).
 	d, err = cleanSpyEngine(&calls).Evaluate(context.Background(), reviewInput())
-	if err != nil || d.Disposition != AutoApply {
-		t.Fatalf("ordinary review lost its clean path: %+v %v", d, err)
+	if err != nil || d.Disposition != QueueHuman || !slices.Equal(d.ReasonCodes, []string{"NO_FINDING"}) {
+		t.Fatalf("ordinary review gained a review signal: %+v %v", d, err)
 	}
 }
 

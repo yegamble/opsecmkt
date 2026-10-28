@@ -135,6 +135,61 @@ func TestStaffAttentionZeroEscrowAlertDoesNotLinkToMissingSection(t *testing.T) 
 	}
 }
 
+// A-686 (STAFF94-6): a listing awaiting review is counted in the staff badge, the overview line and the
+// Vendors section flag, except for its own vendor, who cannot review it.
+func TestStaffAttentionCountsPendingListings(t *testing.T) {
+	e := newTestApp(t)
+	vendor, _ := e.user("pending_count_vendor", "vendor")
+	mod, modSession := e.user("pending_count_mod", "moderator")
+	other, otherSession := e.user("pending_count_mod2", "moderator")
+	admin, adminSession := e.user("pending_count_admin", "admin")
+	load := func(id, role string) *StaffAttention {
+		t.Helper()
+		d := &PageData{User: &User{ID: id, Role: role}}
+		if err := loadStaffAttention(t.Context(), e.A, nil, d); err != nil {
+			t.Fatal(err)
+		}
+		return d.StaffAttention
+	}
+	if got := load(mod, "moderator"); got == nil || got.ListingReviews != 0 {
+		t.Fatalf("empty queue counts %+v", got)
+	}
+	mustNotContain(t, e.body("GET", "/admin", adminSession, nil, 200), "await review.")
+	held := e.product(vendor, "physical")
+	own := e.product(mod, "physical")
+	// Approved, rejected and archived pending listings are not awaiting review.
+	for _, state := range []string{"approved", "rejected", "pending"} {
+		p := e.product(vendor, "physical")
+		reason := any(nil)
+		if state == "rejected" {
+			reason = "Rejected in the fixture."
+		}
+		agExec(e, "UPDATE products SET review_state=$2,review_rejection_reason=$3,archived=$4 WHERE id=$1", p, state, reason, state == "pending")
+	}
+	agExec(e, "UPDATE products SET review_state='pending' WHERE id=$1 OR id=$2", held, own)
+	for _, v := range []struct {
+		id, role string
+		want     int
+	}{{mod, "moderator", 1}, {other, "moderator", 2}, {admin, "admin", 2}} {
+		if got := load(v.id, v.role); got == nil || got.ListingReviews != v.want {
+			t.Fatalf("%s counts %+v, want %d listing reviews", v.role, got, v.want)
+		}
+	}
+	// With the moderator's own listing approved again, one listing awaits review for every staff member.
+	agExec(e, "UPDATE products SET review_state='approved' WHERE id=$1", own)
+	for _, s := range []string{modSession, otherSession} {
+		mustContain(t, e.body("GET", "/moderator", s, nil, 200),
+			`<a href="/moderator#listing-review">1 listing awaiting review</a>`, "· 1 listing to review)")
+	}
+	mustContain(t, e.body("GET", "/admin", adminSession, nil, 200),
+		`<a href="/moderator#listing-review">1 listing awaiting review</a>`, "· 1 listing to review)", "1 listing(s) await review.")
+	// The vendor-moderator owner does not count its own pending listing; another moderator does.
+	agExec(e, "UPDATE products SET review_state='approved' WHERE id=$1", held)
+	agExec(e, "UPDATE products SET review_state='pending' WHERE id=$1", own)
+	mustContain(t, e.body("GET", "/moderator", modSession, nil, 200), `<a href="/moderator#listing-review">0 listings awaiting review</a>`, "· 0 listings to review)")
+	mustContain(t, e.body("GET", "/moderator", otherSession, nil, 200), `<a href="/moderator#listing-review">1 listing awaiting review</a>`)
+}
+
 // The navigation counter may disable JIT locally, but a borrowed pool connection must retain its original
 // setting afterward, including when an obsolete staff identity yields no row.
 func TestStaffAttentionKeepsConnectionJITSetting(t *testing.T) {

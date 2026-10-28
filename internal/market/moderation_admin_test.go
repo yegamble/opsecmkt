@@ -5,11 +5,16 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -172,7 +177,9 @@ func (benignModerationUIModel) Propose(_ context.Context, in moderation.Normaliz
 		Summary: "No review finding.", Canary: moderation.CanaryFor(in.InputHash)}, nil
 }
 
-func TestModerationAdminBenignClassificationSkipsHumanQueue(t *testing.T) {
+// A confident benign model result waits in the human queue (A-684); an
+// AUTO_APPLY row stored by an earlier protocol still renders as history.
+func TestModerationAdminBenignModelResultQueuesForHuman(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("moderation_benign_admin", "admin")
 	vendor, _ := e.user("moderation_benign_vendor", "vendor")
@@ -194,16 +201,44 @@ func TestModerationAdminBenignClassificationSkipsHumanQueue(t *testing.T) {
 	if err := e.DB.QueryRow(`SELECT id,disposition FROM moderation_suggestions`).Scan(&id, &disposition); err != nil {
 		t.Fatal(err)
 	}
-	if disposition != string(moderation.AutoApply) {
-		t.Fatalf("benign classification disposition=%s", disposition)
+	if disposition != string(moderation.QueueHuman) {
+		t.Fatalf("benign model classification disposition=%s", disposition)
 	}
+
+	// The row a moderation-v5 worker wrote for a clean review it cleared.
+	order2 := e.order(buyer, p, "XMR", stateCompleted)
+	agExec(e, "INSERT INTO reviews(id,order_id,product_id,buyer_id,rating,body) VALUES($1,$2,$3,$4,4,'Packed well')", randomToken(), order2, p, buyer)
+	var j moderationJob
+	if err := e.DB.QueryRow(`SELECT id,kind,target_id,actor_id,content_hash,snapshot,queued_at,capture_version,metadata,actor_ref FROM moderation_jobs WHERE kind='review' AND completed_at IS NULL`).Scan(&j.ID, &j.Kind, &j.TargetID, &j.ActorID, &j.ContentHash, &j.Snapshot, &j.QueuedAt, &j.CaptureVersion, &j.Metadata, &j.ActorRef); err != nil {
+		t.Fatal(err)
+	}
+	hash := func(data string) string {
+		sum := sha256.Sum256([]byte(data))
+		return hex.EncodeToString(sum[:])
+	}
+	in := moderationMinimalInput(j)
+	reasons := []string{"NO_FINDING"}
+	inputHash := hash("moderation-v5-input:" + j.ContentHash)
+	proposal := moderation.Proposal{ItemID: in.ItemID, Action: moderation.ActionNoAction, Confidence: .95, ReasonCodes: reasons, InjectionEvidence: []string{}, EvidenceIDs: in.Context.EvidenceIDs, Summary: moderation.SummaryForReasons(reasons), Canary: "moderation-" + inputHash[:32]}
+	proposalBytes, _ := json.Marshal(proposal)
+	historical := hash("moderation-v5-decision:" + j.ContentHash)
+	decision := moderation.Decision{ID: historical, InputHash: inputHash, OutputHash: hash(string(proposalBytes)), Proposal: proposal, Disposition: moderation.AutoApply, ReasonCodes: reasons, Actor: "moderation-worker", PromptVersion: "moderation-v5", SLA: 24 * time.Hour, DefaultAction: moderation.Hold}
+	decisionBytes, _ := json.Marshal(decision)
+	inputBytes, _ := json.Marshal(moderationStoredMetadata(j, in))
+	reasonBytes, _ := json.Marshal(reasons)
+	agExec(e, `INSERT INTO moderation_suggestions(id,job_id,kind,target_id,actor_id,content_hash,policy_hash,input,decision,disposition,risk_score,confidence,reason_codes,input_hash,output_hash,prompt_version,model_id,weights_hash,expires_at,failure_class)
+	 VALUES($1,$2,'review',$3,'',$4,$5,$6,$7,'AUTO_APPLY',0,0.95,$8,$9,$10,'moderation-v5','','',now()+interval '24 hours','')`, historical, j.ID, j.TargetID, j.ContentHash, hash("moderation-v5-policy"), string(inputBytes), string(decisionBytes), string(reasonBytes), inputHash, decision.OutputHash)
+	agExec(e, `UPDATE moderation_jobs SET completed_at=now() WHERE id=$1`, j.ID)
+
 	e.A.adminSocket = "/run/test-private-admin/http.sock"
 	queue := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
 	e.check(queue, 200)
-	mustNotContain(t, queue.Body.String(), id)
+	mustContain(t, queue.Body.String(), id)
+	mustNotContain(t, queue.Body.String(), historical)
 	history := privateHostRequest(e, "GET", "/admin/moderation?state=reviewed", admin, nil, true)
 	e.check(history, 200)
-	mustContain(t, history.Body.String(), id, "Automatic classification recorded")
+	mustContain(t, history.Body.String(), historical, "Automatic classification recorded")
+	mustNotContain(t, history.Body.String(), id)
 }
 
 func TestModerationAdminStaleAndExpiredProposalsHold(t *testing.T) {
@@ -268,6 +303,248 @@ func TestModerationAdminTemplateEscapesUntrustedSummary(t *testing.T) {
 	}
 	mustContain(t, body.String(), "&lt;script&gt;alert", "HOLD", "UTC", "Existing marketplace state stays unchanged")
 	mustNotContain(t, body.String(), `<script>`, "http://", "https://")
+}
+
+var moderationItemIDs = regexp.MustCompile(`<article class="moderation-item">\s*<h3>[^<]*</h3><p class="fingerprint mono">([0-9a-f]{64})</p>`)
+
+// moderationQueueIDs is the proposal ids a queue page lists, in order.
+func moderationQueueIDs(t *testing.T, body string) []string {
+	t.Helper()
+	var ids []string
+	for _, m := range moderationItemIDs.FindAllStringSubmatch(body, -1) {
+		ids = append(ids, m[1])
+	}
+	return ids
+}
+
+// A-685 (STAFF94-2): money escalations come first, then the soonest deadline; kind and disposition filters survive
+// paging; a proposal whose deadline passed leaves the default view for its own one.
+func TestModerationAdminQueueFiltersAndOrder(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("queue_order_admin", "admin")
+	buyer, _ := e.user("queue_order_buyer", "buyer")
+	if err := SetModerationEnabled(t.Context(), e.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	worker := moderationTestWorker(e)
+	// 60 listing proposals from 20 vendors (an account has at most 3 active jobs), then one dispute.
+	var product string
+	for i := range 20 {
+		vendor, _ := e.user("queue_order_vendor_"+strconv.Itoa(i), "vendor")
+		for j := range 3 {
+			product = e.titledListing(vendor, "Plain lamp "+strconv.Itoa(i)+"-"+strconv.Itoa(j))
+		}
+	}
+	if n, err := worker.Pass(t.Context(), 100); err != nil || n != 60 {
+		t.Fatalf("listing pass: n=%d err=%v", n, err)
+	}
+	order := e.order(buyer, product, "XMR", stateDisputed)
+	agExec(e, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'The parcel never arrived at all')", randomToken(), order)
+	if n, err := worker.Pass(t.Context(), 10); err != nil || n != 1 {
+		t.Fatalf("dispute pass: n=%d err=%v", n, err)
+	}
+	// One more listing whose deadline has already passed.
+	late, _ := e.user("queue_order_late", "vendor")
+	lateProduct := e.titledListing(late, "Plain lamp past its deadline")
+	expiring := moderationTestWorker(e)
+	expiring.Engine.Config.HumanSLA = time.Nanosecond
+	if n, err := expiring.Pass(t.Context(), 10); err != nil || n != 1 {
+		t.Fatalf("expired pass: n=%d err=%v", n, err)
+	}
+	var dispute, expired string
+	if err := e.DB.QueryRow(`SELECT id FROM moderation_suggestions WHERE kind='dispute' AND disposition='ESCALATE_ADMIN'`).Scan(&dispute); err != nil {
+		t.Fatalf("precondition: one dispute escalation: %v", err)
+	}
+	if err := e.DB.QueryRow(`SELECT id FROM moderation_suggestions WHERE target_id=$1`, lateProduct).Scan(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if n := agInt(e, `SELECT count(*) FROM moderation_suggestions WHERE kind='listing' AND disposition='QUEUE_HUMAN' AND expires_at>now()`); n != 60 {
+		t.Fatalf("precondition: %d queued listing proposals", n)
+	}
+	// The listings in deadline order (the soonest first): created order, since each has the same SLA.
+	var byDeadline []string
+	rows, err := e.DB.Query(`SELECT id FROM moderation_suggestions WHERE kind='listing' AND expires_at>now() ORDER BY expires_at,id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		byDeadline = append(byDeadline, id)
+	}
+	rows.Close()
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	get := func(path string) string {
+		t.Helper()
+		w := privateHostRequest(e, "GET", path, admin, nil, true)
+		e.check(w, 200)
+		return w.Body.String()
+	}
+
+	first := get("/admin/moderation")
+	ids := moderationQueueIDs(t, first)
+	if len(ids) != 50 || ids[0] != dispute || !slices.Equal(ids[1:], byDeadline[:49]) {
+		t.Fatalf("page 1 lists %v, want the dispute escalation %s then the 49 soonest deadlines", ids, dispute)
+	}
+	// The summary counts link to their views; paging keeps none but the page.
+	mustContain(t, first, `href="/admin/moderation">61 unreviewed</a>`, `href="/admin/moderation?disposition=ESCALATE_ADMIN">1 escalation</a>`,
+		`href="/admin/moderation?state=expired">1 past its deadline</a>`, `href="/admin/moderation?page=2">Next page</a>`)
+	second := get("/admin/moderation?page=2")
+	if ids := moderationQueueIDs(t, second); !slices.Equal(ids, byDeadline[49:]) {
+		t.Fatalf("page 2 lists %d items, want the 11 latest deadlines", len(ids))
+	}
+	mustContain(t, second, `href="/admin/moderation?page=1">Previous page</a>`)
+	mustNotContain(t, first+second, expired)
+
+	if ids := moderationQueueIDs(t, get("/admin/moderation?kind=dispute")); !slices.Equal(ids, []string{dispute}) {
+		t.Fatalf("?kind=dispute lists %v", ids)
+	}
+	if ids := moderationQueueIDs(t, get("/admin/moderation?disposition=ESCALATE_ADMIN")); !slices.Equal(ids, []string{dispute}) {
+		t.Fatalf("?disposition=ESCALATE_ADMIN lists %v", ids)
+	}
+	listings := get("/admin/moderation?kind=listing&disposition=QUEUE_HUMAN")
+	if ids := moderationQueueIDs(t, listings); !slices.Equal(ids, byDeadline[:50]) {
+		t.Fatalf("listing filter page 1 lists %d items", len(ids))
+	}
+	// The filter form keeps its choices selected, and the next page keeps the filters.
+	mustContain(t, listings, `<option value="listing" selected>`, `<option value="QUEUE_HUMAN" selected>`,
+		`href="/admin/moderation?disposition=QUEUE_HUMAN&amp;kind=listing&amp;page=2">Next page</a>`)
+	if ids := moderationQueueIDs(t, get("/admin/moderation?disposition=QUEUE_HUMAN&kind=listing&page=2")); !slices.Equal(ids, byDeadline[50:]) {
+		t.Fatalf("listing filter page 2 lists %d items", len(ids))
+	}
+
+	// The expired proposal is in its own view, held, with what it proposed.
+	past := get("/admin/moderation?state=expired")
+	if ids := moderationQueueIDs(t, past); !slices.Equal(ids, []string{expired}) {
+		t.Fatalf("?state=expired lists %v", ids)
+	}
+	mustContain(t, past, "Deadline passed", "HOLD (deadline passed; proposed QUEUE_HUMAN)")
+	if ids := moderationQueueIDs(t, get("/admin/moderation?state=expired&kind=dispute")); len(ids) != 0 {
+		t.Fatalf("expired disputes %v", ids)
+	}
+	if ids := moderationQueueIDs(t, get("/admin/moderation?state=reviewed")); len(ids) != 0 {
+		t.Fatalf("history lists unreviewed %v", ids)
+	}
+
+	// Unknown or repeated filter values are refused, never passed on.
+	for _, q := range []string{"state=open", "kind=image", "kind=listing'--", "disposition=AUTO", "disposition=hold",
+		"kind=listing&kind=dispute", "state=reviewed&state=expired", "disposition=ESCALATE_ADMIN&disposition=HOLD"} {
+		e.check(privateHostRequest(e, "GET", "/admin/moderation?"+q, admin, nil, true), 400)
+	}
+}
+
+// A-685 (STAFF94-3): no review action is preselected, and the hold choice says the proposal closes.
+func TestModerationAdminHoldLabel(t *testing.T) {
+	e, _, admin, _, id := moderationAdminFixture(t, 0, false)
+	page := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
+	e.check(page, 200)
+	body := page.Body.String()
+	mustContain(t, body, `<select name="action" required><option value="">Choose a review action</option>`,
+		`<option value="hold">Hold: keep marketplace state, close this proposal</option>`)
+	mustNotContain(t, body, "Hold for further review", " selected>")
+	// Submitting the placeholder records nothing.
+	e.check(privateHostRequest(e, "POST", moderationReviewPath, admin, moderationReviewForm(id, ""), true), 400)
+	if n := agInt(e, `SELECT count(*) FROM moderation_reviews`); n != 0 {
+		t.Fatal("the placeholder recorded a review")
+	}
+	e.check(privateHostRequest(e, "POST", moderationReviewPath, admin, moderationReviewForm(id, "hold"), true), 303)
+	history := privateHostRequest(e, "GET", "/admin/moderation?state=reviewed", admin, nil, true)
+	e.check(history, 200)
+	mustContain(t, history.Body.String(), id, "Held; proposal closed")
+}
+
+// A-685 (STAFF94-5): an upload proposal links to where its image is shown: the listing for a photo, the order for
+// dispute evidence, the account page for an avatar, and nowhere once the image is gone.
+func TestModerationAdminUploadTargetLinks(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("upload_link_admin", "admin")
+	vendor, _ := e.user("upload_link_vendor", "vendor")
+	buyer, _ := e.user("upload_link_buyer", "buyer")
+	product := e.product(vendor, "physical")
+	order := e.order(buyer, product, "XMR", stateDisputed)
+	if err := SetModerationEnabled(t.Context(), e.DB, true); err != nil {
+		t.Fatal(err)
+	}
+	photo := e.image(vendor, product, "photo")
+	avatar := e.image(buyer, "", "avatar")
+	evidence := randomToken()[:32]
+	agExec(e, `INSERT INTO images(id,owner_user_id,order_id,kind,"full",thumb,width,height) VALUES($1,$2,$3,'evidence',$4,$5,1200,900)`,
+		evidence, buyer, order, []byte("\xff\xd8\xff evidence "+evidence), []byte("\xff\xd8\xff thumbnail"))
+	gone := e.image(vendor, product, "photo")
+	if _, err := moderationTestWorker(e).Pass(t.Context(), 20); err != nil {
+		t.Fatal(err)
+	}
+	agExec(e, `DELETE FROM images WHERE id=$1`, gone.id)
+	links := map[string]string{photo.id: `href="/product?id=` + product + `"`, evidence: `href="/order?id=` + order + `"`,
+		avatar.id: `href="/admin/users?handle=upload_link_buyer"`, gone.id: ""}
+	e.A.adminSocket = "/run/test-private-admin/http.sock"
+	page := privateHostRequest(e, "GET", "/admin/moderation?kind=upload", admin, nil, true)
+	e.check(page, 200)
+	body := page.Body.String()
+	for image, link := range links {
+		var id string
+		if err := e.DB.QueryRow(`SELECT id FROM moderation_suggestions WHERE kind='upload' AND target_id=$1`, image).Scan(&id); err != nil {
+			t.Fatalf("no proposal for image %s: %v", image, err)
+		}
+		start := strings.Index(body, `<p class="fingerprint mono">`+id+`</p>`)
+		if start < 0 {
+			t.Fatalf("proposal %s not listed", id)
+		}
+		item := body[start:]
+		item = item[:strings.Index(item, "</article>")]
+		if link == "" {
+			mustNotContain(t, item, "Open current source evidence")
+			continue
+		}
+		mustContain(t, item, `<a class="text-link" `+link+`>Open current source evidence</a>`)
+	}
+	if got := moderationQueueIDs(t, body); len(got) != 4 {
+		t.Fatalf("?kind=upload lists %d proposals, want 4", len(got))
+	}
+}
+
+func TestModerationTargetURLAllowlist(t *testing.T) {
+	ok := strings.Repeat("a", 32)
+	for _, c := range []struct {
+		kind, id, order string
+		img             moderationImageRef
+		want            string
+	}{
+		{"listing", ok, "", moderationImageRef{}, "/product?id=" + ok},
+		{"upload", ok, "", moderationImageRef{Kind: "photo", Product: "p1"}, "/product?id=p1"},
+		{"upload", ok, "", moderationImageRef{Kind: "evidence", Order: "o1"}, "/order?id=o1"},
+		{"upload", ok, "", moderationImageRef{Kind: "avatar", Handle: "some_buyer"}, "/admin/users?handle=some_buyer"},
+		{"upload", ok, "", moderationImageRef{}, ""},
+		{"upload", ok, "", moderationImageRef{Kind: "photo", Product: "p1&x=y"}, ""},
+		{"upload", ok, "", moderationImageRef{Kind: "evidence", Order: "../admin"}, ""},
+		{"upload", ok, "", moderationImageRef{Kind: "avatar", Handle: "a b"}, ""},
+		{"upload", ok, "", moderationImageRef{Kind: "photo", Order: "o1"}, ""},
+		{"upload", "../x", "", moderationImageRef{Kind: "photo", Product: "p1"}, ""},
+		{"dispute", ok, "o1", moderationImageRef{}, "/order?id=o1"},
+	} {
+		if got := moderationTargetURL(c.kind, c.id, c.order, c.img); got != c.want {
+			t.Errorf("moderationTargetURL(%q,%q,%q,%+v) = %q, want %q", c.kind, c.id, c.order, c.img, got, c.want)
+		}
+	}
+}
+
+// A-685 (LLM94-4): the model's stated confidence is uncalibrated and labelled so.
+func TestModerationAdminConfidenceLabel(t *testing.T) {
+	templates, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	d := &PageData{Page: "admin/moderation", Title: "Moderation review", User: &User{Role: "admin"},
+		Moderation: &ModerationAdminView{Items: []ModerationSuggestionView{{ID: strings.Repeat("b", 64), Confidence: "0.97",
+			Disposition: "QUEUE_HUMAN", DefaultAction: "HOLD", Review: "Pending"}}}}
+	if err = templates.ExecuteTemplate(&body, "page:admin/moderation", d); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, body.String(), "<dt>Confidence (model-stated, uncalibrated)</dt><dd>0.97</dd>")
+	mustNotContain(t, body.String(), "<dt>Confidence</dt>")
 }
 
 // A-654: the lifetime moderation budget is raised from the private panel, confirmed and audited, increase only.

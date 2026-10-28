@@ -16,7 +16,24 @@ for ordinary application startup.
 
 Prepare a private, one-line database URL file owned by the controller service
 account with mode `0600`. Keep it out of prompts, shell history and inference
-mounts. Run the separately supervised controller from a clean environment:
+mounts. The controller has the application's database authority, so a remote
+database must use certificate and host-name verification, as the application's
+production profile requires:
+
+```text
+postgres://moderation@db.internal.example:5432/market?sslmode=verify-full&sslrootcert=/secure/moderation/postgres-ca.pem
+```
+
+Before connecting, the controller refuses any DSN whose host, or any fallback
+host, is neither a Unix socket (`host=/run/postgresql`) nor a loopback address
+unless it uses `sslmode=verify-full`, with `moderation-worker: remote database
+requires sslmode=verify-full`. This does not depend on `OPSECMKT_PROFILE`, which
+`env -i` drops. `require`, `verify-ca`, `prefer`, `allow` and a missing
+`sslmode` are refused for a remote host: they either send the startup message in
+plaintext or accept any certificate. Name the host as it appears in the server
+certificate, and keep the CA file readable only by the controller account.
+
+Run the separately supervised controller from a clean environment:
 
 ```sh
 env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
@@ -39,7 +56,11 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --disable --database-url-file /secure/moderation/database-url
 ```
 
-This preserves existing jobs, proposals and evidence. Do not delete tables or
+This preserves existing jobs, proposals and evidence. Turning capture on or off
+writes one audit row without an actor, "Moderation capture enabled by host
+command" or "Moderation capture disabled by host command", only when the stored
+setting changes: restarting a worker while capture is already on, or a repeated
+`--disable`, writes none. Do not delete tables or
 rerun setup to clear a queue. `--replay` revisits eligible legacy snapshots;
 completed metadata-only jobs are skipped and their count is reported. They
 cannot be reinterpreted as empty content or as a newer source revision. An
@@ -59,7 +80,7 @@ store retains the first validated result for its stable identity.
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v5`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v6`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -68,6 +89,56 @@ The worker reads only its selected database and optional escalation-signing
 files. It does not import the application's other `_FILE` secrets. The trusted
 controller still has database authority; process/file permissions must prevent
 the model from obtaining it.
+
+## Supervise the controller
+
+Capture keeps queueing jobs in marketplace transactions whether or not a worker
+runs, so run the long-lived controller under a supervisor. A failed pass, for
+example while PostgreSQL restarts, does not end it: it logs
+`moderation-worker: pass unavailable; durable jobs preserved; retrying in 5s`
+and retries after 5 seconds, doubling after each further failure up to the pass
+interval or 5 minutes, whichever is shorter. The first pass after reconnecting
+records the failure class **Database unavailable** and the outage's start (the
+controller's clock) and end (the database's) on the panel. The worker cannot
+tell causes apart, so any failed pass is recorded this way; outside a programming
+error, a failed pass is a database or connection failure. Jobs and leases are durable throughout. `--once` still exits
+with an error when its pass fails, and configuration errors (flags, a refused
+database transport, a missing migration, an unreachable database at startup)
+exit at once; the supervisor restarts the process.
+
+A systemd unit, for example `/etc/systemd/system/opsecmkt-moderation.service`:
+
+```ini
+[Unit]
+Description=OPSEC Market moderation controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=opsecmkt-moderation
+Group=opsecmkt-moderation
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin /opt/opsecmkt/opsecmkt moderation-worker --enabled --database-url-file /secure/moderation/database-url
+Restart=on-failure
+RestartSec=30s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Adjust the account, paths and any model options to your installation, then
+`systemctl daemon-reload` and `systemctl enable --now opsecmkt-moderation`.
+Every start runs `--enabled`, so stop and disable the unit
+(`systemctl disable --now opsecmkt-moderation`) before running `--disable`;
+otherwise the next restart turns capture on again (and audits it).
+
+The private panel shows **Capture: on** or **Capture: off** from the stored
+setting and the stored pass interval. While capture is on and the last pass is
+older than three intervals plus five minutes, it and the private `/admin`
+overview show "No pass for N minutes; the worker may have stopped." (or "No pass
+reported yet" before the first one). A pass that spends longer than that margin
+in model calls can show it briefly. Capture off shows the local model as not in
+use rather than absent, and no warning.
 
 ## Optional local inference
 
@@ -114,7 +185,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v5
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v6
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -142,23 +213,30 @@ Russian forms, spaced-letter, punctuated or leetspeak spellings that begin at
 a word start (so "foreign ore previously" does not count), "forget your rules",
 claimed operator instructions, "system prompt", protocol field names and quoted
 JSON keys such as `"action":`, whole underscore code names such as `NO_FINDING`
-or `AUTO_APPLY` (not `NO_ACTION_REQUIRED`), the canary format,
+or `AUTO_APPLY` (not `NO_ACTION_REQUIRED`), the pre-v6 canary format
+(`moderation-` plus 32 hex; the current short form is not matched because it
+resembles ordinary part numbers, and an author cannot know it in advance),
 imitation delimiters, and any of these inside a base64 token or split across two
 adjacent fields. A strong marker records `INJECTION_SUSPECTED`, skips the model
 and escalates. Weak markers are ordinary words that attacks also use ("you are",
 "act as", "decision", "confidence", "execute", "override", "disregard",
 "schema", "canary", role labels, claimed staff approval): they add
-`HUMAN_REVIEW` only, so the model still runs but the item cannot reach automatic
-history. Likewise, any recognised external destination (onion, I2P, Telegram,
+`HUMAN_REVIEW` only, so the model still runs and the reviewer sees the signal.
+Any recognised external destination (onion, I2P, Telegram,
 Session, SimpleX or XMPP contact, Monero address, or Bitcoin address whose
-Base58Check or bech32/bech32m checksum verifies) adds
-`HUMAN_REVIEW`, wherever the solicitation is. `OFF_PLATFORM_CONTACT` remains the
-narrower finding for a destination and solicitation in the same clause.
+Base58Check or bech32/bech32m checksum verifies) adds `HUMAN_REVIEW` and the
+Go-only `EXTERNAL_DESTINATION`, wherever the solicitation is, so a listing with an
+off-site contact no longer looks identical to a clean one (both already carry
+`HUMAN_REVIEW` with `MODEL_NOT_USED`). Neither grammar can emit
+`EXTERNAL_DESTINATION`, and Go refuses it from a model. `OFF_PLATFORM_CONTACT` remains the
+narrower finding for a destination and solicitation in the same clause
+(`TestRouteExternalDestinationCode`).
 `tests/fixtures/injection/corpus.json` labels each case `escalate`,
 `human_review` or `miss`; in a review, dispute or payment flag, known misses
 (other languages, phrases split around an intervening field, other encodings,
-paraphrased intent) reach the model, whose recall is unmeasured. In a listing or
-upload they reach the human queue.
+paraphrased intent) reach the model, whose recall is unmeasured. A miss carries
+no deterministic signal; it still reaches the human queue because no model
+proposal is automatic (see [dispositions](#dispositions-and-failure-behavior)).
 
 The model never judges listings by text (owner directive). Listing and upload
 jobs are evaluated by the deterministic checks only, whether or not `--model` is
@@ -206,23 +284,26 @@ write verb is not seen.
 
 ## Proposal protocol
 
-The `moderation-v5` model response has exactly these seven JSON fields. Additional fields, missing fields,
+The `moderation-v6` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
 | --- | --- |
 | `item_id` | The fixed item alias `ITEM` supplied in the request |
 | `action` | An allowlisted suggestion, such as `NO_ACTION` or `FLAG_REVIEW` |
-| `confidence` | Finite value from 0 through 1; uncertainty must reduce confidence |
-| `reason_codes` | Codes a model may assert: `SPAM_TEMPLATE`, `SCAM_TEMPLATE`, `OFF_PLATFORM_CONTACT`, `INJECTION_SUSPECTED`, `DETERMINISTIC_CONFLICT`, `HUMAN_REVIEW`, or `NO_FINDING` alone |
+| `confidence` | Finite value from 0 through 1; uncertainty must reduce confidence. Uncalibrated: it is recorded, and a value below `--confidence-floor` adds `LOW_CONFIDENCE` and risk, but no value clears an item |
+| `reason_codes` | Codes a model may assert, each at most once and in this order: `SPAM_TEMPLATE`, `SCAM_TEMPLATE`, `OFF_PLATFORM_CONTACT`, `INJECTION_SUSPECTED`, `DETERMINISTIC_CONFLICT`, `HUMAN_REVIEW`; or `NO_FINDING` alone |
 | `injection_suspected` | Whether hostile instructions or protocol manipulation were detected |
-| `evidence_ids` | Aliases `E1`, `E2`, … for this item's references |
-| `canary` | Exact reserved response-integrity token supplied for this request |
+| `evidence_ids` | Aliases `E1`, `E2`, … for this item's references, at most one entry per alias |
+| `canary` | Exact reserved response-integrity token supplied for this request: `m-` and 8 lowercase hex characters derived from the input hash |
 
 Stage A may report only `SPAM_TEMPLATE`, `SCAM_TEMPLATE`, `OFF_PLATFORM_CONTACT`,
-`INJECTION_SUSPECTED`, `HUMAN_REVIEW` or `NO_FINDING` alone. Duplicate, price,
+`INJECTION_SUSPECTED`, `HUMAN_REVIEW` (each at most once, in that order) or
+`NO_FINDING` alone. Each grammar gives every reason code one optional slot in a
+fixed order, so a constrained model cannot repeat a code; Go still refuses a
+repeat (`TestGrammarsCannotRepeatReasonCode`). Duplicate, price,
 completeness, normalization, novelty, actor, money, confidence, model-failure,
-protocol, policy and deadline codes are added by Go alone; both grammars and Go
+protocol, destination, policy and deadline codes are added by Go alone; both grammars and Go
 validation refuse them from a model. Go maps the aliases back to trusted
 references, so no item, content or actor hash reaches either prompt. Stage B sees
 duplicate checks as counts and match outcomes, not hashes, and the actor's account
@@ -250,7 +331,7 @@ untrusted.
 Go derives review summaries and injection-evidence descriptions from validated
 codes and references. Model-written prose is rejected. Historical records keep
 their immutable bytes, while the current queue also renders their presentation
-from codes. Reply drafting is excluded from model actions; v1 through v4
+from codes. Reply drafting is excluded from model actions; v1 through v5
 protocol pins are refused.
 
 The action names include suggestions for sensitive actions so those proposals
@@ -259,23 +340,60 @@ to execute them. A release or refund suggestion cannot satisfy a payment
 invariant, and an arbitrary model assertion cannot become a human signature.
 
 The canary is not secret and does not establish prompt-injection resistance by
-itself. Go schema and reference validation supplement grammar-constrained
-decoding; syntax alone cannot establish factual accuracy. Before each stage the
-adapter counts the prompt with the runtime's `/tokenize` endpoint and refuses
-one that cannot fit beside the 1536-token output limit in the launcher's
-4096-token context. It accepts a completion only when the runtime reports an
+itself. The grammar forces it into every completion, so it is ten ASCII
+characters (at most ten tokens in any vocabulary that holds every ASCII byte);
+the pre-v6 `moderation-` plus 32 hex form was about 33 of a median 83 generated
+tokens. Go still compares it and records `CANARY_MISMATCH` on a mismatch. Go
+schema and reference validation supplement grammar-constrained
+decoding; syntax alone cannot establish factual accuracy.
+
+Both grammars end at the closing brace, and every repetition is bounded
+(whitespace is at most four spaces, tabs or newlines in a row), so the grammar's
+language is finite and only end-of-sequence can follow `}`. The moderation-v5
+grammars ended in unbounded whitespace: on llama.cpp b1-9ff0d7e90 every
+completion then emitted newlines until its output limit (`stop_type` `limit`),
+so every modelled item was `MODEL_FAILURE` (`TestGrammarsTerminateAtRoot`).
+Before each stage the adapter counts the prompt with the runtime's `/tokenize`
+endpoint and refuses one that cannot fit beside the 256-token output limit in
+the launcher's 4096-token context. It accepts a completion only when the runtime reports an
 end-of-sequence or stop-word finish (`stop_type`, or the older `stopped_*`
-flags), `truncated` false and a matching `tokens_evaluated`. A runtime without
+flags), `truncated` false and a matching `tokens_evaluated`; a generation that
+reaches 256 tokens is refused (`TestCompletionAtPredictLimitFailsClosed`). A runtime without
 those fields or that endpoint gets `MODEL_FAILURE` and human review. Longer or
 token-dense items, such as long non-Latin reviews, therefore reach human review
 without a model proposal. The embedded grammar still needs validation against
 the operator's selected real runtime.
 
+### Token budget, throughput and model size
+
+These figures come from the war-room's local-runtime instrument (iteration 94,
+an unpinned 7B Q4_0 model on llama.cpp b1-9ff0d7e90), not from a pinned
+production model or the shipped launcher on a deployed host:
+
+- Per item, Stage A's prompt was about 487 tokens (median) and Stage B's about
+  781. Generated replies were about 83 (Stage A) and 92 (Stage B) tokens with the
+  old canary, so about 60 and 70 with the short one. An item therefore costs about
+  1,270 prompt tokens and 130–175 generated tokens, against an output limit of 256
+  per stage and a prompt limit of 3,832 per stage.
+- One `--model-timeout` deadline (default 20 s, at most 30 s) covers both stages,
+  including queueing behind the runtime's single slot. If prompt processing and
+  generation each get half of it, the runtime needs roughly 130 prompt tokens/s
+  and 13 generated tokens/s at the 20 s default (85 and 9 at the 30 s cap) for a
+  median item; longer items need more. Anything slower is `MODEL_FAILURE`.
+- At the shipped launcher limits (`cpus: 2`, `--threads 2`) only models of about
+  1–2B parameters can plausibly meet that; the instrument's 7B Q4_0 model failed
+  12 of 12 items there. Measure the selected model on the shipped launcher before
+  enabling `--model`.
+- Model-stated confidence is uncalibrated. In moderation-v6 a model proposal is
+  never `AUTO_APPLY` at any confidence; every one waits for a human
+  (`TestModelProposalNeverAutoApplies`). An opt-in gated on a measured evaluation
+  report is separate work (A-692).
+
 ## Dispositions and failure behavior
 
 | Disposition | Effect |
 | --- | --- |
-| `AUTO_APPLY` | Record only a benign `NO_ACTION`/`NO_FINDING` model classification of a review with no external destination or weak instruction marker (listings and uploads never reach a model; money-related items escalate); no marketplace entity is changed |
+| `AUTO_APPLY` | Not produced in moderation-v6: a model proposal, even a confident `NO_ACTION`/`NO_FINDING`, waits for a human, and deterministic results never clear an item. Rows stored by earlier protocols keep it and show as automatic history; it never changed a marketplace entity |
 | `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
 | `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
 | `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
@@ -327,8 +445,8 @@ summary or timeline from that limited context. The core's advisory
 order/timer observations do not replace the market's full transactional state
 machine or schedule new release/refund actions.
 
-Every `FLAG_REVIEW` reaches the human queue or the higher-priority administrator
-queue. A `NO_ACTION` label cannot hide review findings in automatic history.
+Every proposal, `FLAG_REVIEW` or `NO_ACTION`, reaches the human queue or the
+higher-priority administrator queue; new work never enters automatic history.
 
 ## Records and recovery
 
@@ -401,7 +519,10 @@ controller logs `moderation-worker: stored moderation budget is higher; flag
 ignored (--max-records)` (or `--max-reserved-bytes`) and starts with the stored
 value, instead of lowering it or exiting below the allocations made since. A
 higher flag still raises it. `--max-pending` is applied as given, never below the
-active jobs. A no-flag restart can drain prepaid legacy work even when
+active jobs. A flag that changes the stored limits writes one audit row without
+an actor, "Moderation limits changed from max-pending 256, max-records 4096,
+max-reserved-bytes 268435456 to max-pending 300, max-records 4096,
+max-reserved-bytes 268435456 by host command"; flags that change nothing write none. A no-flag restart can drain prepaid legacy work even when
 legacy inventory exceeds the admission limits. This changes collection capacity, never retention or marketplace
 state. Application-only redeployment does not enlarge the budget.
 
@@ -581,12 +702,35 @@ rows remain unchanged.
 ## Review and service inventory
 
 On the private administrator connection, open `/admin/moderation`. Ordinary
-moderators and public ingress cannot reach this queue. It shows bounded health
-classes, prompt and weights pins, last pass, job/proposal/escalation counts and
+moderators and public ingress cannot reach this queue. It shows the capture
+state, bounded health classes, prompt and weights pins, last pass, pass interval,
+the last database outage the worker recovered from, a stopped-worker warning
+([supervision](#supervise-the-controller)), job/proposal/escalation counts and
 injection-suspicion counts. Endpoint identities and raw transport errors are
 omitted. Current status is the last worker observation, not live runtime
 attestation. **Accept**, **Dismiss** and **Hold** annotate a proposal only; the
 existing marketplace entity is unchanged.
+
+The review queue has three views. **Unreviewed** (the default) lists proposals
+without a review whose deadline is still ahead: `ESCALATE_ADMIN` proposals (such as
+disputes, payment flags and injection suspicions) first, then the soonest
+deadline, 50 per page. **Deadline passed** (`?state=expired`) lists unreviewed
+proposals past their deadline, shown as `HOLD` with the disposition they proposed;
+they no longer appear under Unreviewed. **Review and classification history**
+(`?state=reviewed`) lists recorded reviews and `AUTO_APPLY` classifications, newest
+first. A plain GET form filters any view by kind (`listing`, `upload`, `dispute`,
+`review`, `payment_flag`) and stored disposition; paging links keep the view and
+filters, and an unknown or repeated value is refused (400), never interpolated into SQL.
+The summary above the queue links its counts to these views: unreviewed with a
+deadline ahead, escalations among them, and those past their deadline. The review
+form preselects nothing; **Hold: keep marketplace state, close this proposal**
+records a hold and moves the proposal to history like the other choices, so open
+the source to act on the marketplace. Each choice needs the password (and
+authenticator code when enrolled). An upload proposal links to where its image is
+shown: the listing for a photo, the order for dispute evidence, the account page
+for an avatar, and nothing once the image is deleted. Confidence is labelled
+model-stated and uncalibrated: it is the model's own figure (0 when no model was
+used), not a measured probability.
 
 To include a selected llama.cpp runtime in the existing signed dependency
 inventory, explicitly pass `--current llama.cpp=bNNNN` to the separate
@@ -601,10 +745,17 @@ runtime binary. See [version-worker setup](install/service-topology.md#version-w
 
 The [validation evidence](evidence/moderation-agent-validation.md) distinguishes
 native grammar-parser checks, Go/database/browser tests, synthetic process
-isolation and unverified production operation. Both current grammars
-(unchanged from moderation-v3 through moderation-v5) passed the pinned upstream
-parser: 25 cases (6 accepted, 19 rejected) and an independent rebuild with 22 cases, all as expected; this does not
-establish correct model judgment.
+isolation and unverified production operation. The moderation-v3 through
+moderation-v5 grammars passed the pinned upstream parser (25 cases, and an
+independent rebuild with 22), but those checks proved only that the parser
+accepted valid replies and refused invalid ones. They did not show that a
+generation terminates: those grammars let a runtime append whitespace without
+end, and on a real runtime every completion did. The moderation-v6 grammars
+passed the same pinned parser in 35 cases (10 accepted, 25 rejected), including
+refusals of any character after the closing brace, five whitespace characters in
+a row and a repeated reason code. A parser check still does not establish that a
+selected model terminates within budget at the shipped limits, or that its
+judgments are correct.
 
 The [supplied proposal comparison](moderation-proposal-comparison.md) records
 which principles were retained, which integration/security examples were

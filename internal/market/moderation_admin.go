@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -32,6 +33,47 @@ type ModerationAdminView struct {
 	PreviousURL, NextURL                                      string
 	Reviewed                                                  bool
 	Capacity                                                  *ModerationCapacityView
+	// A-685: the queue view ("" unreviewed with a deadline ahead, "expired", "reviewed"), its kind and disposition
+	// filters (allowlisted, "" for all), and the unreviewed counts the summary links to.
+	State, Kind, Disposition                  string
+	QueueOpen, QueueEscalations, QueueExpired int
+
+	// CaptureOn is settings.moderation_enabled; Stale is moderationWorkerStale's warning; PassInterval and LastOutage
+	// are the worker's stored interval and its last recovered database outage (migration 152, A-683).
+	CaptureOn                       bool
+	Stale, PassInterval, LastOutage string
+}
+
+// moderationQueueFilter is a validated queue view: each value is "" or one of moderationQueueStates, the moderation
+// kinds or the dispositions, so the query only ever binds an allowlisted value as a parameter.
+type moderationQueueFilter struct{ State, Kind, Disposition string }
+
+var (
+	moderationQueueStates       = []string{"expired", "reviewed"}
+	moderationQueueKinds        = []string{"listing", "upload", "dispute", "review", "payment_flag"}
+	moderationQueueDispositions = []string{"ESCALATE_ADMIN", "QUEUE_HUMAN", "HOLD", "AUTO_APPLY"}
+)
+
+// KindOptions and DispositionOptions are the queue filter's choices.
+func (*ModerationAdminView) KindOptions() []string        { return moderationQueueKinds }
+func (*ModerationAdminView) DispositionOptions() []string { return moderationQueueDispositions }
+
+func moderationQueueFilterFrom(q url.Values) (moderationQueueFilter, error) {
+	var f moderationQueueFilter
+	for _, p := range []struct {
+		key     string
+		allowed []string
+		dst     *string
+	}{{"state", moderationQueueStates, &f.State}, {"kind", moderationQueueKinds, &f.Kind}, {"disposition", moderationQueueDispositions, &f.Disposition}} {
+		values := q[p.key]
+		if len(values) > 1 || len(values) == 1 && values[0] != "" && !slices.Contains(p.allowed, values[0]) {
+			return f, fail(400, "Choose a moderation queue view, kind and disposition from the page.")
+		}
+		if len(values) == 1 {
+			*p.dst = values[0]
+		}
+	}
+	return f, nil
 }
 
 type ModerationCapacityView struct {
@@ -56,12 +98,20 @@ type ModerationSuggestionView struct {
 	Risk                                            int
 	Confidence                                      string
 	Expired, CanAccept                              bool
+	// Proposed is the stored disposition of an unreviewed proposal shown as HOLD because its deadline passed.
+	Proposed string
 }
 
 func init() {
 	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 		d.PrivateModerationAccess = !a.preview && a.adminSocket != "" && privateAdminIngress(ctx) && d.User != nil && d.User.Role == "admin"
-		return nil
+		d.ModerationWorkerStale = ""
+		if !d.PrivateModerationAccess || a.db == nil || d.AdminSection != "" {
+			return nil
+		}
+		var err error
+		_, d.ModerationWorkerStale, err = moderationWorkerStale(ctx, a.db)
+		return err
 	})
 	registerPage("admin/moderation", pageSpec{Protected: true, Roles: []string{"admin"}})
 	registerLoader("admin/moderation", loadModerationAdmin)
@@ -69,6 +119,29 @@ func init() {
 	registerAction(moderationReviewPath, actionSpec{Roles: []string{"admin"}, OwnTx: true,
 		ConfirmedFormNonce: true, OneAtATime: true, ReceiptAuthorize: moderationReviewAuthorize,
 		Run: moderationReviewAction})
+}
+
+// moderationWorkerStale reports whether capture is on and, while it is, the fixed warning once the worker's last pass
+// is older than three of its stored pass intervals (one minute when none is stored) plus a five-minute margin for a
+// pass's own work, or when no pass was ever reported (A-683). Capture enqueues without a worker, so a stopped one is
+// otherwise invisible. Ages use the database's clock, as last_pass does. One plain read, no lock.
+func moderationWorkerStale(ctx context.Context, db *sql.DB) (bool, string, error) {
+	var capture, passed, stale bool
+	var minutes int64
+	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value='true' FROM settings WHERE key='moderation_enabled'),false),
+	 s.last_pass IS NOT NULL,COALESCE(floor(extract(epoch FROM now()-s.last_pass)/60),0)::bigint,
+	 COALESCE(now()-s.last_pass>make_interval(secs=>3*COALESCE(s.pass_interval_seconds,60)+300),true)
+	 FROM moderation_worker_status s WHERE s.singleton`).Scan(&capture, &passed, &minutes, &stale)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil || !capture || !stale {
+		return capture, "", err
+	}
+	if !passed {
+		return true, "No pass reported yet; the worker may have stopped.", nil
+	}
+	return true, "No pass for " + strconv.FormatInt(minutes, 10) + " minutes; the worker may have stopped.", nil
 }
 
 func moderationPrivateRoute(path string) bool {
@@ -96,15 +169,33 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	} else if err != nil || page < 1 || page > 10000 {
 		return fail(400, "Choose a moderation queue page between 1 and 10000.")
 	}
-	v := &ModerationAdminView{Page: page, Reviewed: r.URL.Query().Get("state") == "reviewed"}
+	filter, err := moderationQueueFilterFrom(r.URL.Query())
+	if err != nil {
+		return err
+	}
+	v := &ModerationAdminView{Page: page, Reviewed: filter.State == "reviewed", State: filter.State, Kind: filter.Kind, Disposition: filter.Disposition}
 	var state, failure, prompt, weights string
-	var last sql.NullTime
-	err = a.db.QueryRowContext(ctx, `SELECT model_state,prompt_version,weights_hash,last_pass,failure_class
-	 FROM moderation_worker_status WHERE singleton`).Scan(&state, &prompt, &weights, &last, &failure)
+	var last, outageFrom, outageUntil sql.NullTime
+	var interval sql.NullInt64
+	err = a.db.QueryRowContext(ctx, `SELECT model_state,prompt_version,weights_hash,last_pass,failure_class,pass_interval_seconds,db_outage_from,db_outage_until
+	 FROM moderation_worker_status WHERE singleton`).Scan(&state, &prompt, &weights, &last, &failure, &interval, &outageFrom, &outageUntil)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
+	if v.CaptureOn, v.Stale, err = moderationWorkerStale(ctx, a.db); err != nil {
+		return err
+	}
 	v.ModelState = moderationModelState(state)
+	if !v.CaptureOn {
+		// Capture off is not a missing model: no worker is expected to run (A-683).
+		v.ModelState = "Not in use while capture is off"
+	}
+	if interval.Valid {
+		v.PassInterval = strconv.FormatInt(interval.Int64, 10) + " seconds"
+	}
+	if outageFrom.Valid && outageUntil.Valid {
+		v.LastOutage = outageFrom.Time.UTC().Format(time.RFC3339) + " until " + outageUntil.Time.UTC().Format(time.RFC3339)
+	}
 	v.Failure = moderationFailureLabel(failure)
 	if moderationRevisionPattern.MatchString(prompt) {
 		v.PromptVersion = prompt
@@ -143,18 +234,35 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
+	// The summary's unreviewed counts, bounded by the lifetime allocation budget like the queue itself.
+	if err = a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE s.expires_at>$1),count(*) FILTER (WHERE s.expires_at>$1 AND s.disposition='ESCALATE_ADMIN'),
+	 count(*) FILTER (WHERE s.expires_at<=$1) FROM moderation_suggestions s
+	 WHERE s.disposition<>'AUTO_APPLY' AND NOT EXISTS(SELECT 1 FROM moderation_reviews r WHERE r.suggestion_id=s.id)`, now).Scan(&v.QueueOpen, &v.QueueEscalations, &v.QueueExpired); err != nil {
+		return err
+	}
+	// A-685: the default view holds unreviewed proposals whose deadline is ahead, escalations first and then the
+	// soonest deadline; "expired" holds the unreviewed ones past it (shown as HOLD), escalations first and then the
+	// most recently expired; "reviewed" is the history, newest first. Every filter value is allowlisted and bound.
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.target_id,s.disposition,s.risk_score,s.confidence,
 	 s.input_hash,s.output_hash,s.created_at,s.expires_at,s.decision,coalesce(r.action,''),coalesce(j.metadata->>'order_id',j.snapshot->>'order_id',''),
-	 coalesce(e.id,0),coalesce(octet_length(e.encrypted_payload),0),s.storage_version
+	 coalesce(e.id,0),coalesce(octet_length(e.encrypted_payload),0),s.storage_version,
+	 coalesce(i.kind,''),coalesce(i.product_id,''),coalesce(i.order_id,''),coalesce(iu.handle,'')
 	 FROM moderation_suggestions s JOIN moderation_jobs j ON j.id=s.job_id
 	 LEFT JOIN moderation_reviews r ON r.suggestion_id=s.id
 	 LEFT JOIN moderation_escalations e ON e.latest_suggestion_id=s.id
-	 WHERE (r.suggestion_id IS NOT NULL OR s.disposition='AUTO_APPLY')=$1 ORDER BY s.created_at DESC,s.id DESC LIMIT 51 OFFSET $2`, v.Reviewed, (page-1)*50)
+	 LEFT JOIN images i ON s.kind='upload' AND i.id=s.target_id LEFT JOIN users iu ON iu.id=i.owner_user_id
+	 WHERE CASE $1 WHEN 'reviewed' THEN r.suggestion_id IS NOT NULL OR s.disposition='AUTO_APPLY'
+	  ELSE r.suggestion_id IS NULL AND s.disposition<>'AUTO_APPLY' AND (s.expires_at<=$2)=($1='expired') END
+	  AND ($3='' OR s.kind=$3) AND ($4='' OR s.disposition=$4)
+	 ORDER BY CASE WHEN $1<>'reviewed' AND s.disposition='ESCALATE_ADMIN' THEN 0 ELSE 1 END,
+	  CASE WHEN $1='' THEN s.expires_at END,CASE WHEN $1='expired' THEN s.expires_at END DESC,
+	  CASE WHEN $1='reviewed' THEN s.created_at END DESC,s.id DESC LIMIT 51 OFFSET $5`,
+		filter.State, now, filter.Kind, filter.Disposition, (page-1)*50)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	now := time.Now().UTC()
 	for rows.Next() {
 		var item ModerationSuggestionView
 		var created, expires time.Time
@@ -163,12 +271,14 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		var review, orderID string
 		var escalationID, encryptedBytes int64
 		var storageVersion int
+		var image moderationImageRef
 		if err = rows.Scan(&item.ID, &item.Kind, &item.TargetID, &item.Disposition, &item.Risk, &confidence,
-			&item.InputHash, &item.OutputHash, &created, &expires, &decision, &review, &orderID, &escalationID, &encryptedBytes, &storageVersion); err != nil {
+			&item.InputHash, &item.OutputHash, &created, &expires, &decision, &review, &orderID, &escalationID, &encryptedBytes, &storageVersion,
+			&image.Kind, &image.Product, &image.Order, &image.Handle); err != nil {
 			return err
 		}
 		if len(v.Items) == 50 {
-			v.NextURL = moderationQueueURL(page+1, v.Reviewed)
+			v.NextURL = moderationQueueURL(page+1, filter)
 			continue
 		}
 		item.Created, item.Expires = created.UTC().Format(time.RFC3339), expires.UTC().Format(time.RFC3339)
@@ -176,6 +286,9 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		item.DefaultAction, item.Expired = "HOLD", !expires.After(now)
 		item.CanAccept = review == "" && !item.Expired && item.Disposition != string(moderation.Hold)
 		if item.Expired && review == "" && !automatic {
+			if item.Disposition != string(moderation.Hold) && slices.Contains(moderationQueueDispositions, item.Disposition) {
+				item.Proposed = item.Disposition
+			}
 			item.Disposition = string(moderation.Hold)
 		}
 		if !slices.Contains([]string{"AUTO_APPLY", "QUEUE_HUMAN", "ESCALATE_ADMIN", "HOLD"}, item.Disposition) {
@@ -187,7 +300,7 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		}
 		item.Confidence = strconv.FormatFloat(confidence, 'f', 2, 64)
 		item.InputHash, item.OutputHash = moderationSafeHash(item.InputHash), moderationSafeHash(item.OutputHash)
-		item.TargetURL = moderationTargetURL(item.Kind, item.TargetID, orderID)
+		item.TargetURL = moderationTargetURL(item.Kind, item.TargetID, orderID, image)
 		if escalationID > 0 && encryptedBytes > 0 && encryptedBytes <= 256<<10 {
 			item.EscalationURL = "/admin/moderation/escalation?id=" + strconv.FormatInt(escalationID, 10)
 		}
@@ -221,7 +334,7 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		return err
 	}
 	if page > 1 {
-		v.PreviousURL = moderationQueueURL(page-1, v.Reviewed)
+		v.PreviousURL = moderationQueueURL(page-1, filter)
 	}
 	d.Moderation, d.Title = v, "Moderation review"
 	return nil
@@ -311,15 +424,24 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 	})
 }
 
-func moderationQueueURL(page int, reviewed bool) string {
+// moderationQueueURL is a queue page that keeps the view and its filters.
+func moderationQueueURL(page int, f moderationQueueFilter) string {
 	q := url.Values{"page": {strconv.Itoa(page)}}
-	if reviewed {
-		q.Set("state", "reviewed")
+	for key, value := range map[string]string{"state": f.State, "kind": f.Kind, "disposition": f.Disposition} {
+		if value != "" {
+			q.Set(key, value)
+		}
 	}
 	return "/admin/moderation?" + q.Encode()
 }
 
-func moderationTargetURL(kind, id, order string) string {
+// moderationImageRef is the current image row behind an upload proposal (all "" once the image is gone).
+type moderationImageRef struct{ Kind, Product, Order, Handle string }
+
+// moderationTargetURL is the page showing a proposal's current source (A-685: an upload's photo on its listing,
+// dispute evidence on its order, an avatar on its account page), or "" when there is none or an id fails the
+// allowlist.
+func moderationTargetURL(kind, id, order string, img moderationImageRef) string {
 	if !signInNextID.MatchString(id) {
 		return ""
 	}
@@ -329,6 +451,15 @@ func moderationTargetURL(kind, id, order string) string {
 	case "dispute", "payment_flag", "review":
 		if signInNextID.MatchString(order) {
 			return "/order?id=" + url.QueryEscape(order)
+		}
+	case "upload":
+		switch {
+		case img.Kind == "photo" && signInNextID.MatchString(img.Product):
+			return "/product?id=" + url.QueryEscape(img.Product)
+		case img.Kind == "evidence" && signInNextID.MatchString(img.Order):
+			return "/order?id=" + url.QueryEscape(img.Order)
+		case img.Kind == "avatar" && handlePattern.MatchString(img.Handle):
+			return adminUserURL(img.Handle)
 		}
 	}
 	return ""
@@ -456,7 +587,7 @@ func moderationReviewLabel(value string) string {
 	case "dismiss":
 		return "Dismissed"
 	case "hold":
-		return "Held"
+		return "Held; proposal closed"
 	default:
 		return "Pending"
 	}

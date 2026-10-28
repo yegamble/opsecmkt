@@ -41,7 +41,7 @@ func TestModerationWorkerRejectsInvalidConfiguration(t *testing.T) {
 
 func TestModerationWorkerRejectsRetiredPromptProtocol(t *testing.T) {
 	t.Setenv("MODERATION_ENABLED", "")
-	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3"} {
+	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3", "moderation-v4", "moderation-v5"} {
 		if err := runModerationWorker(context.Background(), []string{"--prompt-version", retired}, &bytes.Buffer{}); err == nil {
 			t.Fatalf("retired model protocol %s was accepted", retired)
 		}
@@ -108,9 +108,17 @@ func TestModerationWorkerRequiresBackfillMigration(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO ` + schema + `.schema_migrations(version,name) VALUES(146,'146_moderation_backfill.sql')`); err != nil {
 		t.Fatal(err)
 	}
+	// Every pass also writes migration 152's status columns (A-683).
+	err = runModerationWorker(context.Background(), []string{"--enabled", "--once"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "application migrations required") {
+		t.Fatalf("worker enabled without migration 152: %v", err)
+	}
+	if _, err = db.Exec(`INSERT INTO ` + schema + `.schema_migrations(version,name) VALUES(152,'152_moderation_worker_supervision.sql')`); err != nil {
+		t.Fatal(err)
+	}
 	err = runModerationWorker(context.Background(), []string{"--enabled", "--once"}, &bytes.Buffer{})
 	if err == nil || strings.Contains(err.Error(), "application migrations required") {
-		t.Fatalf("migration 146 check did not pass once recorded: %v", err)
+		t.Fatalf("migration 146 and 152 check did not pass once recorded: %v", err)
 	}
 }
 

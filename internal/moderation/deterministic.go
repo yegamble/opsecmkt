@@ -238,18 +238,17 @@ func contextualOffPlatformSolicitation(value string) bool {
 	return false
 }
 
-// reviewOnlySignal reports a recognised external destination (onion, I2P,
-// Telegram, Session, SimpleX, XMPP, Monero or checksum-valid Bitcoin address) or weak
-// instruction-like wording in any field. Solicitation may sit in another
-// sentence or field, so neither accuses nor skips the model, but either keeps
-// the item out of automatic history.
-func reviewOnlySignal(in NormalizedInput) bool {
+// reviewOnlySignal reports whether any field holds a recognised external
+// destination (onion, I2P, Telegram, Session, SimpleX, XMPP, Monero or
+// checksum-valid Bitcoin address) and whether any holds weak instruction-like
+// wording. Solicitation may sit in another sentence or field, so neither
+// accuses nor skips the model; Route asks a human for either.
+func reviewOnlySignal(in NormalizedInput) (destination, instruction bool) {
 	for _, f := range in.Fields {
-		if externalContactDestination.MatchString(f.Value) || paymentAddressDestination.MatchString(f.Value) || bitcoinAddressDestination(f.Value) || weakInstructionMarker(f.Value) {
-			return true
-		}
+		destination = destination || externalContactDestination.MatchString(f.Value) || paymentAddressDestination.MatchString(f.Value) || bitcoinAddressDestination(f.Value)
+		instruction = instruction || weakInstructionMarker(f.Value)
 	}
-	return false
+	return destination, instruction
 }
 
 func repeatedWord(value string) bool {

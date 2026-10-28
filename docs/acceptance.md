@@ -61,8 +61,27 @@ acceptance requirements, not a declaration of deployed verification:
 - Grammar constraints are followed by Go schema, allowlist, bounds, canary and
   evidence-reference validation. Stage B receives validated findings rather than
   raw submitted text. No model response gains a tool, signer or database authority.
-- The model does not judge listings by text (A-651, `moderation-v5`, v4 pins
-  refused). With the model enabled, listing and upload jobs make no model call
+- No model proposal is `AUTO_APPLY` at any confidence (A-684, `moderation-v6`,
+  v1–v5 pins refused): a confident clean model result, through a custom adapter or
+  the two-stage local adapter, routes `QUEUE_HUMAN`, while no-model routing keeps
+  its reasons and score; an `AUTO_APPLY` row stored by an earlier protocol still
+  renders as history. Both grammars end at `}` with whitespace bounded to four
+  characters and no unbounded repetition, so nothing may follow the closing brace;
+  each completion asks for at most 256 tokens and a generation stopped at that
+  limit is `MODEL_FAILURE`; the canary is `m-` plus 8 hex and Go still refuses a
+  mismatch; neither grammar can repeat a reason code and Go still refuses one; a
+  recognised destination adds the Go-only `EXTERNAL_DESTINATION`, which neither
+  grammar nor Go validation accepts from a model, so a listing with
+  `telegram @handle` and a plain one get different codes and summaries
+  (`TestModelProposalNeverAutoApplies`, `TestGrammarsTerminateAtRoot`,
+  `TestCompletionAtPredictLimitFailsClosed`, `TestCanaryIsShortAndChecked`,
+  `TestGrammarsCannotRepeatReasonCode`, `TestRouteExternalDestinationCode`,
+  `TestModerationAdminBenignModelResultQueuesForHuman`; unit, a Go GBNF test
+  oracle, database integration and 35 cases on the pinned native llama.cpp
+  grammar parser. None runs a model: termination within budget on a selected
+  model at the shipped launcher limits is unverified).
+- The model does not judge listings by text (A-651, first in `moderation-v5`).
+  With the model enabled, listing and upload jobs make no model call
   and the adapter refuses them; with no deterministic finding they record the
   Go-only `MODEL_NOT_USED` and route exactly as an absent model does
   (`QUEUE_HUMAN`, never `AUTO_APPLY`), while reviews still reach the model.
@@ -231,6 +250,19 @@ acceptance requirements, not a declaration of deployed verification:
   and no external inference, redirects, model downloads or ambient proxy egress.
   Deployed runtime secret/mount/network isolation needs an actual host rehearsal;
   package tests alone cannot establish it.
+- The private review queue lists unexpired `ESCALATE_ADMIN` proposals first and
+  then the soonest deadline; with 60 listing proposals and one dispute
+  escalation the escalation is first on page 1, `?kind=dispute` lists only it,
+  a proposal past its deadline is only under *Deadline passed*, the kind and
+  disposition filters survive paging and unknown values are refused (400); the
+  review form preselects no choice and its hold option says the proposal closes
+  and marketplace state is kept; upload proposals link to the photo's listing,
+  the evidence's order or the avatar's account page and to nothing once the image
+  is deleted; confidence is labelled model-stated and uncalibrated
+  (`TestModerationAdminQueueFiltersAndOrder`, `TestModerationAdminHoldLabel`,
+  `TestModerationAdminUploadTargetLinks`, `TestModerationTargetURLAllowlist`,
+  `TestModerationAdminConfidenceLabel`, A-685). The page is served only on the
+  private administrator socket, so no browser test covers it.
 - Administrator diagnostics expose only bounded review metadata and health
   classes, not runtime endpoints, credentials or raw transport errors. Verify
   no-JavaScript rendering and sensitive-data access on the deployed private path.
@@ -259,6 +291,11 @@ The strengthened v2 contract additionally requires:
 - Aging priority lets old ordinary work overtake new urgent work. Live ownership
   rate checks still work after completed actor-link removal. Restarted controllers
   preserve configured policy; explicit partial limit updates preserve other limits.
+- The controller sends nothing to a remote database host unless the DSN uses
+  `sslmode=verify-full`. A database restart is retried, not fatal, and recorded
+  as `db_unavailable` after reconnecting; a stopped worker is shown on the private
+  panel and overview while capture is on. Capture and limit changes by host
+  command are audited once per change (A-682, A-683, A-687).
 - Uniform, monotone and low-contrast new image hashes do not create perceptual
   matches. Exact SHA256 and useful informative/legacy hashes remain supported;
   no orientation/crop/semantic-image guarantee is implied.
@@ -667,6 +704,7 @@ These checks require recorded implementation and workflow verification before ma
 - [x] PR #111's listing writes follow the same rule: a vendor's change to the subcategory or additional shipping regions re-holds an approved listing through the edit form, and a switch between vendor-delivered and automatic digital delivery re-holds it, while switching between the two automatic methods, digital units and stock do not; the vendor-contact rule counts only approved listings (`TestListingShippingRegionChangeReholds`, `TestListingDigitalDeliveryModeChangeReholds`).
 - [x] A rejected listing needs no administrator: its vendor's change to what buyers see, or a new photo, resubmits it (pending, reason cleared, "Resubmitted listing … for review" audited) whatever the mode, and approval then publishes it; a stock-only change, switching to publish or an administrator's edit leaves it rejected with its reason; a reject form rendered before the vendor's change is refused (409); retention's withdrawn-listing purge clears the reason (`TestListingRejectedVendorEditsAndResubmits`, `TestListingRejectionReasonFollowsListingRetention`).
 - [x] Browser journey with JavaScript off: the administrator sets hold, a vendor lists, a buyer cannot find or open it, a moderator rejects it with a reason, the vendor reads "Rejected — <reason>" and edits it, the moderator approves the resubmitted listing and the buyer then sees it; the desk, the vendor desk and the admin panel fit 320 px (`db-listing-review.spec.ts`, `preview-listing-review.spec.ts`).
+- [x] Listings awaiting review (pending, not archived) are counted in the staff navigation badge and the *Needs attention* line, linked to `/moderator#listing-review`, and flag the Vendors section on `/admin`; one pending listing reads "1 listing awaiting review" for a moderator and an administrator, and a moderator who owns it does not count it (`TestStaffAttentionCountsPendingListings`, A-686).
 
 ### Vendor reputation rule (A-653)
 
