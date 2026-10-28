@@ -66,6 +66,7 @@ func main() {
 		os.Exit(1)
 	}
 	healthcheckFlag := flag.Bool("healthcheck", false, "probe the local server's /healthz (ADDR's port, default 8080) and exit 0 only when it answers ok; prints nothing on success (the Compose healthcheck)")
+	checkStartupFlag := flag.Bool("check-startup", false, "run the server's startup checks for this environment (configuration, database, serving lock, recorded migrations, install state, retention ledger) and exit 0 when it would start, 1 with the refusal (serve --check-startup; migrates, serves and writes nothing)")
 	statusFlag := flag.Bool("status", false, "print installed=true|false schema=NNN keyroot=app_secret_key|setup_token for DATABASE_URL and exit (read-only; starts no server; prints no secret)")
 	preview := flag.Bool("preview", false, "read-only UI preview with sample data, binds loopback only")
 	resetAdmin := flag.String("reset-admin-password", "", "host-only break-glass: read a new password for this administrator handle from stdin, end its sessions and exit (starts no server)")
@@ -84,6 +85,22 @@ func main() {
 	if flagGiven("reset-admin-pgp-key-file") && !flagGiven("reset-admin-factors") {
 		fmt.Fprintln(os.Stderr, "-reset-admin-pgp-key-file requires -reset-admin-factors HANDLE")
 		os.Exit(2)
+	}
+	if flagGiven("check-startup") {
+		combined := false
+		for _, name := range []string{"preview", "status", "healthcheck", "reset-admin-password", "bootstrap-admin", "site-name", "set-role", "reset-admin-factors",
+			"reset-admin-pgp-key-file", "export-audit", "export-audit-from", "export-audit-dir", "set-restore-gate", "clear-restore-gate", "enroll-retention"} {
+			combined = combined || flagGiven(name)
+		}
+		if !*checkStartupFlag || combined || len(flag.Args()) != 0 {
+			fmt.Fprintln(os.Stderr, "-check-startup cannot be combined with -preview, host commands or arguments (use -check-startup without =false)")
+			os.Exit(2)
+		}
+		if err := checkStartup(context.Background(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "startup check: refused:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if flagGiven("enroll-retention") {
 		if !*enrollRetentionFlag {

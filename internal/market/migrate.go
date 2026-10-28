@@ -134,6 +134,38 @@ func refuseUnknownMigrations(ctx context.Context, tx *sql.Tx, list []migration) 
 	return nil
 }
 
+// pendingMigrations counts, read-only, the migrations of list that applyMigrations would run, and the highest
+// version recorded (0 when the database was never migrated).
+func pendingMigrations(ctx context.Context, tx *sql.Tx, list []migration) (pending, recorded int, err error) {
+	var exists bool
+	if err = tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&exists); err != nil || !exists {
+		return len(list), 0, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	applied := map[int]bool{}
+	for rows.Next() {
+		var v int
+		if err = rows.Scan(&v); err != nil {
+			return 0, 0, err
+		}
+		applied[v] = true
+		recorded = max(recorded, v)
+	}
+	if err = rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	for _, m := range list {
+		if !applied[m.Version] {
+			pending++
+		}
+	}
+	return pending, recorded, nil
+}
+
 func migrate(ctx context.Context, tx *sql.Tx) error {
 	list, err := loadMigrations(migrationFiles)
 	if err != nil {

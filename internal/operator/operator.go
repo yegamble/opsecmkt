@@ -69,6 +69,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 	flags := flag.NewFlagSet("deploy "+command, flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	directory := flags.String("dir", "./opsecmkt-deployment", "private installation directory")
+	startCheck := startCheckFlag(command, flags)
 	var appImage *string
 	if command == "redeploy" {
 		appImage = flags.String("app-image", "", "replacement app image including @sha256:digest")
@@ -158,7 +159,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			return err
 		}
 		if err := dockerCall(ctx, dir, cfg, out, errOut, "up", "-d", "--wait", "--wait-timeout", "600", "--no-deps", "app"); err != nil {
-			return err
+			return explainStartFailure(ctx, dir, cfg, out, errOut, err)
 		}
 		_, err = fmt.Fprintln(out, "application redeployed; worker services, endpoints, keys and volumes retained")
 		return err
@@ -173,8 +174,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if err := dockerCall(ctx, dir, cfg, out, errOut, "version"); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(out, "configuration valid; Docker Compose reachable; host separation and remote service readiness require deployment verification")
-		return err
+		if _, err = fmt.Fprintln(out, "configuration valid; Docker Compose reachable; host separation and remote service readiness require deployment verification"); err != nil || !*startCheck {
+			return err
+		}
+		return runStartupCheck(ctx, dir, cfg, out, errOut)
 	}
 	if command == "install" || command == "up" {
 		if cfg.Mode == "prod" {
@@ -194,7 +197,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			return err
 		}
 		if err := dockerCall(ctx, dir, cfg, out, errOut, "up", "-d", "--wait", "--wait-timeout", "600"); err != nil {
-			return err
+			return explainStartFailure(ctx, dir, cfg, out, errOut, err)
 		}
 		_, err = fmt.Fprintln(out, "configured containers started; run deploy status and complete first-run administrator setup")
 		return err

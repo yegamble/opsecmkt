@@ -66,6 +66,27 @@ remedy for descriptor errors. Preserve the existing identities and authorization
 
 Only works while setup is pending.
 
+## Native deployment: app unhealthy or restarting
+
+A production `deploy` app container keeps no logs, so `deploy logs` cannot show
+why it does not start. A failed production `install`, `up` or `redeploy` prints
+the app's startup check before it fails. Run the same check yourself:
+
+```sh
+./opsecmkt deploy doctor --dir DIR --start-check
+```
+
+It runs the app image once with `serve --check-startup` (no dependencies, no
+published port, at most 60 seconds), prints one `startup check:` line per check
+with secrets redacted, and keeps nothing. For a native `serve` under a service
+manager, run `opsecmkt serve --check-startup` with the service's own flags and
+environment. The messages are the startup errors below and in
+[UPGRADING.md, Rolling back](../../UPGRADING.md#5-rolling-back). A passing check
+means the cause is a step it does not run: applying pending migrations (within
+`MIGRATION_TIMEOUT`), the Monero wallet RPC, the scanner, a listener, or
+readiness. For the separate upload gateway, run its unit's command
+in the foreground ([production section 5](production.md#5-run-the-scanner-and-supervised-gateway)).
+
 ## Database errors at startup
 
 | Message | Fix |

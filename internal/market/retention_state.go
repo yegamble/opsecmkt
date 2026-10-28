@@ -474,20 +474,111 @@ func (s *retentionService) write() (returnErr error) {
 	return dir.Sync()
 }
 
-func (a *App) initRetention(ctx context.Context, cfg retentionConfig) error {
+// The retention refusals initRetention and checkRetentionPresence share, so a startup check names the same cause.
+var (
+	errRetentionRequired      = errors.New("retention previously enrolled or restore pending: RETENTION_ENABLED and the current external RETENTION_STATE_DIR are required")
+	errRetentionDirNotAbs     = errors.New("RETENTION_STATE_DIR must name an absolute external durable directory")
+	errRetentionDirNotPrivate = errors.New("RETENTION_STATE_DIR must be a private directory (0700)")
+	errRetentionOtherInstance = errors.New("retention state belongs to a different database instance")
+	errRetentionUnresolved    = errors.New("unresolved retention commit: the database has no operation marker; keep restore isolated and reconcile the external journal")
+)
+
+// retentionStateRequired wraps why the external retention state could not be read.
+func retentionStateRequired(err error) error {
+	return fmt.Errorf("current external retention state is required before traffic: %w", err)
+}
+
+// retentionPin is the retention instance this database is bound to (blank before enrollment) and whether a restore
+// is pending (retention_restore_required).
+func retentionPin(ctx context.Context, db *sql.DB) (pin string, restore bool, err error) {
+	err = db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key='retention_instance_id'),''),COALESCE((SELECT value='true' FROM settings WHERE key='retention_restore_required'),false)`).Scan(&pin, &restore)
+	return
+}
+
+// privateRetentionDir refuses a RETENTION_STATE_DIR that is not a private directory.
+func privateRetentionDir(info os.FileInfo) error {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+		return errRetentionDirNotPrivate
+	}
+	return nil
+}
+
+// checkRetentionPresence is initRetention's refusals without its writes (serve --check-startup, A-694): the
+// enrollment pin against RETENTION_ENABLED, the private state directory, the readable external state of the bound
+// instance, its sequence against the database checkpoint, and a marker for each pending operation. It creates no
+// directory or lock file, takes no lock and replays nothing; it returns a line for the operator. Without a settings
+// table (settings false: no server has migrated the database) nothing is enrolled yet.
+func (a *App) checkRetentionPresence(ctx context.Context, cfg retentionConfig, settings bool) (string, error) {
 	var pin string
 	var restore bool
-	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM settings WHERE key='retention_instance_id'),''),COALESCE((SELECT value='true' FROM settings WHERE key='retention_restore_required'),false)`).Scan(&pin, &restore); err != nil {
+	var err error
+	if settings {
+		if pin, restore, err = retentionPin(ctx, a.db); err != nil {
+			return "", err
+		}
+	}
+	if !cfg.Enabled {
+		if pin != "" || restore {
+			return "", errRetentionRequired
+		}
+		return "retention: off", nil
+	}
+	if cfg.StateDir == "" || !filepath.IsAbs(cfg.StateDir) {
+		return "", errRetentionDirNotAbs
+	}
+	if info, err := os.Lstat(cfg.StateDir); err == nil {
+		if err = privateRetentionDir(info); err != nil {
+			return "", err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	s := &retentionService{dir: cfg.StateDir}
+	err = s.read()
+	if errors.Is(err, os.ErrNotExist) && pin == "" && !restore {
+		return "retention: enabled and not yet enrolled; startup would create its external state in RETENTION_STATE_DIR", nil
+	}
+	if err != nil {
+		return "", retentionStateRequired(err)
+	}
+	if pin != "" && pin != s.state.InstanceID {
+		return "", errRetentionOtherInstance
+	}
+	a.retention = s
+	if !settings {
+		if len(s.state.Pending) > 0 {
+			return "", errRetentionUnresolved // a new database has no operation markers
+		}
+		return "retention: external state present; the database is not yet bound to it", nil
+	}
+	if err = a.checkRetentionSequence(ctx, a.db); err != nil {
+		return "", err
+	}
+	for _, op := range s.state.Pending {
+		var committed bool
+		if err = a.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM retention_operations WHERE id=$1)`, op.ID).Scan(&committed); err != nil {
+			return "", err
+		}
+		if !committed {
+			return "", errRetentionUnresolved
+		}
+	}
+	return fmt.Sprintf("retention: external state present (sequence %d, %d pending operation(s) with database markers)", s.state.Sequence, len(s.state.Pending)), nil
+}
+
+func (a *App) initRetention(ctx context.Context, cfg retentionConfig) error {
+	pin, restore, err := retentionPin(ctx, a.db)
+	if err != nil {
 		return err
 	}
 	if !cfg.Enabled {
 		if pin != "" || restore {
-			return errors.New("retention previously enrolled or restore pending: RETENTION_ENABLED and the current external RETENTION_STATE_DIR are required")
+			return errRetentionRequired
 		}
 		return nil
 	}
 	if cfg.StateDir == "" || !filepath.IsAbs(cfg.StateDir) {
-		return errors.New("RETENTION_STATE_DIR must name an absolute external durable directory")
+		return errRetentionDirNotAbs
 	}
 	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
 		return err
@@ -496,8 +587,8 @@ func (a *App) initRetention(ctx context.Context, cfg retentionConfig) error {
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
-		return errors.New("RETENTION_STATE_DIR must be a private directory (0700)")
+	if err = privateRetentionDir(info); err != nil {
+		return err
 	}
 	s := &retentionService{dir: cfg.StateDir}
 	unlock, err := s.lock()
@@ -518,11 +609,11 @@ func (a *App) initRetention(ctx context.Context, cfg retentionConfig) error {
 	}
 	if err != nil {
 		unlock()
-		return fmt.Errorf("current external retention state is required before traffic: %w", err)
+		return retentionStateRequired(err)
 	}
 	if pin != "" && pin != s.state.InstanceID {
 		unlock()
-		return errors.New("retention state belongs to a different database instance")
+		return errRetentionOtherInstance
 	}
 	a.retention = s
 	if err = a.checkRetentionSequence(ctx, a.db); err != nil {
@@ -589,7 +680,7 @@ func (a *App) resolveRetentionPending(ctx context.Context) error {
 			return err
 		}
 		if !committed {
-			return errors.New("unresolved retention commit: the database has no operation marker; keep restore isolated and reconcile the external journal")
+			return errRetentionUnresolved
 		}
 		s.commitOperation(op)
 		if err := s.write(); err != nil {
