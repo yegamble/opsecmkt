@@ -276,13 +276,25 @@ func factorAccountsLoader(ctx context.Context, a *App, r *http.Request, d *PageD
 // user. The administrator confirms with their own password (and authenticator code when enrolled). Not
 // available for the administrator's own account or another administrator; administrator lockout is an
 // operator procedure (docs/operator-guide.md).
+//
+// With a replacement public key it also rebinds the account's PGP identity (A-704). That needs a verification
+// note, the administrator's own one-line account of how they checked the request (validated like a ban reason),
+// which both audit rows record after the old and the new fingerprint. The note is an attestation: the server
+// cannot check what it says (docs/operator-guide.md#replace-a-lost-pgp-key).
 func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 	replacement := strings.TrimSpace(c.Form.Get("replacement_pgp"))
-	var replacementFingerprint string
+	rawNote := c.Form.Get("recovery_note")
+	var replacementFingerprint, verifiedBy string
+	if replacement == "" && strings.TrimSpace(rawNote) != "" {
+		return actionResult{}, fail(400, "A verification note is recorded only with a replacement public key: paste the replacement key, or clear the note to reset the second factors alone. Nothing was changed.")
+	}
 	if replacement != "" {
-		if c.Form.Get("recovery_identity_verified") != "yes" {
-			return actionResult{}, fail(400, "Confirm that the account holder's identity was verified out of band before replacing their public key.")
+		note, err := cleanBanReason(rawNote)
+		if err != nil {
+			return actionResult{}, errRecoveryNote
 		}
+		// The audit rows continue after the note, so a final full stop is left out there, as after a ban reason.
+		verifiedBy = strings.TrimSuffix(note, ".")
 		canonical, fingerprint, err := validateRecoveryPublicKey(replacement)
 		if err != nil {
 			return actionResult{}, err
@@ -318,9 +330,9 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
-		var role string
+		var role, oldFingerprint string
 		var totp, pgp bool
-		err := tx.QueryRowContext(ctx, "SELECT role,totp_enabled,pgp_2fa FROM users WHERE id=$1 FOR UPDATE", target).Scan(&role, &totp, &pgp)
+		err := tx.QueryRowContext(ctx, "SELECT role,totp_enabled,pgp_2fa,"+replacedFingerprintSQL+" FROM users WHERE id=$1 FOR UPDATE", target).Scan(&role, &totp, &pgp, &oldFingerprint)
 		if err == sql.ErrNoRows {
 			return actionResult{}, notFound
 		}
@@ -357,7 +369,7 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		off := strings.Join(what, " and ")
 		changes := off + " turned off"
 		if replacement != "" {
-			changes = "PGP public key replaced (fingerprint " + replacementFingerprint + "; identity verified out of band)"
+			changes = "PGP public key replaced fingerprint " + oldFingerprint + " -> " + replacementFingerprint + "; verified by: " + verifiedBy
 			if off != "" {
 				changes += "; " + off + " turned off"
 			}
@@ -376,7 +388,11 @@ func adminResetFactorsAction(c *actionCtx) (actionResult, error) {
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "factors-reset", Audit: "Reset second factors of " + handle + ": " + changes + "; ended " + sessions}, nil
+		notice := "factors-reset"
+		if replacement != "" {
+			notice = "key-replaced"
+		}
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: notice, Audit: "Reset second factors of " + handle + ": " + changes + "; ended " + sessions}, nil
 	})
 }
 

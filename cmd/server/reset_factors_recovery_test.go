@@ -126,7 +126,7 @@ func TestResetAdminFactorsPublicKeyCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	stdout, stderr, code := runServer(t, nil, "-reset-admin-factors", "recover_admin", "-reset-admin-pgp-key-file", publicFile)
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "PGP public key replaced (fingerprint ") ||
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "PGP public key replaced fingerprint none -> ") ||
 		!strings.Contains(stdout, "decrypt the challenge using the replacement private key") || strings.Contains(stdout, "password alone") ||
 		strings.Contains(stdout, "BEGIN PGP") {
 		t.Fatalf("public replacement: %d %q %q", code, stdout, stderr)

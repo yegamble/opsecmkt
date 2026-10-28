@@ -213,8 +213,8 @@ func TestPGPBindingIdentityVerifiedWebReplacementRecoversStrictAccount(t *testin
 	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
 	newKey, newPublic := testPGPKey(t, "binding-recovery-new")
 	form := url.Values{"handle": {"binding_lost_key"}, "password": {testPassword}, "replacement_pgp": {newPublic}}
-	agExpect(e, "/admin/reset-factors", admin, form, 400, "identity was verified out of band")
-	form.Set("recovery_identity_verified", "yes")
+	agExpect(e, "/admin/reset-factors", admin, form, 400, "verification note of 10–500 characters")
+	form.Set("recovery_note", "Signed a fresh admin-chosen text with the old key")
 	var private bytes.Buffer
 	armored, err := armor.Encode(&private, "PGP PRIVATE KEY BLOCK", nil)
 	if err != nil {
@@ -247,10 +247,10 @@ func TestPGPBindingIdentityVerifiedWebReplacementRecoversStrictAccount(t *testin
 	if agStr(e, "SELECT pgp FROM users WHERE id=$1", userID) != canonical {
 		t.Fatal("replacement public key was not canonicalized")
 	}
-	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE $2 AND action LIKE '%identity verified out of band%'", adminID, "%"+fingerprint+"%") != 1 {
+	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE $2 AND action LIKE '%verified by: Signed a fresh admin-chosen text%'", adminID, "%"+fingerprint+"%") != 1 {
 		t.Fatal("the privileged replacement was not audited on the administrator")
 	}
-	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE $2 AND action LIKE '%identity verified out of band%'", userID, "%"+fingerprint+"%") != 1 {
+	if agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE $2 AND action LIKE '%verified by: Signed a fresh admin-chosen text%'", userID, "%"+fingerprint+"%") != 1 {
 		t.Fatal("the privileged replacement was not audited on the target")
 	}
 	anon := randomToken()

@@ -83,6 +83,13 @@ func validateRecoveryPublicKey(public string) (canonical, fingerprint string, er
 	return canonical, fingerprint, nil
 }
 
+// errRecoveryNote refuses a key replacement without a usable verification note (A-704).
+var errRecoveryNote = fail(http.StatusBadRequest, "Give a verification note of 10–500 characters, on one line, saying how you checked that the request comes from the account holder (see the operator guide, Replace a lost PGP key). Nothing was changed.")
+
+// replacedFingerprintSQL selects, in a query on users, the fingerprint a key replacement records as the old one
+// (A-704): the saved fingerprint, "unreadable key" for a saved key without one, or "none".
+const replacedFingerprintSQL = "CASE WHEN pgp_fingerprint<>'' THEN pgp_fingerprint WHEN pgp<>'' THEN 'unreadable key' ELSE 'none' END"
+
 // replaceRecoveryPublicKey is privileged recovery after an operator/administrator
 // verifies identity out of band. The caller deletes pending logins before locking
 // the target, holds that account lock, deletes all sessions and writes its actor

@@ -126,17 +126,26 @@
 <p>This account is closed under the retention policy; suspension, the ban and the role no longer apply.</p>
 </section>{{end}}
 <section class="panel" id="reset-factors" aria-labelledby="user-factors-heading">
-<h2 id="user-factors-heading">Second factors</h2>{{with $.NoticeIn "reset-factors"}}
-<div class="alert" role="status">{{.}}</div>{{end}}{{if or .TOTP .PGPSignIn}}
-<p class="help">For an account holder who lost their authenticator or PGP key: this turns off TOTP (and its recovery codes) and PGP sign-in and signs the account out. Check the request comes from the account holder first; see <a class="text-link" href="/admin/users#reset-factors">Reset a user's second factors</a>.</p>
+<h2 id="user-factors-heading">Second factors and PGP key</h2>{{with $.NoticeIn "reset-factors"}}
+<div class="alert" role="status">{{.}}</div>{{end}}{{$factors := or .TOTP .PGPSignIn}}{{if or $factors .HasPGP}}
+<p class="help">{{if $factors}}For an account holder who lost their authenticator or PGP key: resetting turns off TOTP (and its recovery codes) and PGP sign-in and signs the account out.{{else}}No second factor is enrolled; the account has a saved PGP key, which can be replaced if its holder lost the private key.{{end}} Check the request comes from the account holder first; see <a class="text-link" href="/admin/users#reset-factors">Reset a user's second factors</a>.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/reset-factors"}}">
 {{template "admin-user-target" .Handle}}
+<details{{if not $factors}} open{{end}}>
+<summary>Replace a lost PGP key</summary>
+<p class="help">Follow <em>Replace a lost PGP key</em> in the operator guide (<code>docs/operator-guide.md#replace-a-lost-pgp-key</code>). If the holder can still use the saved key{{if .PGPFingerprint}} (fingerprint {{.PGPFingerprint}}){{end}}, have them sign a fresh text you choose and verify the signature offline against that fingerprint. If the key is lost, the market cannot check who they are: accept only the evidence the guide describes. Replacing ends every session and pending sign-in, turns optional factors off and leaves the new key unverified.</p>
+<p class="help">{{if eq (index $.Settings "allow_login_without_pgp") "true"}}Browse-only sign-in is allowed, so a reset alone lets the password holder sign in and browse; purchases and messages still need decryption with the saved key.{{else}}This market requires PGP decryption at every sign-in: resetting the optional factors does not let a holder who lost the private key sign in, a replacement key does, and they must then decrypt with it.{{end}}</p>
+<label>Replacement PGP public key<textarea name="replacement_pgp" rows="6" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"{{if not $factors}} required{{end}}></textarea></label>
+<label>Verification note<input name="recovery_note" minlength="10" maxlength="500" autocomplete="off" aria-describedby="user-recovery-note-help"{{if not $factors}} required{{end}}>
+</label>
+<span class="help" id="user-recovery-note-help">Required with a replacement key: 10–500 characters on one line saying how you checked the request. It is your attestation, which the market cannot check, recorded with the old and new fingerprints in the audit trail of both accounts. Supply a public key only, never a private key.</span>
+</details>
 {{template "confirm-fields" $totp}}
-<button type="submit">Reset second factors of {{.Handle}}</button>
+<button type="submit">{{if $factors}}Reset second factors of {{.Handle}}{{else}}Replace the PGP key of {{.Handle}}{{end}}</button>
 </form>{{else}}
-<p>No second factor is enrolled.</p>{{end}}
+<p>No second factor is enrolled and no PGP key is saved.</p>{{end}}
 </section>
 {{if not .IsClosed}}<section class="panel" id="user-role" aria-labelledby="user-role-heading">
 <h2 id="user-role-heading">Role</h2>
