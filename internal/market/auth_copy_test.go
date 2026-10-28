@@ -62,7 +62,7 @@ func TestAuthExpiryAndRecoveryCopyRenders(t *testing.T) {
 	// admin-auth.html: how staff check a factor reset and what a restore hands back.
 	_, admin := e.user("copy_admin", "admin")
 	mustContain(t, e.body("GET", "/admin/users", admin, nil, 200),
-		"When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not accept a replacement key merely because it was supplied with the reset request; verify identity out of band first. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.",
+		"When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not accept a replacement key merely because it was supplied with the reset request; verify identity out of band first. If they cannot use that key, follow <em>Replace a lost PGP key</em> in the operator guide (<code>docs/operator-guide.md#replace-a-lost-pgp-key</code>) before resetting.",
 		"Check the request really comes from the account holder first: anyone who knows their password can then sign in.",
 		"Keep your recovery codes offline; an administrator lockout is recovered by the server operator (see the operator guide).",
 		"Restoring hands the account back to whoever has its password.")

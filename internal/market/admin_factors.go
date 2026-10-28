@@ -24,8 +24,9 @@ func ResetAdminFactors(ctx context.Context, db *sql.DB, handle string) (string, 
 }
 
 // ResetAdminFactorsWithPublicKey also replaces a lost administrator key when public
-// is nonempty. Only usable public key material is accepted. Replacement invalidates
-// prior ownership, challenges and session proof; strict PGP login policy is unchanged.
+// is nonempty, auditing the old and the new fingerprint (A-704). Only usable public
+// key material is accepted. Replacement invalidates prior ownership, challenges and
+// session proof; strict PGP login policy is unchanged.
 // The administrator must decrypt a fresh sign-in code with their replacement private
 // key, which is never sent to or stored on the server.
 func ResetAdminFactorsWithPublicKey(ctx context.Context, db *sql.DB, handle, public string) (string, error) {
@@ -48,9 +49,9 @@ func ResetAdminFactorsWithPublicKey(ctx context.Context, db *sql.DB, handle, pub
 			return "", err
 		}
 	}
-	var id, role string
+	var id, role, oldFingerprint string
 	var totp, pgp bool
-	err = tx.QueryRowContext(ctx, "SELECT id,role,totp_enabled,pgp_2fa FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &role, &totp, &pgp)
+	err = tx.QueryRowContext(ctx, "SELECT id,role,totp_enabled,pgp_2fa,"+replacedFingerprintSQL+" FROM users WHERE handle=$1 FOR UPDATE", handle).Scan(&id, &role, &totp, &pgp, &oldFingerprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("no account has the handle %q (handles are exact and case-sensitive)", handle)
 	}
@@ -93,7 +94,7 @@ func ResetAdminFactorsWithPublicKey(ctx context.Context, db *sql.DB, handle, pub
 		changes = append(changes, off+" turned off")
 	}
 	if replacementFingerprint != "" {
-		changes = append(changes, "PGP public key replaced (fingerprint "+replacementFingerprint+"; ownership unverified)")
+		changes = append(changes, "PGP public key replaced fingerprint "+oldFingerprint+" -> "+replacementFingerprint+" (ownership unverified)")
 	}
 	change := strings.Join(changes, "; ")
 	sessions := "ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"

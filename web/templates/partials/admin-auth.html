@@ -46,7 +46,7 @@
 <h2 id="reset-factors-heading">Reset a user's second factors</h2>{{with $.NoticeIn "reset-factors"}}
 <div class="alert" role="status">{{.}}</div>{{end}}
 <p>For a user who lost their authenticator and recovery codes, or their PGP private key. This turns off TOTP (deleting its secret and recovery codes) and PGP sign-in verification; their saved PGP key and its verification stay. They are signed out everywhere and notified.{{if eq (index .Settings "allow_login_without_pgp") "true"}} They sign in next with their password only.{{else}} This market still requires PGP decryption at sign-in. Resetting the optional second factors cannot replace it; use identity-verified replacement-key recovery below. The replacement key must then be decrypted; the login policy stays in force.{{end}}</p>
-<p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not accept a replacement key merely because it was supplied with the reset request; verify identity out of band first. If they cannot use that key, follow the operator’s account-recovery procedure before resetting.</p>
+<p class="help">When the account holder can still use their verified PGP key, ask them to sign a fresh message and verify it against the key already saved on their account. Do not accept a replacement key merely because it was supplied with the reset request; verify identity out of band first. If they cannot use that key, follow <em>Replace a lost PGP key</em> in the operator guide (<code>docs/operator-guide.md#replace-a-lost-pgp-key</code>) before resetting.</p>
 <form class="stack" method="post" action="/admin/reset-factors">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/reset-factors"}}">
@@ -54,10 +54,12 @@
 </label>
 <details>
 <summary>Recover a lost PGP key</summary>
-<p class="help">Optional privileged recovery: first verify the account holder's identity out of band using the market's recovery procedure. This replaces their public-key binding even when no optional second factor is enrolled, resets optional factors, ends every session and pending sign-in, and leaves the new key unverified. The login policy stays in force; strict sign-in still requires decryption with the new key.</p>
+<p class="help">Optional privileged recovery, following <em>Replace a lost PGP key</em> in the operator guide (<code>docs/operator-guide.md#replace-a-lost-pgp-key</code>). If the holder can still use the saved key, have them sign a fresh text you choose and verify the signature offline against the fingerprint on the account's page; if the key is lost, the market cannot check who they are, so accept only the evidence the guide describes. This replaces their public-key binding even when no optional second factor is enrolled, resets optional factors, ends every session and pending sign-in, and leaves the new key unverified. The login policy stays in force; strict sign-in still requires decryption with the new key.</p>
 <label>Replacement PGP public key<textarea name="replacement_pgp" rows="6" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea></label>
-<label class="check"><input type="checkbox" name="recovery_identity_verified" value="yes"> I verified this account holder's identity out of band before accepting this replacement public key.</label>
-<p class="help">Supply a usable public encryption key only. Never paste or upload a private key. The new public fingerprint and your administrator identity are recorded in both accounts' audit trails.</p>
+<label>Verification note<input name="recovery_note" minlength="10" maxlength="500" autocomplete="off" aria-describedby="recovery-note-help">
+</label>
+<span class="help" id="recovery-note-help">Required with a replacement key: 10–500 characters on one line saying how you checked the request, for example which text was signed and how you verified it. It is your attestation, which the market cannot check, recorded with the old and new fingerprints and your administrator handle in the audit trail of both accounts. Do not include anything you would not want in the audit export.</span>
+<p class="help">Supply a usable public encryption key only. Never paste or upload a private key.</p>
 </details>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <span class="help">Enter the handle exactly (it is case-sensitive). Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}. Check the request really comes from the account holder first: anyone who knows their password can then sign in.{{if ne (index .Settings "allow_login_without_pgp") "true"}} PGP decryption is still required while this market's strict policy is on.{{end}}</span>
