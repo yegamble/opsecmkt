@@ -621,7 +621,7 @@ func TestStrictPolicyExpiryWarningNamesSignInLockout(t *testing.T) {
 	renewKey(t, expiredKey, created.Add(time.Hour), 3*3600-1800, 0) // expired an hour and a half ago
 	e.setKey(expiredID, armoredPublicKey(t, expiredKey))
 	day := utcDay(now.Add(-time.Hour).Add((3600+10*86400)*time.Second)) + " UTC"
-	soonLine := "This market requires PGP at every sign-in: after " + day + " you cannot sign in until staff restore your account. Renew before then."
+	soonLine := "This market requires PGP at every sign-in: from " + day + " (when the key expires that day) you cannot sign in until staff restore your account. Renew before then."
 	const expiredLine = "This market requires PGP at every sign-in: you cannot sign in again until this key is renewed or replaced, and if this session ends first, staff must restore your account."
 	const strictPolicy, browsePolicy = "This market requires PGP decryption at every sign-in", "This market allows browse-only sign-in without PGP"
 	sweep := func() {

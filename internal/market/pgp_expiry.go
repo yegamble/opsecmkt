@@ -144,5 +144,5 @@ func strictSignInLockout(day string, expired bool) string {
 	if expired {
 		return "This market requires PGP at every sign-in: you cannot sign in again until this key is renewed or replaced, and if this session ends first, staff must restore your account."
 	}
-	return "This market requires PGP at every sign-in: after " + day + " you cannot sign in until staff restore your account. Renew before then."
+	return "This market requires PGP at every sign-in: from " + day + " (when the key expires that day) you cannot sign in until staff restore your account. Renew before then."
 }

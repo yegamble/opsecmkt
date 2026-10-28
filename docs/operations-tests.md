@@ -215,10 +215,7 @@ digests it serves; a second repository name of the same app image is the "second
   database password, and leaves no one-off or `*-run-*` container.
 - With `999_from_a_newer_release` inserted into `schema_migrations`, `deploy redeploy --app-image` with the first
   reference fails (`Docker command failed; configuration and volumes were retained`) and the script prints how long
-  it took and the app container's state. Expect about 600 seconds: under `restart: unless-stopped` the refused app
-  restarts rather than exiting, and Docker resets its health to `starting` at each start, so Compose's `--wait` sees
-  neither an exited nor an unhealthy container and ends only at its `--wait-timeout` (read from the Compose and
-  Docker sources; the CI run's printed duration is the measurement). `operator.json` and the app container name the
+  it took and the app container's state. On Compose v2.38.2 (CI run 40685808020) the refused redeploy failed after 1 second: the refused app is reported unhealthy and `--wait` ends at once. Another Compose version may behave differently; the printed duration is the measurement. `operator.json` and the app container name the
   requested reference; the `db` and `tor` containers, the volumes, the schema rows and the settings are unchanged.
   Development keeps container logs, so a failed development start does not run the start check
   (`TestDevStartFailureDoesNotRunStartupCheck`): `deploy logs` shows the application's refusal, and `deploy doctor

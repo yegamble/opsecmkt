@@ -52,7 +52,7 @@ class NativeDeployJobTest(unittest.TestCase):
         self.assertIn('container', re.search(r'^    needs: \[([^\]]+)\]$', job_block(CI, 'required'), re.M).group(1))
 
     def test_job_timeout_covers_the_refused_redeploy(self):
-        # A refused start waits out the controller's --wait-timeout 600 before redeploy fails.
+        # A refused start failed after 1 s on Compose v2.38.2 (CI 40685808020); the timeout still allows --wait-timeout 600.
         self.assertIn('"--wait-timeout", "600"', (ROOT / 'internal' / 'operator' / 'operator.go').read_text())
         minutes = int(re.search(r'^    timeout-minutes: (\d+)$', self.job, re.M).group(1))
         step = int(re.search(r'timeout-minutes: (\d+)', self.step('run: bash scripts/test-native-deploy.sh')).group(1))

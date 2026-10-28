@@ -587,7 +587,7 @@ jobs:
   container:
     name: Container runtime (${{ matrix.database }})
     runs-on: ubuntu-24.04
-    # The external row also runs the native deployment test (about 15 minutes, A-697).
+    # The external row also runs the native deployment test (about 1 minute in CI run 40685808020, A-697).
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -639,7 +639,7 @@ jobs:
       # A-697: the native deployment controller (deploy init/install/redeploy/doctor/down) on this engine with this
       # image, in development mode with its own internal database and Tor (production storage and logging are not
       # run). Once, on the row without the image scan and scanner container, so the rows take similar time; a refused
-      # redeploy waits out its 600-second --wait-timeout, so the step takes about 15 minutes.
+      # redeploy failed after 1 second on Compose v2.38.2 (CI run 40685808020); the timeout still allows its 600-second --wait-timeout on another Compose version.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: matrix.database == 'external'
         with:
