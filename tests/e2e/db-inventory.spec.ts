@@ -17,6 +17,11 @@ test('edit, archive and restore a listing without client scripts', async ({ page
   await page.locator('select[name="digital_delivery_mode"]').selectOption('reusable');
   await page.getByLabel('Price (XMR)').fill('0.5');
   await expect(page.locator('main')).toContainText('Automatic delivery requires a payment provider');
+  // A-711: a reusable download is published only with its content.
+  await page.getByRole('button', { name: 'Publish listing' }).click();
+  await expect(page.locator('#lf-delivery_content-error')).toHaveText('Reusable download content: enter the content every buyer receives, or choose another digital delivery method.');
+  await expect(page.getByLabel('Listing title')).toHaveValue(title);
+  await page.getByLabel('Reusable download content').fill('download-token-e2e-initial');
   await page.getByRole('button', { name: 'Publish listing' }).click();
   await expect(page).toHaveURL(/\/listing-edit\?id=[0-9a-f]{64}#photos$/); // A-188: lands on its Photos panel
   await expect(page.getByLabel('Listing title')).toHaveValue(title);

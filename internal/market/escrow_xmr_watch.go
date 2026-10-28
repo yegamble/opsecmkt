@@ -21,8 +21,8 @@ import (
 // The Monero escrow watcher (WR-escrow Phase 3, slice X-c; P3-R3, P3-R5; ES-7: one escrow wallet per month, one
 // account per order). One per deployment (its own advisory lock, xmrEscrowWatcherLock), apart from the pooled and the
 // Bitcoin escrow watchers, while ESCROW_XMR=on. Until Monero escrow is ready (escrow_xmr_config.go) a pass runs only
-// the release deadlines (xmrDeadlines, no RPC), so a shipped order is never stranded while the node is down. It alone
-// talks to the escrow wallet-rpc; checkout makes no RPC (escrow_xmr_create.go).
+// the release deadlines and digital dispute windows (xmrDeadlines, no RPC), so a shipped or delivered order is never
+// stranded while the node is down. It alone talks to the escrow wallet-rpc; checkout makes no RPC (escrow_xmr_create.go).
 //
 // Wallets (xmr_escrow_wallets). Each wallet is created as a row in state creating first, then create_wallet with the
 // password derived from MONERO_WALLET_SECRET and the name escrow-YYYYMM-NN; its 25-word seed (query_key) is sealed to
@@ -58,8 +58,9 @@ import (
 // xmrPaymentIdx(wallet, account), for the order the slot names. A row the database refuses as another order's account
 // (payments_xmr_escrow_idx) is flagged to staff for that row alone and the pass goes on. A deposit counts from
 // escrowXMR.confirmations (at least 10) with no unlock time and no double_spend_seen; a locked one is flagged once and
-// never counted. A digital order completes on funding through the escrow-only system edge (escrowTransitionHook); a
-// physical one becomes paid with its ship-by time. An escrow that received nothing in its payment window is
+// never counted. A digital order is delivered on funding and enters its dispute window (escrowTransitionHook, A-709;
+// the deadline step completes it); a manual-delivery digital one becomes paid with its delivery deadline, and a
+// physical one paid with its ship-by time. An escrow that received nothing in its payment window is
 // cancelled; one underpaid then is cancelled too, which requests its refund (slice X-d). A deposit after the order
 // closed is recorded after_close and flagged (flagLateDeposits) for the stray refund; one that did not count when the
 // order was cancelled and has confirmed since is left out for it (xmrLeaveOutUncounted, A-424).
@@ -101,9 +102,6 @@ const xmrEscrowSweepKey = "xmr_escrow_sweep_required"
 // xmrWalletRefreshTimeout, so the bound is twice the other watchers'; a pass cut short leaves the remaining wallets to
 // the next one. A variable so tests can shorten it.
 var xmrEscrowPassTimeout = 2 * watcherPassTimeout
-
-// xmrEscrowCompletedNote is the order history note of a Monero escrow order's completion on funding.
-const xmrEscrowCompletedNote = "Completed on funding (Monero escrow): the content was delivered. The vendor claims the escrowed coins from the order page."
 
 // Fixed lines; nothing in them comes from a node.
 var (

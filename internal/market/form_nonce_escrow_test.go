@@ -47,7 +47,7 @@ func escrowFormReceiptCount(t *testing.T, e *testEnv, path string) int {
 func TestEscrowConfirmedNonceCurrentPartyAndFactor(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
-	order, _ := x.fundedXMR(x.product)
+	order, _ := x.completedXMR(x.product)
 	key, _ := agEnableTOTP(x.testEnv, x.vendor)
 	f := escrowReceiptForm(order, testXMRAddr("party-claim-"+order, true), randomToken()[:32])
 	f.Set("code", agTOTPNow(key))
@@ -77,7 +77,7 @@ func TestEscrowConfirmedNonceMoneroClaimShipAndConfirmReplay(t *testing.T) {
 			var order, actor, session, addr string
 			switch path {
 			case "/escrow-xmr/claim":
-				order, _ = x.fundedXMR(x.product)
+				order, _ = x.completedXMR(x.product)
 				actor, session, addr = x.vendor, x.vendorSess, testXMRAddr("nonce-claim-"+order, true)
 			case "/escrow-xmr/ship":
 				order, _ = x.paidXMRPhysical(x.physical(x.vendor))

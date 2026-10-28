@@ -118,7 +118,8 @@ func TestVendorDeskListsEveryActiveOrderByLastChangeAndCapsOnlyTerminalHistory(t
 	if !strings.Contains(body, "To fulfil</div>\n<strong>2</strong>") || !strings.Contains(body, "Open disputes</div>\n<strong>1</strong>") {
 		t.Fatal("vendor paid-order or open-dispute counts are incorrect")
 	}
-	shippedNewAt, disputeAt, paidNewAt, paidOldAt, oldAt, shippedOldAt := strings.Index(body, shippedNew), strings.Index(body, openDispute), strings.Index(body, paidOlder), strings.Index(body, paidOld), strings.Index(body, oldActive), strings.Index(body, shippedOld)
+	table := body[strings.Index(body, `id="vendor-orders"`):] // the incoming-orders table, after "Waiting for you" (A-710)
+	shippedNewAt, disputeAt, paidNewAt, paidOldAt, oldAt, shippedOldAt := strings.Index(table, shippedNew), strings.Index(table, openDispute), strings.Index(table, paidOlder), strings.Index(table, paidOld), strings.Index(table, oldActive), strings.Index(table, shippedOld)
 	if shippedNewAt < 0 || disputeAt < 0 || paidNewAt < 0 || paidOldAt < 0 || oldAt < 0 || shippedOldAt < 0 || !(disputeAt < shippedNewAt && shippedNewAt < paidNewAt && paidNewAt < paidOldAt && paidOldAt < oldAt && oldAt < shippedOldAt) {
 		t.Fatalf("active orders should be uncapped and sorted by most recent change: dispute=%d shipped=%d paid-new=%d paid-old=%d old=%d shipped-old=%d", disputeAt, shippedNewAt, paidNewAt, paidOldAt, oldAt, shippedOldAt)
 	}

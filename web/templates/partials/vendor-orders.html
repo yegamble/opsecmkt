@@ -7,9 +7,38 @@
 {{define "vendor-orders:disputes-stat"}}<div class="stat">
 <div class="eyebrow">Open disputes</div>
 <strong>{{.VendorOpenDisputes}}</strong>
-<span>Orders needing a dispute decision</span>
+<span>Disputes on your orders awaiting an administrator's decision</span>
 </div>{{end}}
-{{define "vendor-orders"}}<h2 class="section-title">Incoming orders</h2>{{if .IncomingOrders}}<p class="help">All current work is listed by most recent change.{{if .HistoryLimit}} Showing the {{.HistoryLimit}} most recent completed, resolved or funded-cancelled orders as history.{{end}}</p>
+{{define "vendor-orders"}}<section class="vendor-waiting" aria-labelledby="vendor-waiting">
+<h2 class="section-title" id="vendor-waiting">Waiting for you</h2>{{if .VendorWaiting}}<p class="help">Every order that needs you next, however old: a buyer's dispute to reply to, a paid order to fulfil, and a payment to claim on the order page with a fresh address from your own wallet.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th scope="col">Order / listing</th>
+<th scope="col">Buyer</th>
+<th scope="col">Next step</th>
+</tr>
+</thead>
+<tbody>{{range .VendorWaiting}}<tr>
+<td>
+<a href="/order?id={{.Order.ID}}">{{.Order.Title}}</a>
+<br>
+<small class="muted mono">{{.Order.ID}}</small>
+</td>
+<td>{{.Order.Buyer}}</td>
+<td>
+<a class="text-link" href="/order?id={{.Order.ID}}{{with .Anchor}}#{{.}}{{end}}" aria-label="{{.Action}}: {{.Order.Title}}">{{.Action}}</a>{{if .ShipBy}}
+<br><small{{if .ShipByPassed}} class="accent"{{end}}>{{if eq .Order.Kind "digital"}}Deliver{{else}}Ship{{end}} by {{.ShipBy}}{{if .ShipByPassed}}: passed, so the buyer may cancel{{end}}</small>{{end}}
+</td>
+</tr>{{end}}</tbody>
+</table>
+</div>{{else}}<p class="muted">Nothing is waiting for you: no dispute to reply to, no paid order to fulfil and no payment to claim.</p>{{end}}
+</section>
+<h2 class="section-title" id="vendor-orders">Incoming orders</h2>{{if or .XMREscrowOn .XMREscrowOrders .PayoutFilter}}<nav class="pagination inventory-filters" aria-label="Filter incoming orders">
+<a href="/vendor-dashboard#vendor-orders"{{if not .PayoutFilter}} aria-current="page"{{end}}>All orders</a>
+<a href="/vendor-dashboard?payouts=unconfirmed#vendor-orders"{{if .PayoutFilter}} aria-current="page"{{end}}>Payouts not yet confirmed</a>
+</nav>{{end}}{{if .IncomingOrders}}<p class="help">{{if .PayoutFilter}}Every Monero escrow order on your listings that may still hold coins: its payment to you, or its refund to the buyer, is not yet confirmed and followed past the depth of a chain reorganisation.{{else}}All current work is listed by most recent change.{{if .HistoryLimit}} Showing the {{.HistoryLimit}} most recent completed, resolved or funded-cancelled orders as history.{{end}}{{end}} The payout column is the state of the release to you; the order page explains it in full.</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -18,6 +47,7 @@
 <th scope="col">Buyer</th>
 <th scope="col">Amount</th>
 <th scope="col">Status</th>
+<th scope="col">Payout</th>
 <th scope="col">Last change</th>
 </tr>
 </thead>
@@ -35,10 +65,11 @@
 <td>
 <span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
 </td>
+<td>{{with index $.DeskPayouts .ID}}{{.}}{{else}}—{{end}}</td>
 <td>{{.Updated}}</td>
 </tr>{{end}}</tbody>
 </table>
-</div>{{else}}<div class="empty">
+</div>{{else if .PayoutFilter}}<p class="muted">No Monero escrow order on your listings may still hold coins.</p>{{else}}<div class="empty">
 <span class="empty-icon">[ 0 ]</span>
 <h2>No orders on your listings yet</h2>
 <p>Current orders on your listings appear here. Unfunded drafts and cancelled drafts are kept in your order history but do not appear as incoming work.</p>

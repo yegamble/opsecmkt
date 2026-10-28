@@ -68,7 +68,7 @@ func TestDigitalManualWholeOrderRealEscrowCheckoutAndReplay(t *testing.T) {
 	f := url.Values{"order_id": {order}, "content": {content}, formNonceField: {renderedFormNonce(t, page, "/orders/deliver")}}
 	x.check(x.do("POST", "/orders/deliver", x.vendorSess, f), 303)
 	x.check(x.do("POST", "/orders/deliver", x.vendorSess, f), 303)
-	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 || testDecrypt(t, accountPGPFixture.key, agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", order)) != content {
+	if x.state(order) != stateDelivered || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 || testDecrypt(t, accountPGPFixture.key, agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", order)) != content {
 		t.Fatal("manual delivery was not one whole-order record")
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM escrows WHERE order_id=$1", order) != 1 || agInt(x.testEnv, "SELECT count(*) FROM messages") != 0 {
@@ -115,7 +115,7 @@ func TestDigitalInventoryAutomaticBatchReservationCancellationAndPrivacy(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if x.state(next) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", next) != 1 || testDecrypt(t, accountPGPFixture.key, agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", next)) != want {
+	if x.state(next) != stateDelivered || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", next) != 1 || testDecrypt(t, accountPGPFixture.key, agStr(x.testEnv, "SELECT content FROM deliveries WHERE order_id=$1", next)) != want {
 		t.Fatal("auto delivery lost distinct units or duplicated batch")
 	}
 	if agInt(x.testEnv, "SELECT count(*) FROM digital_units WHERE order_id=$1 AND delivered_at IS NOT NULL", next) != 2 {

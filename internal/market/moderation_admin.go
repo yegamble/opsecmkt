@@ -246,6 +246,7 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	// most recently expired; "reviewed" is the history, newest first. Every filter value is allowlisted and bound.
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.target_id,s.disposition,s.risk_score,s.confidence,
 	 s.input_hash,s.output_hash,s.created_at,s.expires_at,s.decision,coalesce(r.action,''),coalesce(j.metadata->>'order_id',j.snapshot->>'order_id',''),
+	 coalesce(j.metadata->>'product_id',j.snapshot->>'product_id',''),
 	 coalesce(e.id,0),coalesce(octet_length(e.encrypted_payload),0),s.storage_version,
 	 coalesce(i.kind,''),coalesce(i.product_id,''),coalesce(i.order_id,''),coalesce(iu.handle,'')
 	 FROM moderation_suggestions s JOIN moderation_jobs j ON j.id=s.job_id
@@ -268,12 +269,12 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		var created, expires time.Time
 		var confidence float64
 		var decision []byte
-		var review, orderID string
+		var review, orderID, productID string
 		var escalationID, encryptedBytes int64
 		var storageVersion int
 		var image moderationImageRef
 		if err = rows.Scan(&item.ID, &item.Kind, &item.TargetID, &item.Disposition, &item.Risk, &confidence,
-			&item.InputHash, &item.OutputHash, &created, &expires, &decision, &review, &orderID, &escalationID, &encryptedBytes, &storageVersion,
+			&item.InputHash, &item.OutputHash, &created, &expires, &decision, &review, &orderID, &productID, &escalationID, &encryptedBytes, &storageVersion,
 			&image.Kind, &image.Product, &image.Order, &image.Handle); err != nil {
 			return err
 		}
@@ -300,7 +301,7 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		}
 		item.Confidence = strconv.FormatFloat(confidence, 'f', 2, 64)
 		item.InputHash, item.OutputHash = moderationSafeHash(item.InputHash), moderationSafeHash(item.OutputHash)
-		item.TargetURL = moderationTargetURL(item.Kind, item.TargetID, orderID, image)
+		item.TargetURL = moderationTargetURL(item.Kind, item.TargetID, orderID, productID, image)
 		if escalationID > 0 && encryptedBytes > 0 && encryptedBytes <= 256<<10 {
 			item.EscalationURL = "/admin/moderation/escalation?id=" + strconv.FormatInt(escalationID, 10)
 		}
@@ -439,18 +440,23 @@ func moderationQueueURL(page int, f moderationQueueFilter) string {
 type moderationImageRef struct{ Kind, Product, Order, Handle string }
 
 // moderationTargetURL is the page showing a proposal's current source (A-685: an upload's photo on its listing,
-// dispute evidence on its order, an avatar on its account page), or "" when there is none or an id fails the
+// dispute evidence on its order, an avatar on its account page; A-711: a review on its listing, where an administrator
+// hides or restores it, since staff cannot read a completed order), or "" when there is none or an id fails the
 // allowlist.
-func moderationTargetURL(kind, id, order string, img moderationImageRef) string {
+func moderationTargetURL(kind, id, order, product string, img moderationImageRef) string {
 	if !signInNextID.MatchString(id) {
 		return ""
 	}
 	switch kind {
 	case "listing":
 		return "/product?id=" + url.QueryEscape(id)
-	case "dispute", "payment_flag", "review":
+	case "dispute", "payment_flag":
 		if signInNextID.MatchString(order) {
 			return "/order?id=" + url.QueryEscape(order)
+		}
+	case "review":
+		if signInNextID.MatchString(product) {
+			return "/product?id=" + url.QueryEscape(product) + "#reviews-title"
 		}
 	case "upload":
 		switch {

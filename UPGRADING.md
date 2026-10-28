@@ -15,6 +15,25 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Digital escrow orders get a delivery deadline and a dispute window (migration 153, A-709)
+
+No configuration change. A Monero escrow digital order no longer completes on funding:
+
+- **Delivery deadline.** A paid digital order must be delivered within 72 hours of payment. After that, if it is still
+  paid, the buyer may cancel it from the order page, and the escrow is refunded to the buyer's refund address, as for a
+  physical order not shipped in time. Migration 153 gives each digital escrow order already paid, and not yet
+  delivered, a deadline 72 hours from the upgrade; nothing else is changed.
+- **Dispute window.** Every delivery, automatic on funding or by the vendor, leaves the order *Delivered* for 48
+  hours. In that window the buyer may open a dispute (an administrator decides it) or confirm receipt early; with
+  neither, the Monero watcher completes the order when the window ends. The vendor can claim the escrowed coins only
+  once the order is completed, so a vendor's claim now comes at least 48 hours after delivery unless the buyer
+  confirms receipt first. The windows are fixed lengths, not the release-deadline setting.
+- **Disputes after a deadline.** Once a shipped order's release deadline or a digital order's window has passed, the
+  order page and `/disputes` no longer offer a dispute (it was already refused).
+
+Orders completed before the upgrade are unchanged, and their vendors claim them as before. Tell vendors of digital
+listings that payment now follows the window, and buyers that they have 48 hours to check a delivery.
+
 ## Staff need a second factor before staff actions (A-706)
 
 No migration and no configuration change, but **existing moderators and administrators without a second factor

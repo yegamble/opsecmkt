@@ -92,6 +92,14 @@ type Order struct {
 	// has an escrows row (WR-escrow Phase 1, escrow_create.go), of either coin (btcEscrow).
 	Escrow bool
 }
+
+// VendorWaiting is one order in the vendor desk's "Waiting for you" section (A-710): what the vendor does next
+// (Action, on the order page at the fragment Anchor) and a paid order's ship-by or delivery deadline (ShipBy; ShipByPassed once it passed).
+type VendorWaiting struct {
+	Order                  Order
+	Action, Anchor, ShipBy string
+	ShipByPassed           bool
+}
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
 	OrderID, DisputeID                   string // explicit, authorized correspondence context
@@ -345,6 +353,13 @@ type PageData struct {
 	IncomingOrders     []Order
 	NeedsAction        int
 	VendorOpenDisputes int
+	// VendorWaiting: vendor desk, every order waiting for the vendor (A-710, outside the history cap): paid orders to
+	// fulfil, Monero escrow orders to claim (xmrClaimDueSQL) and open disputes to reply to. DeskPayouts: the short payout
+	// state of each Monero escrow row of IncomingOrders, keyed by order id (xmrPayoutLabel); PayoutFilter: the table
+	// lists only "Payouts not yet confirmed" (xmrMayHoldSQL).
+	VendorWaiting []VendorWaiting
+	DeskPayouts   map[string]string
+	PayoutFilter  bool
 	// DeadlineBanners: /orders, the viewer's escrow orders whose release deadline is less than 72 hours away
 	// (escrow_deadline.go, P2-R9).
 	DeadlineBanners []DeadlineBanner
@@ -424,8 +439,8 @@ type PageData struct {
 	EscrowOrders int
 	// XMREscrowOn: ESCROW_XMR=on (every page), the site-wide notices describe Monero escrow (A-423); XMREscrowAvailable:
 	// it is ready to take a checkout (xmrEscrowReady). XMRCustody is xmrCustody (every page), so a template never
-	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the viewer's Monero escrow orders that may hold
-	// coins, counted like EscrowOrders. XMREscrowNet: Monero escrow's network, "fakechain", "stagenet" or
+	// retypes the owner's sentence (A-402); XMREscrowOrders: vendor desk, the Monero escrow orders on the viewer's listings that may hold
+	// coins (xmrMayHoldSQL). XMREscrowNet: Monero escrow's network, "fakechain", "stagenet" or
 	// "mainnet" (App.xmrEscrowNetwork, A-449, A-460), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
 	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
 	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool
@@ -802,19 +817,23 @@ type EscrowCosignerView struct{ Who, Key string }
 // EscrowDeadlineView is a shipped escrow order's release deadline on its page (escrow_deadline.go, P2-R9): At in UTC,
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
 // VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d), and
-// then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f).
+// then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f). Digital: the
+// order is a delivered digital Monero escrow order and At ends its dispute window (A-709). closed: it has passed and no
+// restore recheck is pending, so a dispute is refused (lateDispute) and not offered.
 type EscrowDeadlineView struct {
-	At, Left                     string
-	Due, Rechecked, VendorClosed bool
-	HoldRefundDays               int
+	At, Left                              string
+	Due, Rechecked, VendorClosed, Digital bool
+	HoldRefundDays                        int
+	closed                                bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
 // (UTC) is less than 72 hours away, Left as computed when the page loaded; Buyer when the viewer is its buyer; XMR for a
-// Monero escrow order (escrow_xmr_deadline.go).
+// Monero escrow order (escrow_xmr_deadline.go); Digital for a delivered digital one, whose At ends its dispute window
+// (A-709).
 type DeadlineBanner struct {
 	OrderID, Short, At, Left string
-	Buyer, XMR               bool
+	Buyer, XMR, Digital      bool
 }
 
 // EscrowSettlementView is an escrow order's settlement on its page (escrow_settle.go): its state in honest words, its

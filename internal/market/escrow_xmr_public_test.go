@@ -470,7 +470,7 @@ func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 	until := time.Now().Add(wait)
 	for time.Now().Before(until) {
 		preflight(false)
-		if err := r.poll(); err == nil && r.state(order) == stateCompleted {
+		if err := r.poll(); err == nil && r.state(order) == stateDelivered { // funded; its dispute window opens (A-709)
 			txs, missed, err := rpc.transactions(context.Background(), []string{fundingTx})
 			if err == nil && len(missed) == 0 && len(txs) == 1 && txs[0].Confirmations >= xmrMinConfirmations {
 				proof.FundingConfirmations = txs[0].Confirmations
@@ -486,6 +486,10 @@ func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 	var claimAddress struct {
 		Address string `json:"address"`
 		Index   int64  `json:"address_index"`
+	}
+	r.endWindows() // the 48-hour dispute window, ended by the watcher's deadline step (A-709)
+	if r.state(order) != stateCompleted {
+		t.Fatalf("after the dispute window: %s", r.state(order))
 	}
 	r.call(funder, "create_address", map[string]any{"account_index": 0}, &claimAddress)
 	claim := claimAddress.Address

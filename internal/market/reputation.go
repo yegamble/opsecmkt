@@ -77,9 +77,9 @@ func reputationRank(label string) int {
 // (stray refunds, buyer returns, failed, external or superseded settlements) and payment-window expiries are not read.
 type ReputationFigures struct {
 	Funded, FundedBuyers                                         int
-	CompletedConfirmed, CompletedDeadline, CompletedDigital      int // buyer confirmed receipt; release deadline; digital order completed on funding
+	CompletedConfirmed, CompletedDeadline, CompletedDigital      int // buyer confirmed receipt; release deadline; digital order completed by the system (at its dispute window's end, A-709; on funding before)
 	CompletedBuyers                                              int // distinct buyers of those completed orders
-	NoShipCancels, VendorCancels                                 int // paid orders cancelled by the buyer (not shipped in time) or by the vendor
+	NoShipCancels, VendorCancels                                 int // paid orders cancelled by the buyer (not shipped or delivered in time) or by the vendor
 	DecidedRefund, DecidedRelease, BuyerConceded, VendorConceded int
 	Reviews, LowReviews                                          int // counted reviews (reviewCountedSQL) and those of repLowRating stars or fewer
 	Takedowns, Rejections                                        int // the vendor's listings taken down or rejected now
@@ -137,7 +137,7 @@ func reputationRules(f ReputationFigures) []ReputationRule {
 		}
 		return r
 	}
-	volume := ReputationRule{Code: repFewCompleted, Figure: fmt.Sprintf("%d completed (buyer confirmed %d, release deadline %d, digital on funding %d) of %d funded; %d held releases refunded to the buyer after a ban",
+	volume := ReputationRule{Code: repFewCompleted, Figure: fmt.Sprintf("%d completed (buyer confirmed %d, release deadline %d, digital dispute window ended %d) of %d funded; %d held releases refunded to the buyer after a ban",
 		c, f.CompletedConfirmed, f.CompletedDeadline, f.CompletedDigital, f.Funded, f.HeldRefunds),
 		High: fmt.Sprintf("%d or more", repHighCompleted), Lower: fmt.Sprintf("%s below %d", repInsufficient, repMinCompleted)}
 	switch {
@@ -227,9 +227,9 @@ func assessReputation(vendorID string, f ReputationFigures) *ReputationView {
 }
 
 // A completion counts only by its ordinary route: the buyer's confirmation from shipped or delivered, the system's at
-// a physical order's release deadline (from shipped) or a digital order's on funding (from delivered). The event that
-// ended an order is its latest move into its current state; same-state notes (settlement and decision notes) are not
-// moves. $2–$5 are the decided and conceded dispute statuses. A held-release refund (A-652f) is the one move out of
+// a physical order's release deadline (from shipped) or a digital order's at the end of its dispute window (from
+// delivered; A-709, on funding before it). The event that ended an order is its latest move into its current state;
+// same-state notes (settlement, decision and dispute-window notes) are not moves. $2–$5 are the decided and conceded dispute statuses. A held-release refund (A-652f) is the one move out of
 // completed or resolved, an administrator's (staff) to cancelled.
 var reputationSQL = `WITH f AS (SELECT o.id,o.buyer_id,o.state,
 		(SELECT e.from_state||':'||CASE WHEN e.actor_id IS NULL THEN 'system' WHEN e.actor_id=o.buyer_id THEN 'buyer' WHEN e.actor_id=p.vendor_id THEN 'vendor' ELSE 'staff' END

@@ -291,6 +291,7 @@ func TestXMREscrowWalletRotation(t *testing.T) {
 	addr := agStrings(t, x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)[0]
 	x.fake.payAddress(addr, hex64("oct-dep"), xmrListingPrice, 12)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("a closing wallet's escrow was not funded: %s", x.state(order))
 	}
@@ -448,6 +449,7 @@ func TestXMREscrowSeedKeyRepinRefused(t *testing.T) {
 	if got := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrSeedKeySetting)[0]; got != pinned {
 		t.Fatal("the seed key pin moved to the new key")
 	}
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("the existing wallet's escrow was not funded: %s", x.state(order))
 	}
@@ -490,8 +492,8 @@ func TestXMREscrowAccountZeroNeverSpent(t *testing.T) {
 }
 
 // P3-R5: a deposit counts only at max(PAYMENT_CONFIRMATIONS_XMR, 10) confirmations (here PAYMENT_CONFIRMATIONS_XMR=3), with
-// no unlock time and no double_spend_seen; a pool entry is recorded at 0 confirmations. A digital order completes on
-// funding through the escrow-only system edge (content delivered, a Monero note, no payout); a locked deposit is flagged
+// no unlock time and no double_spend_seen; a pool entry is recorded at 0 confirmations. A digital order is delivered on
+// funding and enters its dispute window (A-709: content delivered, a Monero note, no payout); a locked deposit is flagged
 // to staff and the buyer once and never counted; a double spend is recorded conflicted.
 func TestXMREscrowFundingThreshold(t *testing.T) {
 	t.Setenv("PAYMENT_CONFIRMATIONS_XMR", "3")
@@ -511,12 +513,12 @@ func TestXMREscrowFundingThreshold(t *testing.T) {
 	}
 	x.fake.setConfs(hex64("pool-dep"), 10)
 	x.mustPoll()
-	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 ||
+	if x.state(order) != stateDelivered || agInt(x.testEnv, "SELECT count(*) FROM deliveries WHERE order_id=$1", order) != 1 ||
 		agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited AND idx >= 4611686018427387904", order) != 1 {
 		t.Fatalf("10 confirmations: %s", x.state(order))
 	}
 	notes := strings.Join(agStrings(t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 ORDER BY id", order), "\n")
-	if !strings.Contains(notes, xmrEscrowCompletedNote) || strings.Contains(notes, "Bitcoin") || strings.Contains(notes, " BTC") {
+	if !strings.Contains(notes, "Dispute window opened on funding (Monero escrow)") || strings.Contains(notes, "Bitcoin") || strings.Contains(notes, " BTC") {
 		t.Fatalf("history of a funded Monero escrow order:\n%s", notes)
 	}
 	if n := agInt(x.testEnv, "SELECT count(*) FROM payouts WHERE order_id=$1", order); n != 0 {
@@ -569,6 +571,7 @@ func TestXMREscrowTwoAccountsOneTx(t *testing.T) {
 	if got := agStrings(t, x.testEnv, "SELECT order_id||' '||idx||' '||amount FROM payments WHERE txid=$1 ORDER BY idx", tx); !slices.Equal(got, want) {
 		t.Fatalf("payments rows of one transaction:\n got %v\nwant %v", got, want)
 	}
+	x.endWindows()
 	if x.state(a) != stateCompleted || x.state(b) != stateCompleted {
 		t.Fatalf("orders %s %s", x.state(a), x.state(b))
 	}
@@ -599,6 +602,7 @@ func TestXMREscrowCollisionFlaggedPerRow(t *testing.T) {
 	arm()
 	logs := captureLog(t)
 	x.poll()
+	x.endWindows()
 	if x.state(b) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1", b) != 1 {
 		t.Fatalf("the other row was not recorded: %s", x.state(b))
 	}
@@ -663,6 +667,7 @@ func TestXMREscrowDaemonGainsBlocksDuringRefresh(t *testing.T) {
 	x.fake.hook("refresh", func() { x.fake.mine(100) })
 	x.mustPoll()
 	x.fake.hook("refresh", nil)
+	x.endWindows()
 	if x.A.escrowXMR.refused.Load() || !x.A.escrowXMR.ready.Load() || x.state(order) != stateCompleted {
 		t.Fatalf("daemon gained 100 blocks during the refresh: refused %v, ready %v, order %s", x.A.escrowXMR.refused.Load(), x.A.escrowXMR.ready.Load(), x.state(order))
 	}
@@ -748,6 +753,7 @@ func TestXMREscrowRefreshTimeoutCatchUp(t *testing.T) {
 	}
 	x.fake.hook("refresh", nil)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted || agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND credited", order) != 1 {
 		t.Fatalf("the next pass: %s", x.state(order))
 	}
@@ -863,6 +869,7 @@ func TestXMREscrowGatePausesCreation(t *testing.T) {
 	x.fake.payAddress(addr, hex64("gated"), xmrListingPrice, 10)
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value='true'")
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("funding under the gate: %s", x.state(order))
 	}

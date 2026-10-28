@@ -98,7 +98,7 @@
 </form>{{else}}<p class="help">The {{.Responder}} may put one reply on record; it will be shown here.</p>{{end}}{{end}}{{if .Resolution}}<h3>{{if or (eq .Status "Withdrawn — conceded by buyer") (eq .Status "Withdrawn — conceded by vendor")}}Concession{{else if $.Order.Escrow}}Administrator decision{{else}}Moderator decision{{end}}</h3>
 <p class="dispute-text">{{.Resolution}}</p>{{end}}{{with $.Concession}}
 <h3>Concede this dispute</h3>
-<p class="help">{{.Statement}}. This closes the dispute and cannot be undone. The {{$.Order.Units}} reserved {{if eq $.Order.Units 1}}unit is{{else}}units are{{end}} not returned to stock.</p>
+<p class="help">{{.Statement}}. This closes the dispute and cannot be undone. {{if and (eq .Outcome "refund") (eq $.Order.Kind "digital")}}Distinct digital units reserved for this order and not yet delivered return to the listing's stock; delivered content is not taken back.{{else}}The {{$.Order.Units}} reserved {{if eq $.Order.Units 1}}unit is{{else}}units are{{end}} not returned to stock.{{end}}</p>
 <form class="stack" method="post" action="/disputes/concede">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/disputes/concede"}}">

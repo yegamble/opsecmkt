@@ -107,7 +107,7 @@ func TestXMREscrowRowlessAccountNormalCrashBurnsBatch(t *testing.T) {
 		x.fake.payAddress(addr, hex64("crash "+order), xmrListingPrice, 12)
 	}
 	x.mustPoll()
-	if n := agInt(x.testEnv, "SELECT count(*) FROM orders WHERE state=$1", stateCompleted); n != 3 {
+	if n := agInt(x.testEnv, "SELECT count(*) FROM orders WHERE state=$1", stateDelivered); n != 3 { // funded: delivered, in the dispute window (A-709)
 		t.Fatalf("%d orders funded after the burnt batch", n)
 	}
 }

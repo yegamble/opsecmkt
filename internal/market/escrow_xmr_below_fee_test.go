@@ -288,6 +288,7 @@ func TestXMREscrowReleaseBelowFeeUnchanged(t *testing.T) {
 	order, addr := x.freshCheckout(p)
 	x.fake.payAddress(addr, hex64("release below fee "+order), 1500000000, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("funded: %s", x.state(order))
 	}

@@ -86,15 +86,21 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 			return err
 		}
 		return releaseDigitalUnits(ctx, tx, o)
+	case from == stateDisputed && (to == stateCancelled || to == stateResolved) && o.Kind == "digital":
+		// A-711: a dispute ending in a refund (the vendor's concession, or a decision for the buyer) returns the distinct
+		// units the order reserved and never delivered; delivered ones stay consumed. Physical stock is not returned
+		// after a dispute (the goods may have shipped).
+		return releaseDisputedDigitalUnits(ctx, tx, o, to)
 	}
 	return nil
 }
 
 // autoDeliveryHook releases a digital listing's stored delivery content as soon as the payment watcher
 // marks the order paid, by recording the delivery and moving paid -> delivered as the system actor.
-// Content that cannot be delivered automatically (blank or over the limit) leaves the order paid for
-// the vendor to deliver by hand; it never blocks the payment transition. Neither is a listing an administrator
-// took down (A-163) delivered: the order stays paid with a history note, for the vendor to deliver or cancel.
+// Content that cannot be delivered automatically (blank or over the limit, or a reserved batch no longer available)
+// leaves the order paid for the vendor to deliver by hand; it never blocks the payment transition. Neither is a listing
+// an administrator took down (A-163) delivered: the order stays paid, for the vendor to deliver or cancel. Each of these
+// writes a history note and tells the vendor the cause (notDeliveredAutomatically, A-711).
 // Nor is the listing of a banned vendor (A-652e): the order stays paid, no inventory unit is consumed, and the note
 // names the closed account and says an administrator can refund the order (admin_ban_orders.go, A-652b).
 func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
@@ -117,9 +123,6 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 	if mode == "manual" {
 		return nil
 	}
-	if mode == "reusable" && (strings.TrimSpace(content) == "" || utf8.RuneCountInString(content) > maxDeliveryChars) {
-		return nil
-	}
 	if banned {
 		note := "Not delivered automatically: the vendor's account " + handle + " is closed. An administrator can refund this order to the buyer's refund address under Orders of this banned account, on that account's page."
 		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
@@ -133,8 +136,13 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 		case o.Escrow: // cancelling a funded escrow order requests its refund, a settlement (escrowSettleTerminal)
 			note = "Not delivered automatically: an administrator took this listing down. The vendor can deliver by hand, or cancel: the escrow is then refunded to the buyer by a settlement the buyer or the vendor signs."
 		}
-		_, err := tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, note)
-		return err
+		return notDeliveredAutomatically(ctx, tx, o, note, "an administrator took this listing down")
+	}
+	if mode == "reusable" && strings.TrimSpace(content) == "" {
+		return notDeliveredAutomatically(ctx, tx, o, "Not delivered automatically: the listing's reusable download content is empty. The vendor must deliver by hand or cancel and refund this order.", "the listing's reusable download content is empty")
+	}
+	if mode == "reusable" && utf8.RuneCountInString(content) > maxDeliveryChars {
+		return notDeliveredAutomatically(ctx, tx, o, "Not delivered automatically: the listing's reusable download content is over the 32000-character delivery limit. The vendor must deliver by hand or cancel and refund this order.", "the listing's reusable download content is over the 32000-character delivery limit")
 	}
 	if mode == "inventory" {
 		var err error
@@ -144,8 +152,7 @@ func autoDeliveryHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, t
 			if _, ok := err.(*httpError); !ok {
 				return err
 			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", o.ID, statePaid, "Automatic digital batch unavailable; the vendor must deliver or cancel this order.")
-			return err
+			return notDeliveredAutomatically(ctx, tx, o, "Automatic digital batch unavailable: its reserved distinct digital units are no longer available. The vendor must deliver or cancel this order.", "its reserved distinct digital units are no longer available")
 		}
 	}
 

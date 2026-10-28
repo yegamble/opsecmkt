@@ -185,6 +185,7 @@ func TestXMREscrowConfirmationsCeiling(t *testing.T) {
 		return agStrings(t, x.testEnv, "SELECT confirmations||' '||updated FROM payments WHERE order_id=$1", order)[0]
 	}
 	first := row()
+	x.endWindows()
 	if !strings.HasPrefix(first, "100 ") || x.state(order) != stateCompleted {
 		t.Fatalf("a deposit at 150 confirmations is stored as %q (%s)", first, x.state(order))
 	}

@@ -55,7 +55,13 @@ const (
 		WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded' AND g.party='buyer')`
 )
 
-var errCancelNoShipBy = fail(409, "Only the vendor can cancel this paid order: a buyer may cancel a paid escrow order only when it is a physical order the vendor has not marked shipped within its dispatch window plus 48 hours. Nothing was changed.")
+// disputeClosedSQL: the order o is a shipped or delivered escrow order whose release deadline or dispute window has
+// passed with no restore recheck of its coin pending, so a dispute is refused (lateDispute) and /disputes does not list
+// it (A-709, PM-4).
+const disputeClosedSQL = `EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=o.id AND o.state IN ('shipped','delivered') AND ` + releaseDueSQL + `
+	AND NOT EXISTS (SELECT 1 FROM settings WHERE key=CASE WHEN es.coin='XMR' THEN '` + xmrReleaseRecheckKey + `' ELSE '` + releaseRecheckKey + `' END))`
+
+var errCancelNoShipBy = fail(409, "Only the vendor can cancel this paid order: it has no ship-by or delivery deadline recorded. A buyer may cancel a paid escrow order once its deadline has passed unmet: the dispatch window plus 48 hours for a physical order, 72 hours from payment for a digital one. Nothing was changed.")
 
 // utcUntil is a deadline as the market states it, in UTC to the minute, rounded down: the party acts before it.
 func utcUntil(t time.Time) string {
@@ -104,8 +110,9 @@ func orderIDs(ctx context.Context, q rowsQuerier, query string, args ...any) ([]
 }
 
 // noShipCancel checks the buyer's cancellation of a paid escrow order, in tx after the order row lock (step 1 of the
-// file comment): refused once the order was marked shipped (naming when), for an order with no ship-by time (a digital
-// one), and before its ship-by time (naming it).
+// file comment): refused once the order was marked shipped (naming when), for an order with no ship-by time, and
+// before its ship-by time (naming it). A paid digital Monero escrow order's ship-by time is its delivery deadline
+// (A-709); a delivered order is refused by the transition table (there is no delivered -> cancelled edge).
 func noShipCancel(c *actionCtx, o *Order) error {
 	ctx := c.Ctx()
 	if o.State == stateShipped {
@@ -119,6 +126,13 @@ func noShipCancel(c *actionCtx, o *Order) error {
 		}
 		return fail(409, "The vendor marked this order shipped at "+utcUntil(at)+", so it can no longer be cancelled. "+next+", or open a dispute if they do not arrive. Nothing was changed.")
 	}
+	if o.State == stateDelivered && o.xmrEscrow() { // A-709: the vendor's delivery took the order row first
+		var at time.Time
+		if err := c.Tx.QueryRowContext(ctx, "SELECT max(created) FROM order_events WHERE order_id=$1 AND from_state='paid' AND to_state='delivered'", o.ID).Scan(&at); err != nil {
+			return err
+		}
+		return fail(409, "The content of this order was delivered at "+utcUntil(at)+", so it can no longer be cancelled. Check it, then use Confirm receipt on the order page, or open a dispute before its dispute window ends if it does not work. Nothing was changed.")
+	}
 	if o.State != statePaid {
 		return errConflict
 	}
@@ -131,6 +145,8 @@ func noShipCancel(c *actionCtx, o *Order) error {
 	switch {
 	case !shipBy.Valid:
 		return errCancelNoShipBy
+	case !open && o.Kind == "digital": // A-709: a digital Monero escrow order's delivery deadline (escrowTransitionHook)
+		return fail(409, fmt.Sprintf("You can cancel this order from %s if the vendor has not delivered it by then: %d hours from payment. Nothing was changed.", utcFrom(shipBy.Time), digitalDeliveryHours))
 	case !open:
 		return fail(409, fmt.Sprintf("You can cancel this order from %s if the vendor has not marked it shipped by then: the vendor's dispatch window of %d days plus 48 hours, counted from payment. Nothing was changed.", utcFrom(shipBy.Time), days.Int64))
 	}
@@ -139,9 +155,8 @@ func noShipCancel(c *actionCtx, o *Order) error {
 
 // shipConflict is the vendor's refusal when the order is no longer paid: a buyer's cancellation names when it was made.
 func shipConflict(c *actionCtx, orderID string) error {
-	var at sql.NullTime
-	if err := c.Tx.QueryRowContext(c.Ctx(), `SELECT max(e.created) FROM order_events e JOIN orders o ON o.id=e.order_id
-		WHERE e.order_id=$1 AND e.to_state='cancelled' AND e.from_state='paid' AND e.actor_id=o.buyer_id AND o.state='cancelled'`, orderID).Scan(&at); err != nil {
+	at, err := buyerCancelledAt(c, orderID)
+	if err != nil {
 		return err
 	}
 	if !at.Valid {
@@ -150,12 +165,34 @@ func shipConflict(c *actionCtx, orderID string) error {
 	return fail(409, "The buyer cancelled this order at "+utcUntil(at.Time)+" because it was not marked shipped within its dispatch window plus 48 hours, so it cannot be marked shipped: the escrow is refunded to the buyer. Do not send the goods. Nothing was changed.")
 }
 
+// deliverConflict is shipConflict for the vendor's delivery of a digital escrow order past its delivery deadline (A-709).
+func deliverConflict(c *actionCtx, orderID string) error {
+	at, err := buyerCancelledAt(c, orderID)
+	if err != nil {
+		return err
+	}
+	if !at.Valid {
+		return errConflict
+	}
+	return fail(409, fmt.Sprintf("The buyer cancelled this order at %s because it was not delivered within %d hours of payment, so it cannot be delivered: the escrow is refunded to the buyer. Do not send the content. Nothing was changed.", utcUntil(at.Time), digitalDeliveryHours))
+}
+
+// buyerCancelledAt is when the buyer cancelled the paid order, if it is cancelled that way.
+func buyerCancelledAt(c *actionCtx, orderID string) (sql.NullTime, error) {
+	var at sql.NullTime
+	err := c.Tx.QueryRowContext(c.Ctx(), `SELECT max(e.created) FROM order_events e JOIN orders o ON o.id=e.order_id
+		WHERE e.order_id=$1 AND e.to_state='cancelled' AND e.from_state='paid' AND e.actor_id=o.buyer_id AND o.state='cancelled'`, orderID).Scan(&at)
+	return at, err
+}
+
 // lateDispute refuses (409) a dispute on a shipped escrow order whose release deadline has passed (owner decision
 // 2026-10-03: the release is due), in tx after the order row lock; before the deadline it returns the sentence the
 // other party's notice carries. While a restore's recheck is pending (escrow off after the restore, or before the first
 // pass after startup) the passed deadline is not yet due: the recheck will give the buyer 72 hours (A-393).
+//
+// A delivered digital Monero escrow order's release_at is the end of its dispute window (A-709), checked the same way.
 func lateDispute(c *actionCtx, o *Order) (string, error) {
-	if !o.Escrow || o.State != stateShipped {
+	if !o.Escrow || o.State != stateShipped && !(o.State == stateDelivered && o.xmrEscrow()) {
 		return "", nil
 	}
 	var at sql.NullTime
@@ -164,23 +201,32 @@ func lateDispute(c *actionCtx, o *Order) (string, error) {
 	if err != nil || !at.Valid {
 		return "", err
 	}
-	if due {
+	what := "release deadline"
+	if o.State == stateDelivered {
+		what = "dispute window"
+	}
+	switch {
+	case due && o.State == stateDelivered:
+		return "", fail(409, "The dispute window of this order ended at "+utcUntil(at.Time)+", so the order is due to complete and a dispute can no longer be opened. Nothing was changed.")
+	case due:
 		return "", fail(409, "The release deadline of this order passed at "+utcUntil(at.Time)+", so the release to the vendor is due and a dispute can no longer be opened. Nothing was changed.")
 	}
-	return "The release deadline of " + utcUntil(at.Time) + " no longer applies: opening a dispute cancels it for good, and an administrator of this market decides the order.", nil
+	return "The " + what + " of " + utcUntil(at.Time) + " no longer applies: opening a dispute cancels it for good, and an administrator of this market decides the order.", nil
 }
 
-// deadlineBanners fills /orders' banners: the viewer's shipped escrow orders, with no dispute, whose release deadline is
-// less than 72 hours away (P2-R9, A-377), unless the buyer has signed the release (A-392): the banner would tell the
-// buyer to sign or dispute, and the vendor that the buyer may still do either.
+// deadlineBanners fills /orders' banners: the viewer's shipped escrow orders, and delivered digital Monero escrow orders
+// (A-709), with no dispute, whose release deadline or dispute window ends less than 72 hours away (P2-R9, A-377),
+// unless the buyer has signed the release (A-392): the banner would tell the buyer to sign or dispute, and the vendor
+// that the buyer may still do either.
 func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if d.User == nil || a.db == nil {
 		return nil
 	}
 	// A Monero escrow order (P3-R7) has no signatures, so buyerUnsignedSQL always holds for it; its banner says Confirm
 	// receipt.
-	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.coin='XMR',es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
-		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND o.state='shipped' AND `+releaseSoonSQL+` AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`, d.User.ID)
+	// A delivered Monero escrow order is a digital one in its dispute window (A-709), always under 72 hours.
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.buyer_id=$1,es.coin='XMR',o.state='delivered',es.release_at,extract(epoch FROM es.release_at-now()) FROM orders o JOIN products p ON p.id=o.product_id JOIN escrows es ON es.order_id=o.id
+		WHERE (o.buyer_id=$1 OR p.vendor_id=$1) AND (o.state='shipped' OR o.state='delivered' AND es.coin='XMR') AND `+releaseSoonSQL+` AND `+noDisputeSQL+` AND `+buyerUnsignedSQL+` ORDER BY es.release_at`, d.User.ID)
 	if err != nil {
 		return err
 	}
@@ -189,7 +235,7 @@ func deadlineBanners(ctx context.Context, a *App, r *http.Request, d *PageData) 
 		var b DeadlineBanner
 		var at time.Time
 		var left float64
-		if err = rows.Scan(&b.OrderID, &b.Buyer, &b.XMR, &at, &left); err != nil {
+		if err = rows.Scan(&b.OrderID, &b.Buyer, &b.XMR, &b.Digital, &at, &left); err != nil {
 			return err
 		}
 		b.Short, b.At, b.Left = shortID(b.OrderID), utcUntil(at), timeLeft(time.Duration(left*float64(time.Second)))

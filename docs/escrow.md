@@ -49,8 +49,9 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   while Monero escrow is unavailable, it answers 503 and the order stays a draft.
 - **Funding at 10 or more confirmations.** The watcher reads each wallet's incoming transfers (`get_transfers` over all
   accounts). A deposit counts from 10 confirmations (or `PAYMENT_CONFIRMATIONS_XMR` when that is higher) with no unlock
-  time and no double-spend seen; a locked deposit is flagged for staff and never counted. A digital order completes on
-  funding with its content delivered; a physical order becomes paid. An order that received nothing in its payment window is
+  time and no double-spend seen; a locked deposit is flagged for staff and never counted. A digital order with automatic
+  delivery is delivered on funding and enters its 48-hour dispute window (below); a manual-delivery digital order and a
+  physical order become paid. An order that received nothing in its payment window is
   cancelled; one that is underpaid (every deposit confirmed, together short of the price, and no top-up for a whole payment
   window) is cancelled too, which requests its refund.
 - **Settlements: built, stored and relayed by the watcher, never rebuilt.** Only the watcher builds a settlement, and
@@ -197,8 +198,22 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   too few still waits, and its refusals keep their classes: the
   coins are the vendor's. After a close, deposits are refunded automatically until the wallet is
   destroyed; after that, the order page says Monero sent to its address since then cannot be recovered (ES-8).
+- **Digital orders: delivery deadline and dispute window** (A-709, owner decision 2026-10-28). A paid digital order has
+  a delivery deadline of 72 hours from payment (`escrows.ship_by`; a digital listing has no dispatch window, so the
+  length is fixed). If the vendor has not delivered by then, the buyer may cancel the order with the physical no-ship
+  cancel, and the escrow is refunded to the buyer's refund address; a vendor's delivery after that cancel is refused.
+  Every delivery, automatic on funding or by the vendor, leaves the order **Delivered** for a 48-hour dispute window
+  (`escrows.release_at`, set on delivery; fixed, not the release-deadline setting). The order note says whether the
+  window opened on funding or on delivery, and both parties are told when it ends. In the window the buyer may open a
+  dispute (an administrator then decides it) or use **Confirm receipt** with their password to complete the order
+  early. When the window ends with no dispute, the Monero watcher completes the order ("dispute window ended"), as it
+  does a physical order at its release deadline, including while the escrow wallet-rpc is down; after a restore from
+  backup a passed window is moved to 72 hours from the recheck, and a vendor's ban moves a sooner end to 72 hours
+  after the ban. Only a completed order can be claimed: the vendor then claims the escrow with a fresh Monero address
+  and their password. Orders completed before this change keep their history unchanged.
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
-  password once the order has completed on funding. For a physical order the vendor's *Mark as shipped* takes the claim
+  password once the order has completed (at the end of its dispute window or by the buyer's Confirm receipt). For a
+  physical order the vendor's *Mark as shipped* takes the claim
   address and their password, requests the release to it and fixes the release deadline; nothing is built until the
   order is completed or its dispute is decided for the vendor. The buyer's **Confirm receipt**, with their password,
   completes the order, after which it can no longer be disputed. If the buyer does neither before the deadline (14 days
@@ -369,7 +384,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
      accounts; account 0 holds nothing; the next month's wallet is created sealed ahead of its month and becomes active at
      its start.
   2. `TestXMREscrowRegtestFunding`: a deposit is recorded at 0 confirmations in the pool, counts at 10 and not at 9, and
-     completes a digital order.
+     delivers a digital order into its dispute window, in which the vendor's claim is refused; once the window has
+     ended the watcher's pass completes it and the vendor's claim is requested (A-709).
   3. `TestXMREscrowRegtestTwoAccountsOneTx`: one transaction paying two escrows becomes one payments row per account, each
      its own order's.
   4. `TestXMREscrowRegtestPhysical`: four physical orders funded by one transaction; the watcher makes no `transfer` or

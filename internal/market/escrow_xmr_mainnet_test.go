@@ -69,6 +69,7 @@ func TestXMREscrowMainnetTags(t *testing.T) {
 	}
 	x.fake.payAddress(addr, hex64("mn deposit"), xmrListingPrice, 10)
 	x.mustPoll()
+	x.endWindows()
 	if x.state(order) != stateCompleted {
 		t.Fatalf("funded order on mainnet: %s", x.state(order))
 	}

@@ -125,7 +125,7 @@ func TestDigitalDeliveryEncryptsEachOrderOnlyForItsBuyer(t *testing.T) {
 		x.fake.payAddress(agStr(e, "SELECT address FROM escrows WHERE order_id=$1", order), hex64("encrypted-delivery-"+order), xmrListingPrice, 10)
 		x.mustPoll()
 		ciphertext := agStr(e, "SELECT content FROM deliveries WHERE order_id=$1 AND encrypted", order)
-		if x.state(order) != stateCompleted || strings.Contains(ciphertext, plaintext) || testDecrypt(t, buyer.key, ciphertext) != plaintext || deliveryDecryptsWith(buyer.other, ciphertext) {
+		if x.state(order) != stateDelivered || strings.Contains(ciphertext, plaintext) || testDecrypt(t, buyer.key, ciphertext) != plaintext || deliveryDecryptsWith(buyer.other, ciphertext) {
 			t.Fatal("per-order delivery did not enforce the buyer encryption boundary")
 		}
 		ciphertexts = append(ciphertexts, ciphertext)
@@ -174,7 +174,7 @@ func TestDigitalDeliveryKeyLossDoesNotRollBackConfirmedPayment(t *testing.T) {
 	newKey, newPublic := testPGPKey(t, "repaired-delivery-key")
 	e.setKey(x.buyer, newPublic)
 	e.check(e.do("POST", "/orders/deliver", x.vendorSess, url.Values{"order_id": {order}, "content": {"repaired buyer delivery"}}), 303)
-	if x.state(order) != stateCompleted || testDecrypt(t, newKey, agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", order)) != "repaired buyer delivery" {
+	if x.state(order) != stateDelivered || testDecrypt(t, newKey, agStr(e, "SELECT content FROM deliveries WHERE order_id=$1", order)) != "repaired buyer delivery" {
 		t.Fatal("vendor could not safely deliver after the buyer repaired their PGP key")
 	}
 }

@@ -138,9 +138,15 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			v.NextStep += " Ship by " + utcFrom(shipBy.Time) + " (the listing's dispatch window plus 48 hours, from payment): if the order is not marked shipped by then, the buyer may cancel it and the escrow is refunded to the buyer."
 		}
 	case o.State == statePaid:
-		v.Status, v.NextStep = "Funded", "The order completes when the vendor delivers its digital content. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		// A-709: the delivery deadline (ship_by, escrowTransitionHook) and the dispute window that follows delivery.
+		v.Status, v.NextStep = "Funded", "The vendor delivers the digital content; the buyer then has "+strconv.Itoa(disputeWindowHours)+" hours to check it and open a dispute, or to confirm receipt, before the order completes and the vendor can claim the coins. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		if shipBy.Valid {
+			v.NextStep += " Deliver by " + utcFrom(shipBy.Time) + " (" + strconv.Itoa(digitalDeliveryHours) + " hours from payment): if the content is not delivered by then, the buyer may cancel the order and the escrow is refunded to the buyer."
+		}
 	case o.State == stateShipped:
 		v.Status = "Funded and shipped"
+	case o.State == stateDelivered:
+		v.Status = "Funded and delivered"
 	case o.State == stateCompleted:
 		v.Status, v.NextStep = "Funded and completed", "The escrowed coins are released to the vendor by a transaction the market builds and sends."
 	case o.State == stateDisputed:
@@ -187,16 +193,21 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	// Only the actions a Monero escrow order can take (escrowOrder's rules): no pooled "Mark shipped" (the panel has the
-	// Monero ship form, with the claim address and a password step-up); the buyer of a paid order cancels only a
-	// physical one, from its ship-by time; a cancel that refunds coins states and carries their amount.
+	// Monero ship form, with the claim address and a password step-up); the buyer of a paid order cancels from its
+	// ship-by time (a digital one's delivery deadline, A-709); no dispute once the release deadline or dispute window has
+	// passed (PM-4, lateDispute); a cancel that refunds coins states and carries their amount.
 	counted := received + pending
 	kept := d.Transitions[:0]
 	for _, t := range d.Transitions {
 		switch {
 		case t.To == stateShipped:
 			continue
+		case t.To == stateDisputed && v.Deadline != nil && v.Deadline.closed:
+			continue
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipBy.Valid:
 			continue
+		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipByOpen && o.Kind == "digital":
+			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not delivered the content by then; the escrow is then refunded to your refund address."
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipByOpen:
 			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
 		case t.To == stateCancelled && counted > 0:
@@ -252,7 +263,12 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		d.XMREscrowCheckout = v
 		return nil
 	}
-	if err != nil || !eligible {
+	if err != nil {
+		return err
+	}
+	if !eligible { // A-711: the buyer is told why, not shown nothing
+		v.Reason, err = checkoutIneligibleReason(ctx, a.db, o)
+		d.XMREscrowCheckout = v
 		return err
 	}
 	v.Total = amount(price, 12)
@@ -313,11 +329,12 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	o := d.Order
 	var releaseAt sql.NullTime
 	var left sql.NullFloat64
-	var shipByOpen, rechecked, live, tooFew bool
+	var shipByOpen, rechecked, live, tooFew, claimDue, recheckAsked bool
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
-		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind IN ('release','refund') AND s.state<>'superseded'),
-		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2)
-		FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew); err != nil {
+		`+xmrLiveOutcomeSQL("es.order_id")+`,
+		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2),`+xmrClaimDueSQL("o")+`,
+		EXISTS(SELECT 1 FROM settings WHERE key=$3)
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked); err != nil {
 		return err
 	}
 	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
@@ -327,9 +344,13 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	switch {
 	case o.State == statePaid && o.Kind == "physical" && shipByOpen:
 		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and the escrow is then refunded to the buyer's refund address."
-	case o.State == stateShipped && releaseAt.Valid:
+	case o.State == statePaid && shipByOpen:
+		v.NextStep += " The delivery deadline has passed and the content is not delivered: the buyer may now cancel it, and the escrow is then refunded to the buyer's refund address."
+	case (o.State == stateShipped || o.State == stateDelivered) && releaseAt.Valid:
 		remaining := time.Duration(left.Float64 * float64(time.Second))
-		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(remaining), Due: remaining <= 0, Rechecked: rechecked}
+		// closed: lateDispute's rule, so the page offers no dispute the action would refuse (PM-4).
+		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(remaining), Due: remaining <= 0, Rechecked: rechecked,
+			Digital: o.State == stateDelivered, closed: remaining <= 0 && !recheckAsked}
 		if v.Deadline.VendorClosed, err = orderVendorBanned(ctx, a.db, o.ID); err != nil {
 			return err
 		}
@@ -357,8 +378,8 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	on := a.escrowXMR != nil
 	v.Off = !on
 	v.Ship = on && d.OrderViewer == roleVendor && o.State == statePaid && o.Kind == "physical"
-	v.Confirm = on && d.OrderViewer == roleBuyer && o.State == stateShipped
-	v.Claim = on && d.OrderViewer == roleVendor && settlementFits("release", o.State, outcome) && !live
+	v.Confirm = on && d.OrderViewer == roleBuyer && (o.State == stateShipped || o.State == stateDelivered)
+	v.Claim = on && d.OrderViewer == roleVendor && claimDue // the vendor desk's "Claim your payment" (A-710)
 	if (v.Ship || v.Confirm || v.Claim) && d.Security == nil {
 		if d.Security, _, _, err = a.securityView(ctx, d.User.ID); err != nil {
 			return err
@@ -369,6 +390,9 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 
 // xmrDeadlineNextStep is the "who acts next" line of a shipped Monero escrow order with its release deadline, for viewer.
 func xmrDeadlineNextStep(viewer string, dl *EscrowDeadlineView, paused bool) string {
+	if dl.Digital {
+		return xmrWindowNextStep(viewer, dl, paused)
+	}
 	if dl.VendorClosed { // A-652d: the release is held while the vendor is banned (xmrReleaseHeld)
 		switch {
 		case dl.Due:
@@ -391,4 +415,26 @@ func xmrDeadlineNextStep(viewer string, dl *EscrowDeadlineView, paused bool) str
 		return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time and the market releases the coins to you; nothing is built or sent before the order is completed."
 	}
 	return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time and the market releases the coins to the vendor."
+}
+
+// xmrWindowNextStep is xmrDeadlineNextStep for a delivered digital order in its dispute window (A-709): the buyer checks
+// the content and confirms receipt or opens a dispute before it ends; then the order completes and the vendor claims.
+func xmrWindowNextStep(viewer string, dl *EscrowDeadlineView, paused bool) string {
+	outcome := "the vendor can claim the coins in this escrow"
+	if dl.VendorClosed { // A-652d: the release is held while the vendor is banned (xmrReleaseHeld)
+		outcome = "the market holds its payment: it sends nothing to the vendor while the account is closed, and no other address is ever paid"
+	}
+	switch {
+	case dl.Due && paused:
+		return "The dispute window ended at " + dl.At + ": the order completes once the market has finished reconciling its restore from backup, and then " + outcome + "."
+	case dl.Due:
+		return "The dispute window ended at " + dl.At + ": the order completes on the market's next pass, and then " + outcome + "."
+	case viewer == roleBuyer:
+		return "Who acts next: you. Check the delivered content now. Use Confirm receipt below once it works, or open a dispute before " + dl.At + " if it does not. If you do neither by then, the order completes at that time and " + outcome + "."
+	case viewer == roleVendor && dl.VendorClosed:
+		return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time, and its payment is held while your account is closed."
+	case viewer == roleVendor:
+		return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time and you can claim the coins in this escrow on this page; no claim is possible before then."
+	}
+	return "Who acts next: the buyer, who confirms receipt or opens a dispute before " + dl.At + ". If the buyer does neither, the order completes at that time and " + outcome + "."
 }
