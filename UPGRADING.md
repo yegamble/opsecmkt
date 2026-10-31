@@ -15,6 +15,15 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Finished XMPP receipts keep no address (migration 154, A-717)
+
+No configuration change. Migration 154 clears the recipient's XMPP address and key fingerprint from every outbox row
+already sent, cancelled or failed, and the delivery worker now clears them when a row finishes. Each worker pass also
+cancels and clears a pending row whose address has since changed or been removed. A pending row for an address still in
+force is unchanged and delivers as before. Receipts keep their outcome and times. Backups taken before this upgrade still
+hold the cleared values, including addresses since changed or removed, until those backups are removed; a backup restored
+from before this upgrade is cleared again when the migration runs on it.
+
 ## Digital escrow orders get a delivery deadline and a dispute window (migration 153, A-709)
 
 No configuration change. A Monero escrow digital order no longer completes on funding:
