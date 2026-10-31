@@ -55,7 +55,8 @@ func quantityCheckoutReason(ctx context.Context, q rowQuerier, o *Order) (string
 		return "This listing is no longer available. You can cancel this unfunded draft.", nil
 	}
 	if stock < o.Units() {
-		return "Only " + strconv.FormatInt(stock, 10) + " units are available. Review the listing to save a smaller quantity, or cancel this unfunded draft.", nil
+		// A-715: one sentence for every stock below the saved quantity. A count here would let one draft watch every sale.
+		return "The saved quantity is more than this listing has available now. Review the listing to save a smaller quantity, or cancel this unfunded draft.", nil
 	}
 	return "", nil
 }

@@ -19,6 +19,7 @@ test('dispute image evidence form works without scripts and stays within the vie
   await expect(panel).toContainText('PDF, Office documents and SVG are refused.');
   await expect(panel).toContainText('Every image is scanned by ClamAV');
   await expect(panel).toContainText('Stored unencrypted');
+  await expect(panel).toContainText('The operator and anyone with a backup can also see these images and their descriptions.');
   await expect(page.locator('script')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   // Long descriptions and 200% text must not grow the document sideways.

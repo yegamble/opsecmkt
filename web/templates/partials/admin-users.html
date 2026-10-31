@@ -140,7 +140,7 @@
 <label>Replacement PGP public key<textarea name="replacement_pgp" rows="6" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"{{if not $factors}} required{{end}}></textarea></label>
 <label>Verification note<input name="recovery_note" minlength="10" maxlength="500" autocomplete="off" aria-describedby="user-recovery-note-help"{{if not $factors}} required{{end}}>
 </label>
-<span class="help" id="user-recovery-note-help">Required with a replacement key: 10–500 characters on one line saying how you checked the request. It is your attestation, which the market cannot check, recorded with the old and new fingerprints in the audit trail of both accounts. Supply a public key only, never a private key.</span>
+<span class="help" id="user-recovery-note-help">Required with a replacement key: 10–500 characters on one line saying how you checked the request. It is your attestation, which the market cannot check, recorded with the old and new fingerprints in the audit trail of both accounts. The note goes into the audit trail and the signed audit export. Do not put the holder's real-world identity, contact details or other private evidence in it. Supply a public key only, never a private key.</span>
 </details>
 {{template "confirm-fields" $totp}}
 <button type="submit">{{if $factors}}Reset second factors of {{.Handle}}{{else}}Replace the PGP key of {{.Handle}}{{end}}</button>
