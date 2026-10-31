@@ -15,6 +15,18 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A pending restore recheck holds releases and the buyer's no-ship cancel (A-714)
+
+No migration or setting. After a restore from backup the Monero escrow watcher's first pass after the gate is cleared
+moves every passed release deadline and dispute window to 72 hours later (`escrow_xmr_release_recheck`, section 6).
+Until that recheck has succeeded, the watcher now completes no shipped or delivered order on a passed deadline: a
+recheck that fails, say on a database error, is retried on each pass and the orders stay open, where before the same
+pass could complete them and make the release buildable or claimable. While it is pending, a buyer's cancel of a paid
+escrow order past its ship-by time or delivery deadline is also refused (409, "records are being reconciled"), and the
+order page says why: a restore cannot move a ship-by time, and the vendor may have shipped or delivered the order after
+the backup was taken. A vendor's cancel and staff actions are unchanged. Once the recheck has run, the buyer can cancel
+as before, so review such orders before clearing the gate (section 6).
+
 ## Digital escrow orders get a delivery deadline and a dispute window (migration 153, A-709)
 
 No configuration change. A Monero escrow digital order no longer completes on funding:
@@ -1711,8 +1723,9 @@ against the database. It runs in one transaction and does the following:
 - `retention_restore_required` makes startup replay the current external retention state before accepting traffic
   (start with `RETENTION_ENABLED=true` and the current `RETENTION_STATE_DIR`; see [retention](docs/retention.md)).
 - `escrow_xmr_release_recheck` asks the Monero escrow watcher, on its first pass after the gate is cleared, to move every
-  release deadline of a shipped Monero escrow order that has passed in the restored records to 72 hours later, telling
-  each buyer.
+  release deadline of a shipped Monero escrow order, and every dispute window of a delivered digital one, that has passed
+  in the restored records to 72 hours later, telling each buyer. Until that recheck has succeeded, no such order is
+  completed on its deadline and a buyer's no-ship cancel of a paid order is refused (A-714).
 - `xmr_escrow_sweep_required` makes Monero escrow checkout wait until the Monero escrow watcher has found the escrow
   wallets created after the backup (each is sealed to the seed key and kept, never offered to a new order) and checked
   every escrow wallet. After restoring only the escrow wallet volume from an older backup, set that setting alone with
@@ -1757,7 +1770,12 @@ approval mode in **Admin → Vendor applications**) and the held-release refund 
 (`ban_hold_refund_days`, **Admin → Payments**, A-652f), and undoes bonds recorded as received after that point, bans and
 unbans, and held releases refunded to buyers after that point (a refund of a held release made after the backup is not in
 the restored records: check the order pages of banned vendors' orders against your operator record before refunding
-again). Before clearing the gate, re-check them on `/admin` against your operator record. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
+again). Before clearing the gate, re-check them on `/admin` against your operator record. Shipments, deliveries and
+cancels made after the backup are not in the restored records either, and a restore cannot move an order's ship-by time
+or delivery deadline: review the escrow orders shipped, delivered or cancelled around the backup point (the parties'
+order messages and notices, the wallet's transfer history). Once the gate is cleared and the deadline recheck has run, the
+buyer of a paid order whose restored ship-by time or delivery deadline has passed can cancel it for a refund at once,
+even if the vendor shipped or delivered it after the backup (A-714). The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
 database rows, so a database restore does not roll them back; confirm the host values are the ones you intend. The restore can
 roll back the record of the last fee seen, so the next start may announce the current fee to administrators once more.
 

@@ -26,7 +26,9 @@ import (
 //     is its delivery deadline: step 1's buyer cancel applies from it.
 //  4. After a restore from backup (scripts/restore.sh, or UPGRADING.md section 6, sets escrow_xmr_release_recheck) the
 //     pass moves every passed deadline of a shipped or delivered order to now + 72 hours and tells the buyer
-//     (xmrRecheckReleaseDeadlines), as recheckReleaseDeadlines does for Bitcoin escrow with its own setting.
+//     (xmrRecheckReleaseDeadlines), as recheckReleaseDeadlines does for Bitcoin escrow with its own setting. Until the
+//     recheck has succeeded and consumed the setting, step 3 completes nothing, a dispute is not refused as late
+//     (lateDispute) and the buyer's no-ship cancel waits (noShipCancel), since a restored ship_by cannot move (A-714).
 //  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped or delivered orders with
 //     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
 //     banned, steps 2 and 3 and the buyer's confirmation say the release is then held (xmrReleaseHeld, A-652c).
@@ -39,6 +41,11 @@ const digitalWindowNote = "dispute window ended"
 
 // xmrReleaseRecheckKey is the setting a restore from backup writes to ask for the Monero deadline recheck (step 4).
 const xmrReleaseRecheckKey = "escrow_xmr_release_recheck"
+
+// xmrNoRecheckSQL: no restore recheck of Monero deadlines is pending (step 4). The release (step 3) waits while one is,
+// as a late dispute does (disputeClosedSQL, lateDispute): a recheck that failed leaves the setting, so the same pass
+// completes no order whose restored deadline has passed before the buyer was given 72 hours (A-393, A-714).
+const xmrNoRecheckSQL = "NOT EXISTS (SELECT 1 FROM settings WHERE key='" + xmrReleaseRecheckKey + "')"
 
 // xmrOpenSQL is the order states whose release_at applies: a shipped physical order's release deadline and a delivered
 // digital order's dispute window (A-709).
@@ -74,7 +81,8 @@ func releaseRecheckKeyOf(coin string) string {
 }
 
 // xmrDeadlines is the deadline part of a Monero escrow watcher pass, under its lock: the restore recheck first, so a
-// restored deadline is moved before it could be released, then the release, then the reminders.
+// restored deadline is moved before it could be released, then the release, then the reminders. A recheck that fails
+// keeps its setting, so the release then completes nothing until a later pass's recheck succeeds (xmrNoRecheckSQL).
 func (a *App) xmrDeadlines(ctx context.Context) error {
 	gate, err := restoreGateSet(ctx, a.db)
 	if err != nil || gate {
@@ -94,9 +102,10 @@ func (a *App) xmrDeadlines(ctx context.Context) error {
 }
 
 // xmrReleaseDue completes every shipped or delivered Monero escrow order whose release deadline or dispute window has
-// passed with no dispute, each in its own transaction (step 3 of the file comment).
+// passed with no dispute, each in its own transaction (step 3 of the file comment); nothing while a restore recheck is
+// pending (xmrNoRecheckSQL).
 func (a *App) xmrReleaseDue(ctx context.Context) error {
-	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseDueSQL+` AND `+noDisputeSQL+` ORDER BY es.release_at`)
+	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseDueSQL+` AND `+noDisputeSQL+` AND `+xmrNoRecheckSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
 	}
@@ -122,8 +131,8 @@ func (a *App) xmrReleaseOne(ctx context.Context, orderID string) error {
 }
 
 // xmrReleaseIfDue completes order in tx if it is still shipped or delivered, has no dispute and its release deadline or
-// dispute window has passed: the order row is locked first and checked in a statement after the lock (releaseIfDue's
-// rule). It reports whether the order was completed.
+// dispute window has passed with no restore recheck pending: the order row is locked first and checked in a statement
+// after the lock (releaseIfDue's rule). It reports whether the order was completed.
 func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (bool, error) {
 	if _, err := tx.ExecContext(ctx, "SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", orderID); err != nil {
 		return false, err
@@ -131,7 +140,7 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 	var due bool
 	var state string
 	var at time.Time
-	err := tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+noDisputeSQL+` AND `+releaseDueSQL+`,o.state,es.release_at
+	err := tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+noDisputeSQL+` AND `+releaseDueSQL+` AND `+xmrNoRecheckSQL+`,o.state,es.release_at
 		FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR' AND es.release_at IS NOT NULL`, orderID).Scan(&due, &state, &at)
 	if err == sql.ErrNoRows || err == nil && !due {
 		return false, nil
