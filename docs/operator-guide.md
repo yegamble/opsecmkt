@@ -1682,7 +1682,9 @@ Monero escrow: holds every restored settlement that has a stored transaction (bu
 `/admin/payments` (below); retires every free account; moves every active or sealed wallet to closing, so that no account of a
 restored wallet, one the restored records lack included, is offered to a new order; asks for the release deadline recheck
 (`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every passed deadline of a shipped
-order moves 72 hours later and its buyer is told); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
+order, and every passed dispute window of a delivered digital one, moves 72 hours later and its buyer is told; until that
+recheck has succeeded no order completes on a passed deadline and a buyer's no-ship cancel of a paid order is refused,
+A-714); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
 answer 503 ("Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a
 backup …"), and creates no wallet or account, until the watcher's **sweep** has run. The sweep needs the escrow wallet-rpc and
 the seed key; it runs on every pass, gate or not, and only a pass that did all of it clears the marker (`escrow: Monero
@@ -1690,7 +1692,11 @@ escrow's restore sweep is complete; Monero escrow checkout is open again once th
 probes for wallets created after the backup and seals each it can open to the seed key as an *orphan* (its funded accounts are
 listed to the administrators, who check them for coins of orders the database lost), records any it cannot open as an orphan
 too, reads every wallet that may hold coins, and gives a wallet older than the database a longer subaddress lookahead and a
-rescan so that deposits to accounts it does not know are seen. Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
+rescan so that deposits to accounts it does not know are seen. Before clearing the gate, review the escrow orders shipped,
+delivered or cancelled around the backup point: the restored records lack those made after it, and a restore cannot move
+a paid order's ship-by time or delivery deadline, so once the recheck has run the buyer of a paid order whose restored
+deadline has passed can cancel it for a refund at once, even if the vendor shipped or delivered it after the backup.
+Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
 
 **What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
 `ESCROW_XMR` is on (with it off a restore pauses nothing here and none of this shows), the staff

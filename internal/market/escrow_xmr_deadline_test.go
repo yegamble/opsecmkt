@@ -445,6 +445,89 @@ func TestXMREscrowRestoreExtendsDeadline(t *testing.T) {
 	}
 }
 
+// A-714 (PAY-1): while a restore's recheck is pending the release is not due, as for a late dispute (lateDispute). A
+// recheck that fails leaves escrow_xmr_release_recheck set, so the same pass, and every later one until the recheck
+// succeeds, completes neither a shipped order nor a delivered digital order whose restored deadline has passed: neither
+// release is made buildable or claimable before the buyer got the 72 hours (A-393). Once the recheck succeeds the key
+// is gone, the deadlines are moved, and the orders complete at their moved deadlines.
+func TestXMREscrowRecheckFailureHoldsRelease(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	shipped, _, _ := x.shippedXMR(x.physical(x.vendor))
+	delivered, _ := x.deliveredXMR(x.product)
+	for _, o := range []string{shipped, delivered} {
+		x.forceDeadline(o, "release_at=now()-interval '2 days'")
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
+	// The recheck fails at its order note, after it moved a deadline: its transaction rolls back, and the key stays.
+	agExec(x.testEnv, `CREATE FUNCTION a714_fail_recheck() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.note LIKE '%after a restore from backup%' THEN RAISE EXCEPTION 'injected recheck failure'; END IF; RETURN NEW; END $$`)
+	agExec(x.testEnv, "CREATE TRIGGER a714_fail_recheck BEFORE INSERT ON order_events FOR EACH ROW EXECUTE FUNCTION a714_fail_recheck()")
+	open := func(when string) {
+		t.Helper()
+		if x.state(shipped) != stateShipped || x.state(delivered) != stateDelivered || anyContains(x.events(shipped), ">completed") || anyContains(x.events(delivered), ">completed") {
+			t.Fatalf("%s: shipped order %s, delivered order %s (events %q %q)", when, x.state(shipped), x.state(delivered), x.events(shipped), x.events(delivered))
+		}
+		if !x.releaseAt(shipped).Before(x.dbNow()) || agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReleaseRecheckKey) != 1 {
+			t.Fatalf("%s: the failed recheck moved a deadline or consumed the restore's request", when)
+		}
+	}
+	err := x.A.xmrDeadlines(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "injected recheck failure") {
+		t.Fatalf("a failed recheck: %v", err)
+	}
+	open("the pass whose recheck failed")
+	if err = x.poll(); err == nil {
+		t.Fatal("a watcher pass hid the failed recheck")
+	}
+	open("a second pass whose recheck failed")
+	// The release step alone, and the per-order check under the order row lock, also wait for the recheck.
+	if err = x.A.xmrReleaseDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := x.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := x.A.xmrReleaseIfDue(context.Background(), tx, delivered)
+	if err != nil || released {
+		tx.Rollback()
+		t.Fatalf("xmrReleaseIfDue with the recheck pending: released %v, %v", released, err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	open("the release step with the recheck pending")
+	if got := x.xmrSettlements(shipped); len(got) != 1 || got[0] != "release requested "+testXMRAddr("claim "+shipped, true) {
+		t.Fatalf("the shipped order's settlements with the recheck pending: %v", got)
+	}
+
+	// The recheck succeeds on the next pass: the key is consumed and both deadlines move 72 hours on, still open.
+	agExec(x.testEnv, "DROP TRIGGER a714_fail_recheck ON order_events")
+	before := x.dbNow()
+	x.mustPoll()
+	if agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReleaseRecheckKey) != 0 {
+		t.Fatal("the successful recheck left its request")
+	}
+	for _, o := range []string{shipped, delivered} {
+		if at := x.releaseAt(o); at.Before(before.Add(72*time.Hour - time.Minute)) {
+			t.Fatalf("after the recheck %s's deadline is %s", shortID(o), at)
+		}
+	}
+	if x.state(shipped) != stateShipped || x.state(delivered) != stateDelivered {
+		t.Fatalf("after the recheck: %s %s", x.state(shipped), x.state(delivered))
+	}
+	// Once the moved deadlines pass, the next pass completes both orders: nothing stays held after the key is gone.
+	for _, o := range []string{shipped, delivered} {
+		x.forceDeadline(o, "release_at=now()-interval '1 minute'")
+	}
+	x.mustPoll()
+	if x.state(shipped) != stateCompleted || x.state(delivered) != stateCompleted ||
+		!anyContains(x.events(shipped), "auto-release deadline passed") || !anyContains(x.events(delivered), digitalWindowNote) {
+		t.Fatalf("after the moved deadlines passed: %s %s", x.state(shipped), x.state(delivered))
+	}
+}
+
 // P3-R7 (P2-R4 for Monero): a decision for the buyer on a shipped Monero escrow order supersedes the release requested
 // at shipment in the resolve transaction and requests the refund to the refund address; a decision for the vendor
 // reuses that release (no new claim). A release whose transaction is stored is the outcome: deciding for the buyer is

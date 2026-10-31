@@ -257,6 +257,57 @@ func TestXMREscrowDeliverCancelRaceOneOutcome(t *testing.T) {
 	}
 }
 
+// A-714 (PAY-2): ship_by is immutable (migration 079), so after a restore from backup a paid order's restored delivery
+// deadline or ship-by time may have passed although the vendor delivered or shipped it after the backup was taken.
+// While the restore's recheck is pending (lateDispute's exception), the buyer's no-ship cancel is refused 409 with the
+// reason, the buyer's page offers no cancel form and says why, and the panel does not say the buyer may cancel now. The
+// Bitcoin recheck's setting is not the Monero one; the vendor's cancel is unaffected; once the recheck has run the
+// buyer cancels as before.
+func TestXMREscrowCancelWaitsForRecheck(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	manual := x.manualDigital(x.vendor)
+	digital, digitalSess := x.fundedXMR(manual)
+	physical, physicalSess := x.paidXMRPhysical(x.physical(x.vendor))
+	byVendor, _ := x.fundedXMR(manual)
+	for _, o := range []string{digital, physical, byVendor} {
+		x.forceDeadline(o, "ship_by=now()-interval '1 minute'")
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", releaseRecheckKey)
+	if page := x.page("/order?id="+digital, digitalSess); !strings.Contains(page, `action="/orders/cancel"`) {
+		t.Fatal("a pending Bitcoin recheck hid a Monero order's cancel form")
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
+	for _, c := range []struct{ order, sess string }{{digital, digitalSess}, {physical, physicalSess}} {
+		page := html.UnescapeString(x.page("/order?id="+c.order, c.sess))
+		if strings.Contains(page, `action="/orders/cancel"`) || !containsAll(page, "being reconciled after a restore from backup", "cancel") ||
+			strings.Contains(page, "the buyer may now cancel it") {
+			t.Fatalf("the buyer's page while the recheck is pending:\n%s", page)
+		}
+		if code, body := x.xmrBuyerCancel(c.order, c.sess); code != 409 || !containsAll(body, "records are being reconciled", "Nothing was changed") {
+			t.Fatalf("a buyer cancel while the recheck is pending: %d %s", code, body)
+		}
+		if x.state(c.order) != statePaid || len(x.xmrSettlements(c.order)) != 0 {
+			t.Fatal("the refused cancel changed the order")
+		}
+	}
+	if code, body := x.xmrPost("/orders/cancel", x.vendorSess, url.Values{"order_id": {byVendor}, "from": {statePaid}, "payout_confirmed": {"confirmed"},
+		"amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}}); code != 303 || x.state(byVendor) != stateCancelled {
+		t.Fatalf("the vendor's cancel while the recheck is pending: %d %s %s", code, x.state(byVendor), body)
+	}
+	// The recheck runs on the next pass and consumes the request: the buyer cancels for the refund as before.
+	x.mustPoll()
+	if agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReleaseRecheckKey) != 0 {
+		t.Fatal("the recheck left its request")
+	}
+	if page := x.page("/order?id="+digital, digitalSess); !strings.Contains(page, `action="/orders/cancel"`) {
+		t.Fatal("no cancel form once the recheck has run")
+	}
+	if code, body := x.xmrBuyerCancel(digital, digitalSess); code != 303 || x.state(digital) != stateCancelled {
+		t.Fatalf("the buyer's cancel once the recheck has run: %d %s %s", code, x.state(digital), body)
+	}
+}
+
 // After a restore from backup the first pass moves a delivered digital order's passed dispute window to 72 hours from
 // then, with a delivered -> delivered note and a notice to the buyer, before the deadline step could complete it.
 func TestXMREscrowRestoreExtendsDigitalWindow(t *testing.T) {

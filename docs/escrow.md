@@ -366,7 +366,8 @@ wallet takes an order again and no settlement is relayed until an administrator 
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowShipNoShipCancelRaceOneOutcome`, `TestXMRConcessionResolveRaceOneOutcome`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
-  `TestXMREscrowRestoreExtendsDeadline`. Retention and restore: `TestXMREscrowDestroyPreconditions`,
+  `TestXMREscrowRestoreExtendsDeadline`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`.
+  Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
   `TestXMREscrowConfirmDestroyedRefusesUnspent`,
   `TestXMREscrowRestoreRetiresSlots`, `TestXMREscrowRestoreNoUnrecordedSlot`,

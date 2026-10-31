@@ -16,6 +16,7 @@ import (
 //     refused (409) with the time stated (noShipCancel). The cancel and the vendor's "Mark shipped" both lock the order
 //     row and compare-and-set its state, so exactly one takes effect; the other is told which one did and when. The
 //     cancel requests the refund (escrowSettleTerminal), which the buyer or the vendor signs and the market co-signs.
+//     While step 4's restore recheck is pending the buyer's cancel is refused (409) too (A-714).
 //  2. Shipped: escrows.release_at (escrow_release.go). From 72 hours before it the buyer is reminded once (reminded_at
 //     claimed by compare-and-set) and the vendor told the buyer's deadline (remindDeadlines). A dispute filed after it
 //     is refused: the release is due (lateDispute).
@@ -60,6 +61,11 @@ const (
 // it (A-709, PM-4).
 const disputeClosedSQL = `EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=o.id AND o.state IN ('shipped','delivered') AND ` + releaseDueSQL + `
 	AND NOT EXISTS (SELECT 1 FROM settings WHERE key=CASE WHEN es.coin='XMR' THEN '` + xmrReleaseRecheckKey + `' ELSE '` + releaseRecheckKey + `' END))`
+
+// errCancelRecheck refuses the buyer's no-ship cancel while a restore's recheck of the coin's deadlines is pending
+// (noShipCancel, A-714): the restored ship-by time or delivery deadline may have passed for an order the vendor shipped
+// or delivered after the backup was taken.
+var errCancelRecheck = fail(409, "This order cannot be cancelled yet: this market's records are being reconciled after a restore from backup, and the vendor may have shipped or delivered the order after that backup was taken. A buyer's cancel waits until the market has rechecked its escrow deadlines; try again later. Nothing was changed.")
 
 var errCancelNoShipBy = fail(409, "Only the vendor can cancel this paid order: it has no ship-by or delivery deadline recorded. A buyer may cancel a paid escrow order once its deadline has passed unmet: the dispatch window plus 48 hours for a physical order, 72 hours from payment for a digital one. Nothing was changed.")
 
@@ -110,8 +116,9 @@ func orderIDs(ctx context.Context, q rowsQuerier, query string, args ...any) ([]
 }
 
 // noShipCancel checks the buyer's cancellation of a paid escrow order, in tx after the order row lock (step 1 of the
-// file comment): refused once the order was marked shipped (naming when), for an order with no ship-by time, and
-// before its ship-by time (naming it). A paid digital Monero escrow order's ship-by time is its delivery deadline
+// file comment): refused once the order was marked shipped (naming when), for an order with no ship-by time, before
+// its ship-by time (naming it), and while a restore's recheck of its coin's deadlines is pending (errCancelRecheck,
+// lateDispute's exception). A paid digital Monero escrow order's ship-by time is its delivery deadline
 // (A-709); a delivered order is refused by the transition table (there is no delivered -> cancelled edge).
 func noShipCancel(c *actionCtx, o *Order) error {
 	ctx := c.Ctx()
@@ -137,14 +144,17 @@ func noShipCancel(c *actionCtx, o *Order) error {
 		return errConflict
 	}
 	var shipBy sql.NullTime
-	var open bool
+	var open, recheck bool
 	var days sql.NullInt64
-	if err := c.Tx.QueryRowContext(ctx, "SELECT ship_by,COALESCE(ship_by<=now(),false),dispatch_days FROM escrows WHERE order_id=$1", o.ID).Scan(&shipBy, &open, &days); err != nil {
+	if err := c.Tx.QueryRowContext(ctx, "SELECT ship_by,COALESCE(ship_by<=now(),false),dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2) FROM escrows WHERE order_id=$1",
+		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&shipBy, &open, &days, &recheck); err != nil {
 		return err
 	}
 	switch {
 	case !shipBy.Valid:
 		return errCancelNoShipBy
+	case open && recheck: // A-714: lateDispute's exception; ship_by is immutable (migration 079), so a restore cannot move it
+		return errCancelRecheck
 	case !open && o.Kind == "digital": // A-709: a digital Monero escrow order's delivery deadline (escrowTransitionHook)
 		return fail(409, fmt.Sprintf("You can cancel this order from %s if the vendor has not delivered it by then: %d hours from payment. Nothing was changed.", utcFrom(shipBy.Time), digitalDeliveryHours))
 	case !open:
