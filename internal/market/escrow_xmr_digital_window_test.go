@@ -450,24 +450,115 @@ func TestXMREscrowCancelGraceAfterRecheck(t *testing.T) {
 	}
 }
 
-// After a restore from backup the first pass moves a delivered digital order's passed dispute window to 72 hours from
-// then, with a delivered -> delivered note and a notice to the buyer, before the deadline step could complete it.
+// After a restore from backup the first pass moves a delivered digital order's dispute window, and a shipped order's
+// release deadline, that has passed or ends within 72 hours to 72 hours from then, with one note and one notice to the
+// buyer each, before the deadline step could complete it (A-728: the recheck runs before public access returns, so a
+// deadline just short of passing needs the grace too). A later deadline and an order with a dispute are left alone, a
+// second pass moves nothing, and a buyer can still confirm early.
 func TestXMREscrowRestoreExtendsDigitalWindow(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
+	physical := x.physical(x.vendor)
 	order, _ := x.deliveredXMR(x.product)
+	closing, _ := x.deliveredXMR(x.product)
+	shipped, shippedSess, _ := x.shippedXMR(physical)
+	soon, _, _ := x.shippedXMR(physical)
+	later, _ := x.deliveredXMR(x.product)
+	laterShipped, _, _ := x.shippedXMR(physical)
+	disputed, _, _ := x.shippedXMR(physical)
+	// Set once every order exists: creating one polls, and a poll completes what is due while no recheck is pending.
 	x.forceDeadline(order, "release_at=now()-interval '2 days'")
+	x.forceDeadline(closing, "release_at=now()+interval '4 seconds'")
+	x.forceDeadline(shipped, "release_at=now()+interval '4 seconds'")
+	x.forceDeadline(soon, "release_at=now()+interval '71 hours'")
+	x.forceDeadline(later, "release_at=now()+interval '73 hours'")
+	x.forceDeadline(laterShipped, "release_at=now()+interval '5 days'")
+	x.forceDeadline(disputed, "release_at=now()+interval '1 hour'")
+	agExec(x.testEnv, "INSERT INTO disputes(id,order_id,reason) VALUES($1,$2,'A dispute row written beside a shipped order.')", randomToken(), disputed)
+	kept := map[string]time.Time{}
+	for _, o := range []string{later, laterShipped, disputed} {
+		kept[o] = x.releaseAt(o)
+	}
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
 	before := x.dbNow()
 	x.mustPoll()
-	at := x.releaseAt(order)
-	if x.state(order) != stateDelivered || at.Before(before.Add(72*time.Hour-time.Minute)) {
-		t.Fatalf("after the recheck: %s, window ends %s", x.state(order), at)
+
+	moved := map[string]time.Time{}
+	for _, o := range []string{order, closing, shipped, soon} {
+		at := x.releaseAt(o)
+		if at.Before(before.Add(72 * time.Hour)) {
+			t.Fatalf("order %s's deadline after the recheck ends %s, want at least 72 hours after %s", shortID(o), at, before)
+		}
+		moved[o] = at
 	}
-	if !anyContains(x.events(order), "delivered>delivered system Dispute window moved to "+utcUntil(at)) ||
-		!anyContains(x.noticesOf(x.partyOf(order, roleBuyer), order), "dispute window of this order had passed", utcUntil(at), "delivered content works") {
-		t.Fatalf("the recheck's note and notice: %q %q", x.events(order), x.noticesOf(x.partyOf(order, roleBuyer), order))
+	for _, o := range []string{order, closing} {
+		if x.state(o) != stateDelivered {
+			t.Fatalf("a delivered order after the recheck: %s", x.state(o))
+		}
+		notes := agStrings(t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 AND from_state='delivered' AND to_state='delivered' AND strpos(note,'after a restore from backup')>0", o)
+		notices := x.noticesOf(x.partyOf(o, roleBuyer), o)
+		if len(notes) != 1 || !containsAll(notes[0], "Dispute window moved to "+utcUntil(moved[o]), "has passed or ends within 72 hours") ||
+			countContaining(notices, "restored its records from a backup") != 1 ||
+			!anyContains(notices, "dispute window of this order has passed or ends within 72 hours", utcUntil(moved[o]), "delivered content works") {
+			t.Fatalf("the recheck's note and notice: %q %q", notes, notices)
+		}
 	}
+	for _, o := range []string{shipped, soon} {
+		if x.state(o) != stateShipped {
+			t.Fatalf("a shipped order after the recheck: %s", x.state(o))
+		}
+		notes := agStrings(t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 AND from_state='shipped' AND to_state='shipped' AND strpos(note,'after a restore from backup')>0", o)
+		notices := x.noticesOf(x.partyOf(o, roleBuyer), o)
+		if len(notes) != 1 || !containsAll(notes[0], "Release deadline moved to "+utcUntil(moved[o]), "has passed or ends within 72 hours") ||
+			countContaining(notices, "restored its records from a backup") != 1 ||
+			!anyContains(notices, "release deadline of this order has passed or ends within 72 hours", utcUntil(moved[o]), "goods have arrived") {
+			t.Fatalf("the recheck's note and notice: %q %q", notes, notices)
+		}
+	}
+	for o, at := range kept {
+		if !x.releaseAt(o).Equal(at) || anyContains(x.events(o), "after a restore from backup") {
+			t.Fatalf("the recheck touched order %s: %s, was %s; %q", shortID(o), x.releaseAt(o), at, x.events(o))
+		}
+	}
+
+	// A second pass moves nothing and repeats nothing, and the original few seconds passing completes nothing.
+	time.Sleep(5 * time.Second)
+	x.mustPoll()
+	for o, at := range moved {
+		if !x.releaseAt(o).Equal(at) || anyContains(x.events(o), ">completed") {
+			t.Fatalf("the second pass changed order %s: %s, was %s; %q", shortID(o), x.releaseAt(o), at, x.events(o))
+		}
+		if n := countContaining(x.noticesOf(x.partyOf(o, roleBuyer), o), "restored its records from a backup"); n != 1 {
+			t.Fatalf("%d restore notices for order %s after the second pass", n, shortID(o))
+		}
+	}
+	// Only the buyer completes it sooner.
+	if code, body := x.xmrConfirm(shipped, shippedSess, testPassword); code != 303 || x.state(shipped) != stateCompleted {
+		t.Fatalf("the buyer's confirmation after the recheck: %d %s %s", code, x.state(shipped), body)
+	}
+	// A later restore's recheck moves a deadline the last one moved, though release_recheck is already true on it (migration
+	// 079's trigger needs it to go from false to true, so the recheck resets it first), and leaves a completed order alone.
+	completedAt := x.releaseAt(shipped)
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	before = x.dbNow()
+	x.mustPoll()
+	if at := x.releaseAt(soon); at.Before(before.Add(72*time.Hour)) || !at.After(moved[soon]) || x.state(soon) != stateShipped {
+		t.Fatalf("a later recheck left the deadline at %s (%s), want 72 hours after %s", at, x.state(soon), before)
+	}
+	if !x.releaseAt(shipped).Equal(completedAt) || x.state(shipped) != stateCompleted {
+		t.Fatalf("a later recheck touched a completed order: %s %s", x.releaseAt(shipped), x.state(shipped))
+	}
+}
+
+// countContaining counts the items of list that contain part.
+func countContaining(list []string, part string) int {
+	n := 0
+	for _, s := range list {
+		if strings.Contains(s, part) {
+			n++
+		}
+	}
+	return n
 }
 
 // Migration 153 gives a digital Monero escrow order paid before A-709, and still paid, a delivery deadline 72 hours from

@@ -194,7 +194,7 @@ if [[ ${xmr_held:-0} != 0 ]]; then
   printf 'Held %s restored Monero escrow settlement(s) with a stored transaction; confirm each relay from the admin page only after checking the escrow daemon and the escrow wallet.\n' "$xmr_held"
 fi
 if [[ ${xmr:-f} == t ]]; then
-  echo 'Monero escrow: release deadlines that passed in the restored records move to 72 hours after the Monero escrow watcher next runs, and each buyer is told.'
+  echo 'Monero escrow: every release deadline or dispute window in the restored records that has passed or ends within 72 hours moves to 72 hours after the Monero escrow watcher next runs, and each buyer is told.'
   echo 'Monero escrow: review the orders shipped, delivered or cancelled around the backup point: these records lack those made after it. From 72 hours after that recheck a buyer can cancel a paid order whose restored ship-by time or delivery deadline has passed, so tell vendors to re-ship or re-deliver what the restore lost before then (docs/testnet-runbook.md, step 7).'
   printf 'Monero escrow (if used): retired %s free escrow account(s) and moved %s escrow wallet(s) to closing, so no restored wallet takes an order again; Monero escrow checkout waits until the Monero escrow watcher has found the escrow wallets created after the backup and checked every wallet.\n' "$xmr_retired" "$xmr_closed"
   echo 'Monero escrow: if the wallet history shows a refund or release with no settlement in these records, the market cannot pay again and no form corrects the record: tell the vendor not to ship or claim that order (docs/testnet-runbook.md, Orders around the backup point).'

@@ -15,6 +15,19 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A restore's recheck also moves deadlines about to pass; a hung wallet-rpc no longer stops completions (A-728)
+
+No migration or configuration. The Monero escrow watcher's restore recheck moved only deadlines that had already passed,
+on a pass that runs before public access returns, so an order with a deadline moments away could complete with no buyer
+able to reach it. It now moves every release deadline and dispute window, of a shipped or delivered order with no
+dispute, that has passed or ends within 72 hours to 72 hours after the recheck, with one order note and one notice to the
+buyer each. Later deadlines stay as they are. An order shipped or delivered after the recheck keeps the deadline it gets
+then, so a dispute window opened after the recheck can still end inside those 72 hours, 48 hours after that delivery. The
+message from `scripts/restore.sh` says so.
+
+The watcher's deadline step now has its own 30-second budget. A wallet-rpc that hung until the pass's budget ran out used
+to stop the step, so a due order stayed open with its dispute already refused as late. A shutdown still stops the step.
+
 ## The image CAPTCHA now appears only under attack (migration 155, A-725)
 
 The image has no audio or text alternative, so it kept screen-reader users out. `captcha_required` now has three values,
@@ -1771,7 +1784,7 @@ against the database. It runs in one transaction and does the following:
   (start with `RETENTION_ENABLED=true` and the current `RETENTION_STATE_DIR`; see [retention](docs/retention.md)).
 - `escrow_xmr_release_recheck` asks the Monero escrow watcher, on its first pass after the gate is cleared, to move every
   release deadline of a shipped Monero escrow order, and every dispute window of a delivered digital one, that has passed
-  in the restored records to 72 hours later, telling each buyer. Until that recheck has succeeded, no such order is
+  in the restored records or ends within 72 hours (A-728) to 72 hours after that pass, telling each buyer. Until that recheck has succeeded, no such order is
   completed on its deadline and a buyer's no-ship cancel of a paid order is refused (A-714); it then records
   `escrow_xmr_cancel_wait_until`, and that cancel stays refused for a further 72 hours (A-720). With `ESCROW_XMR=off` the
   watcher never runs, so the recheck stays pending and the refusal says "try again later" for as long as it stays off; do

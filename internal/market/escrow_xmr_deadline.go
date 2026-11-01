@@ -25,8 +25,10 @@ import (
 //     completed the same way ("dispute window ended"), and the vendor may then claim. A paid digital order's ship_by
 //     is its delivery deadline: step 1's buyer cancel applies from it.
 //  4. After a restore from backup (scripts/restore.sh, or UPGRADING.md section 6, sets escrow_xmr_release_recheck) the
-//     pass moves every passed deadline of a shipped or delivered order to now + 72 hours and tells the buyer
-//     (xmrRecheckReleaseDeadlines), as recheckReleaseDeadlines does for Bitcoin escrow with its own setting. Until the
+//     pass moves every deadline of a shipped or delivered order that has passed or ends within 72 hours to now + 72 hours
+//     and tells the buyer (xmrRecheckReleaseDeadlines; A-728: that pass runs before public access returns, so a deadline
+//     just short of passing needs the grace as much as a passed one). No such order then completes for those 72 hours
+//     unless its buyer confirms. recheckReleaseDeadlines is the Bitcoin escrow step, with its own setting. Until the
 //     recheck has succeeded and consumed the setting, step 3 completes nothing, a dispute is not refused as late
 //     (lateDispute) and the buyer's no-ship cancel waits (noShipCancel), since a restored ship_by cannot move (A-714).
 //     The transaction that consumes the setting records the end of the vendor's grace, 72 hours on (xmrCancelWaitKey):
@@ -71,6 +73,10 @@ const xmrOpenSQL = "o.state IN ('shipped','delivered')"
 // shipped order: 72 hours from now, so its buyer has that long to confirm receipt or open a dispute.
 const releaseGraceSQL = "now()+interval '72 hours'"
 
+// releaseBeforeGraceSQL: the release deadline of the escrow es has passed or ends before that grace does, so the restore
+// recheck (step 4) moves it. now() is the recheck transaction's, so a second check after the row lock agrees with the first.
+const releaseBeforeGraceSQL = "es.release_at<" + releaseGraceSQL
+
 // xmrHeldNote is what the order history says of the release when an order of a banned vendor completes (A-652c, A-652d).
 const xmrHeldNote = "The vendor's account is closed, so the market holds the release: it builds and sends nothing while the account is banned, and the coins stay in this order's escrow account. No other address is ever paid."
 
@@ -96,10 +102,30 @@ func releaseRecheckKeyOf(coin string) string {
 	return releaseRecheckKey
 }
 
+// xmrDeadlineBudget bounds the deadline part of a pass, apart from the pass's own budget (xmrDeadlines). It makes no RPC.
+const xmrDeadlineBudget = 30 * time.Second
+
 // xmrDeadlines is the deadline part of a Monero escrow watcher pass, under its lock: the restore recheck first, so a
 // restored deadline is moved before it could be released, then the release, then the reminders. A recheck that fails
 // keeps its setting, so the release then completes nothing until a later pass's recheck succeeds (xmrNoRecheckSQL).
+//
+// It runs on its own budget (A-728): a hung wallet-rpc can use up the pass's, and a due order must still complete,
+// since a dispute on it is already refused as late. Only the pass's deadline is ignored: when ctx is cancelled, which is
+// a shutdown, it does not start, and it stops midway. A shutdown after the pass's deadline has passed waits for it, at
+// most xmrDeadlineBudget.
 func (a *App) xmrDeadlines(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return ctx.Err()
+	}
+	pass := ctx
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(pass), xmrDeadlineBudget)
+	defer cancel()
+	stop := context.AfterFunc(pass, func() {
+		if errors.Is(pass.Err(), context.Canceled) {
+			cancel()
+		}
+	})
+	defer stop()
 	gate, err := restoreGateSet(ctx, a.db)
 	if err != nil || gate {
 		return err
@@ -244,8 +270,9 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 	return tx.Commit()
 }
 
-// xmrRecheckReleaseDeadlines moves, once after each restore from backup, every passed release deadline of a shipped
-// Monero escrow order, and every passed dispute window of a delivered one (A-709), with no dispute to now + 72 hours, with an order note and a notice to the buyer, in one
+// xmrRecheckReleaseDeadlines moves, once after each restore from backup, every release deadline of a shipped Monero
+// escrow order, and every dispute window of a delivered one (A-709), that has passed or ends within 72 hours (A-728),
+// with no dispute, to now + 72 hours, with an order note and a notice to the buyer, in one
 // transaction that consumes the restore's request (step 4 of the file comment; recheckReleaseDeadlines' rules: only the
 // rechecks reset and set release_recheck, so a second restore rechecks as the first did). The same transaction records
 // the end of the vendor's grace (xmrCancelWaitKey, A-720), with no gap between the two a buyer's cancel could use. A row
@@ -264,7 +291,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseDueSQL+` ORDER BY o.id`)
+	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseBeforeGraceSQL+` ORDER BY o.id`)
 	if err != nil {
 		return err
 	}
@@ -274,7 +301,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		}
 		var due bool
 		var state string
-		if err = tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+releaseDueSQL+` AND `+noDisputeSQL+`,o.state FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR'`, id).Scan(&due, &state); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT `+xmrOpenSQL+` AND `+releaseBeforeGraceSQL+` AND `+noDisputeSQL+`,o.state FROM orders o JOIN escrows es ON es.order_id=o.id WHERE o.id=$1 AND es.coin='XMR'`, id).Scan(&due, &state); err != nil {
 			return err
 		}
 		if !due {
@@ -285,7 +312,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		}
 		var at time.Time
 		var buyer string
-		if err = tx.QueryRowContext(ctx, `UPDATE escrows es SET release_at=`+releaseGraceSQL+`,release_recheck=true,reminded_at=COALESCE(es.reminded_at,now())
+		if err = tx.QueryRowContext(ctx, `UPDATE escrows es SET release_at=GREATEST(es.release_at,`+releaseGraceSQL+`),release_recheck=true,reminded_at=COALESCE(es.reminded_at,now())
 			FROM orders o WHERE o.id=es.order_id AND es.order_id=$1 AND es.coin='XMR' RETURNING es.release_at,o.buyer_id`, id).Scan(&at, &buyer); err != nil {
 			return err
 		}
@@ -293,11 +320,11 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		if state == stateDelivered { // A-709: a digital order's dispute window
 			what, check, outcome = "dispute window", "if the delivered content works, or open a dispute before then if it does not", "the vendor can claim the coins in this Monero escrow"
 		}
-		note := strings.ToUpper(what[:1]) + what[1:] + " moved to " + until + " after a restore from backup (Monero escrow): the deadline in the restored records had passed, so the buyer has 72 more hours to confirm receipt or open a dispute."
+		note := strings.ToUpper(what[:1]) + what[1:] + " moved to " + until + " after a restore from backup (Monero escrow): the deadline in the restored records has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute."
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, state, note); err != nil {
 			return err
 		}
-		body := "Order " + shortID(id) + ": this market restored its records from a backup, and the " + what + " of this order had passed, so it was moved to " + until +
+		body := "Order " + shortID(id) + ": this market restored its records from a backup, and the " + what + " of this order has passed or ends within 72 hours, so it was moved to " + until +
 			". Use Confirm receipt on the order page " + check + ". If you do neither, the order completes at that time and " + outcome + "."
 		if _, err = insertNotification(ctx, tx, buyer, body, id); err != nil {
 			return err
