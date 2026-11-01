@@ -84,4 +84,4 @@ In Tor mode, add the [local nodes over Tor overlay](../operator-guide.md#local-n
 
 Back up `.env`, the database, the `monero_escrow_wallet` volume and the offline seed-decryption key separately. Rehearse [Monero wallet recovery](../testnet-runbook.md) on test networks. An encrypted database backup does not include wallet files.
 
-The recorded [public stagenet claim](../evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) proves one digital claim. Public refunds, physical-order deadlines and mainnet payment and settlement workflows remain unverified. See [verification](../verification.md) for evidence limits.
+The recorded [public stagenet claim](../evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) proves one digital claim. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Public refunds, physical-order deadlines and mainnet payment and settlement workflows remain unverified. See [verification](../verification.md) for evidence limits.

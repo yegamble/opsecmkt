@@ -1283,7 +1283,8 @@ refunded to the buyer's refund address. Every delivery, automatic on funding or 
 completes the order when the window ends, and only then can the vendor claim the coins. Both lengths are fixed (not
 the release-deadline setting), stated on the product, checkout and order pages, and kept by the watcher while the
 escrow wallet-rpc is down; a restore from backup and a vendor's ban move a passed or sooner window as they move a
-release deadline. Once a release deadline or dispute window has passed, no dispute is offered or accepted.
+release deadline. Once a release deadline or dispute window has passed, no dispute is offered or accepted, except while
+a restore's deadline recheck is pending: until then a passed deadline is not yet due, so the form is offered again.
 
 Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), independent moderators receive review notices but cannot resolve Monero escrow, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
 
@@ -1334,7 +1335,7 @@ move these coins**: there is no 2-of-3, no key of the buyer's or
 vendor's and nothing for them to sign. It runs against a local Monero fakechain (`monerod --regtest`) or, since A-449, Monero
 stagenet (`monerod --stagenet`); coins on both have no value. On a market with `MONERO_NETWORK=mainnet` it runs on
 mainnet instead (real funds, no recorded run; [Mainnet](#mainnet)); it refuses testnet, a mainnet daemon on any other
-market, and anything else. The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded claim; broader public journeys
+market, and anything else. The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded claim. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Broader public journeys
 remain unverified. Offline-fork evidence is separate ([per-order escrow](escrow.md#monero-escrow-on-stagenet-a-449)).
 With Monero escrow off, Monero checkout is unavailable. What it does, protects and does not protect, and the tests behind it, are in
 [per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) and

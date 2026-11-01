@@ -127,6 +127,26 @@ func TestRestoreGateCLI(t *testing.T) {
 			}
 		}
 	}
+	// A-729: public access is stopped while the operator answers, so the attestation asks for what can be done then: a
+	// review as far as the evidence goes, and telling the vendors once public access returns. It never asks for a
+	// conversation with a party that needs that access. The number of steps is fixed by scripts/test-backup-restore.sh.
+	if len(reconciliationSteps) != 5 {
+		t.Errorf("%d reconciliation steps; scripts/test-backup-restore.sh answers five", len(reconciliationSteps))
+	}
+	steps := strings.Join(reconciliationSteps, "\n")
+	for _, want := range []string{"as far as the evidence allows", "you will tell vendors once public access returns", "not to ship an order whose refund the wallet history shows"} {
+		if !strings.Contains(steps, want) {
+			t.Errorf("the reconciliation steps do not say %q", want)
+		}
+	}
+	for _, refused := range []string{"were told", "with the parties"} {
+		if strings.Contains(steps, refused) {
+			t.Errorf("the reconciliation steps ask for %q while public access is stopped", refused)
+		}
+	}
+	if !strings.Contains(string(restoreScript), "no form corrects the record") {
+		t.Error("scripts/restore.sh does not say that no form corrects the record")
+	}
 
 	// While an application serves the database (market.New holds the serving lock until Close), both commands refuse
 	// and change nothing; the clear is refused before any question is asked. (Once the gate is set, the application
