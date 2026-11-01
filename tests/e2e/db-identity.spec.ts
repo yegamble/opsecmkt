@@ -38,7 +38,7 @@ test('changing the password needs the current one, ends other sessions and keeps
   await expect(page.getByLabel('Authenticator code or recovery code')).toHaveCount(0);
 
   expect(await changePassword(page, 'not-my-password-123', second)).toBe(401);
-  await expect(page.getByRole('alert')).toHaveText('Password incorrect');
+  await expect(page.getByRole('alert')).toHaveText('Password incorrect. Nothing was changed.');
   expect(await changePassword(page, first, second, { repeat: `${second}-typo` })).toBe(400);
   await expect(page.getByRole('alert')).toHaveText('The new passwords do not match.');
 
@@ -69,7 +69,7 @@ test('changing the password needs the current one, ends other sessions and keeps
   await expect(page.getByRole('status')).toHaveText('Password changed.');
   await expect(activity).toContainText('Changed password; ended 0 other session(s) and any pending sign-ins (confirmed with password and recovery code)');
   expect(await changePassword(page, third, first, { code: recovery })).toBe(401);
-  await expect(page.getByRole('alert')).toHaveText('Recovery code incorrect or already used');
+  await expect(page.getByRole('alert')).toHaveText('Recovery code incorrect or already used. Nothing was changed.');
   await page.goto('/totp');
   await expect(page.locator('.key-values div', { hasText: 'Unused recovery codes' }).locator('dd')).toHaveText('9 of 10');
   await page.context().close();
@@ -98,7 +98,7 @@ test('a success notice shows once: not on reload, not on Back after a failed cha
   expect(await changePassword(page, second, first)).toBe(303);
   await expect(status).toHaveText('Password changed.');
   expect(await changePassword(page, 'not-my-password-123', second, { here: true })).toBe(401);
-  await expect(page.getByRole('alert')).toHaveText('Password incorrect');
+  await expect(page.getByRole('alert')).toHaveText('Password incorrect. Nothing was changed.');
   await page.goBack();
   await expect(page).toHaveURL(/\/account$/);
   await expect(page.locator('.account-name')).toHaveText(handle);

@@ -254,6 +254,8 @@ type PageData struct {
 	FormHandle string
 	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
 	FormVendor bool
+	// FormPGP: /register re-rendered after a refused post, the PGP public key that was pasted (A-722).
+	FormPGP string
 	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;
 	// VendorAccount: /account selling approval and applications; VendorAdmin: the admin vendors panel.
 	VendorPolicy  *VendorPolicyView
@@ -444,8 +446,11 @@ type PageData struct {
 	// "mainnet" (App.xmrEscrowNetwork, A-449, A-460), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
 	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
 	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool
-	XMRCustody, XMREscrowNet                           string
-	XMREscrowOrders                                    int
+	// XMRIntakePaused: Monero escrow is on, but the administrator has paused new checkouts (payment_intake_XMR; every
+	// page, A-722): the site-wide notices say so. False when the settings could not be read, as on a busy refusal page.
+	XMRIntakePaused          bool
+	XMRCustody, XMREscrowNet string
+	XMREscrowOrders          int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView

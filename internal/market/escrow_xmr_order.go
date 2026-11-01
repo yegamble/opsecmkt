@@ -308,6 +308,8 @@ func (a *App) xmrEscrowCheckoutOffer(ctx context.Context, d *PageData) error {
 		return err
 	}
 	switch {
+	case d.Settings[paymentIntakeKey(o.Currency)] != intakeEscrow: // as lockPaymentIntake refuses the checkout (A-722)
+		v.Reason = "New Monero escrow checkouts are paused by the administrator, so no escrow address can be issued for this draft yet. Keep the draft and come back later, or cancel it."
 	case !a.xmrEscrowReady():
 		v.Reason = "Monero escrow is unavailable on this market right now. Try again later."
 	case gate:

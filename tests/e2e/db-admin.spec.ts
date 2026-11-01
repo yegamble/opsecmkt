@@ -81,7 +81,7 @@ test('promoting a buyer to vendor opens the vendor desk; the listing form shows 
   await expect(reset.getByLabel('Account handle')).toHaveValue(unknown);
   await expect(reset.getByLabel('Current password')).toHaveValue('');
   expect(await submitReset(lockedHandle, 'not-the-admin-password')).toBe(401);
-  await expect(admin.getByRole('alert')).toHaveText('Password incorrect');
+  await expect(admin.getByRole('alert')).toHaveText('Password incorrect. Nothing was changed.');
   await locked.goto('/account');
   await expect(locked.locator('.key-values div', { hasText: 'TOTP authentication' }).locator('dd')).toHaveText('Enabled');
   expect(await submitReset(lockedHandle, ADMIN.password)).toBe(303);
@@ -226,7 +226,7 @@ test('site settings, account suspension, operator key, canary signature checks a
   await expect(suspension.getByLabel('Account handle')).toHaveValue(nobody);
   await expect(suspension.getByRole('radio', { name: /^Suspend:/ })).toBeChecked();
   expect(await submitSuspension(suspectHandle, 'Suspend', 'not-the-admin-password')).toBe(401);
-  await expect(admin.getByRole('alert')).toHaveText('Password incorrect');
+  await expect(admin.getByRole('alert')).toHaveText('Password incorrect. Nothing was changed.');
   await suspect.goto('/account');
   await expect(suspect.locator('.account-name')).toHaveText(suspectHandle);
   // A-117: the one-shot notice names the change inside the section the page returns to, in view at 320 px (and
