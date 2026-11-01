@@ -24,9 +24,6 @@ ANCHOR = 'fresh-stagenet-market-and-rehearsals'
 # The packages cmd/server dispatches each command to.
 SOURCES = ('cmd/server', 'internal/operator', 'internal/hostbootstrap', 'internal/keymaterial', 'internal/onionidentity')
 
-# A flag the procedure names before its command lands. Each entry names the item that adds it; delete the entry when
-# that item is merged, so the flag is checked like any other.
-
 # docs/acceptance.md, by quoted text: A-698's rows carry line numbers (AC:366, 438, 990, 994) that have moved.
 ACCEPTANCE_LINES = (
     'a restore rehearsal is recorded',
@@ -207,6 +204,59 @@ class RehearsalSectionTest(unittest.TestCase):
         self.assertIn('/admin/payments', leg)
         self.assertNotIn('db_sql', leg)
         self.assertNotIn('docker compose exec', leg)
+
+    def test_old_services_cannot_return_before_the_new_ones_start(self):
+        # DA743-1: a reboot after step 1 must not bring back the old onion, which the gateway would forward to the new app.
+        text = section()
+        step = lambda n: re.search(r'^%d\. \*\*.*?(?=^\d+\. \*\*|^\*\*Record|\Z)' % n, text, re.M | re.S).group(0)
+        first = step(1)
+        for command in ('systemctl disable --now opsecmkt-gateway', 'systemctl disable --now YOUR_OLD_TOR_UNIT',
+                        'systemctl disable --now YOUR_OLD_MONEROD_UNIT YOUR_OLD_WALLET_RPC_UNIT'):
+            self.assertIn(command, first)
+        self.assertNotIn('systemctl stop', first)
+        self.assertIn('docker update --restart=no', first, 'the unit shape is unknown: say the container equivalent')
+        self.assertIn('systemctl enable --now opsecmkt-gateway', step(6))
+        self.assertNotIn('systemctl start', step(6))
+        last = step(8)
+        for command in ('systemctl is-active YOUR_OLD_TOR_UNIT YOUR_OLD_MONEROD_UNIT YOUR_OLD_WALLET_RPC_UNIT',
+                        'systemctl is-enabled YOUR_OLD_TOR_UNIT YOUR_OLD_MONEROD_UNIT YOUR_OLD_WALLET_RPC_UNIT'):
+            self.assertIn(command, last)
+        self.assertLess(last.index('inactive and disabled'), last.index('enable public Tor'))
+
+    def test_deleting_the_old_directory_removes_what_runs_against_it(self):
+        # DA743-2: the source names these; the agent goes before the directory it checks.
+        go = go_sources()
+        self.assertIn('"opsecmkt-host-control-" + c.Project + ".service"', go)
+        self.assertIn('"/etc/opsecmkt-host-control/" + project + ".json"', go)
+        self.assertIn('"/var/lib/opsecmkt-host-control/" + project', go)
+        self.assertIn('"50-opsecmkt-storage-"+c.Project+".conf"', go)
+        text = section()
+        for name in ('opsecmkt-host-control-OLD_PROJECT.service', '/etc/opsecmkt-host-control/OLD_PROJECT.json',
+                     '/var/lib/opsecmkt-host-control/OLD_PROJECT'):
+            self.assertIn(name, text[:text.index('### What is preserved')])
+        lines = commands(text)
+        disable = lines.index('systemctl disable --now opsecmkt-host-control-OLD_PROJECT.service')
+        drop_in = lines.index('rm /etc/systemd/system/docker.service.d/50-opsecmkt-storage-OLD_PROJECT.conf')
+        self.assertLess(disable, drop_in)
+        flat = ' '.join(text.split())
+        self.assertIn('whether systemd holds Docker behind its pending start job is unverified', flat)
+        self.assertIn('`deploy down` does not stop this agent', flat)
+
+    def test_inputs_step_says_where_the_tls_files_come_from(self):
+        # DA743-3: every file step 5 passes has a stated source, and no private key is ever an argument.
+        text = section()
+        inputs = re.search(r'^3\. \*\*Prepare the new private inputs.*?(?=^4\. \*\*)', text, re.M | re.S).group(0)
+        for name in ('database-ca.pem', 'app.pem', 'app.key', 'upload-ca.pem', 'backend.pem', 'backend.key', 'monero-ca.pem'):
+            self.assertIn('`%s`' % name, inputs)
+            self.assertIn('/srv/opsecmkt-inputs-stagenet/' + name, text)
+        self.assertIn('`0600`', inputs)
+        self.assertIn('never go on a command line or in a report', ' '.join(inputs.split()))
+
+    def test_only_the_market_tables_must_be_empty(self):
+        # DA743-N1: the old administrator is a user, so "any answer" would stop every run.
+        flat = ' '.join(section().split())
+        self.assertIn('orders, escrows and settlements must all be 0', flat)
+        self.assertIn('`users` counts the old administrator', flat)
 
     def test_a_retired_identity_is_never_overwritten_or_reused(self):
         text = ' '.join(section().split())

@@ -228,7 +228,7 @@ Retired first means stopped, not deleted. The rebuild needs no deletion: it uses
 
 ### What the owner must approve
 
-These are destructive, and a review, a ledger row or this runbook does not authorize them: the owner approves the concrete action and its data loss, naming the exact resource, in the private operator record. The 2026-10-16 authorization covered that rebuild, not these. First confirm what would be lost: run this read-only on the protected connection to the old database, and read each old wallet's balance on the payment host. The market is recorded as empty with no real-funds transaction; any answer that says otherwise stops this list.
+These are destructive, and a review, a ledger row or this runbook does not authorize them: the owner approves the concrete action and its data loss, naming the exact resource, in the private operator record. The 2026-10-16 authorization covered that rebuild, not these. First confirm what would be lost: run this read-only on the protected connection to the old database, and read each old wallet's balance on the payment host. The market is recorded as empty with no real-funds transaction: orders, escrows and settlements must all be 0 and every wallet balance zero, and anything else stops this list. `users` counts the old administrator, so it is not 0; record it in the private record with the approval.
 
 ```sql
 SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM orders) AS orders,
@@ -240,11 +240,16 @@ SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM orders) AS o
 | Delete the old market database, and its provider backups when they expire | Accounts, audit history, images and the sealed wallet seeds. Provider deletion does not attest erasure of the media or of every historical backup |
 | Delete the old mainnet wallet files on the payment host | Any coins in them, unless a seed survives. Decide this together with the database, which holds the sealed seeds: losing both loses the funds outright |
 | Delete the old installation directory, retention ledger and retired keys | Everything sealed under those keys becomes unreadable, the old database's retention can no longer be replayed, and no further audit export can be signed under the old key |
+| If the old installation configured reboot control: remove `opsecmkt-host-control-OLD_PROJECT.service`, its policy `/etc/opsecmkt-host-control/OLD_PROJECT.json` and its state `/var/lib/opsecmkt-host-control/OLD_PROJECT` | The old market's reboot receipts and readiness acknowledgement |
 | Delete the old public onion directory on the gateway, and the old `onion-admin/` files and `tor_admin_identity` volume on the application host | Those two addresses, permanently. Nobody can publish them again |
 
-Deleting the old installation directory has one trap. Production `install` left a storage-check drop-in for the old project on both Docker and containerd, which runs against that directory at every daemon start, so removing the directory alone stops Docker and containerd starting on the next boot. Get the old project name from `deploy plan --dir OLD_DIR` first and, only with the approval above, in this order:
+Deleting the old installation directory has two traps. Production `install` left a storage-check drop-in for the old project on both Docker and containerd, which runs against that directory at every daemon start, so removing the directory alone stops Docker and containerd starting on the next boot. And if reboot control was configured, the agent `opsecmkt-host-control-OLD_PROJECT.service` is an enabled unit ordered before Docker, which checks that directory when it starts and restarts on failure: with the directory gone it fails and retries at each boot, and whether systemd holds Docker behind its pending start job is unverified. `deploy down` does not stop this agent, so it is still running and enabled after step 1 below; that is harmless while the old directory exists, since the only application that could ask it is gone. Get the old project name from `deploy plan --dir OLD_DIR` first, and check for the agent with `systemctl list-unit-files opsecmkt-host-control-OLD_PROJECT.service`. Then, only with the approval above, in this order, skipping the first four commands if there is no such unit:
 
 ```sh
+systemctl disable --now opsecmkt-host-control-OLD_PROJECT.service
+rm /etc/systemd/system/opsecmkt-host-control-OLD_PROJECT.service
+rm /etc/opsecmkt-host-control/OLD_PROJECT.json
+rm -r /var/lib/opsecmkt-host-control/OLD_PROJECT
 rm /etc/systemd/system/docker.service.d/50-opsecmkt-storage-OLD_PROJECT.conf
 rm /etc/systemd/system/containerd.service.d/50-opsecmkt-storage-OLD_PROJECT.conf
 systemctl daemon-reload
@@ -261,10 +266,13 @@ The three hosts and their encrypted roots, LUKS headers and unlock material; ope
 
 Prerequisite: A-694 to A-697 and the tag (A-680) have landed. The steps keep the order of [the production procedure](install/production.md). The controller manages only the application host; the others are by hand.
 
-1. **Stop the old market**, with the binary it was installed with. This deletes nothing: `deploy down` retains every volume and private file. On the gateway host stop the public Tor service with its supervisor, and `systemctl stop opsecmkt-gateway`. Stop the mainnet daemon and wallet RPC on the payment host.
+1. **Stop the old market**, with the binary it was installed with. This deletes nothing: `deploy down` retains every volume and private file. Stopping is not enough on the other hosts. A reboot or package restart before step 6 would bring back the old Tor service, whose fragment still names `/var/lib/tor/public-market/`, and once `install` has run the gateway would forward that retired onion to the new market. So disable all of them, so that none returns: the gateway and the old public Tor service on the gateway host, and the mainnet daemon and wallet RPC on the payment host. The gateway unit is the one `production.md` names; the others' names and shapes are your own, so use your own. For a container, the equivalent is `docker update --restart=no CONTAINER` and then `docker stop CONTAINER`; under another supervisor, its own disable.
 
    ```sh
    ./opsecmkt deploy down --dir OLD_DIR
+   systemctl disable --now opsecmkt-gateway
+   systemctl disable --now YOUR_OLD_TOR_UNIT
+   systemctl disable --now YOUR_OLD_MONEROD_UNIT YOUR_OLD_WALLET_RPC_UNIT
    ```
 
 2. **Get the tagged build.** On the application and gateway hosts, verify the release binary and install it where production starts require it. The old project's drop-in now runs this binary at each boot, so check it accepts the old directory before any reboot. In the tagged checkout, [build and publish the application image](install/binary.md#building-and-publishing-the-application-image) and the [Tor image](install/binary.md#building-and-publishing-the-tor-image), so `APP_IMAGE` and `TOR_IMAGE` hold full digest references. Apply the hosts' security updates and check the A-669 fix: expect `deb12u2` or later. Keep the digests and this output in the private record.
@@ -285,6 +293,7 @@ Prerequisite: A-694 to A-697 and the tag (A-680) have landed. The steps keep the
    - [Payment-host Tor egress](operator-guide.md#declaring-separate-payment-host-tor-egress), checked as that section says. The `remote-tor` setting below only records your declaration; without it, native production Tor holds every settlement relay and A-562 cannot run.
    - A fresh [seed-recovery OpenPGP pair](install/binary.md#importing-and-generating-keys), made offline, with only its public half here.
    - A new external retention directory: an old ledger never goes with a new database.
+   - The TLS files step 5 names. `database-ca.pem` is the managed database's public CA, and `monero-ca.pem` the public CA of the payment proxy, which must differ from `upload-ca.pem`. For `app.pem`, `app.key`, `upload-ca.pem`, `backend.pem` and `backend.key`, copy the old inputs if the hostnames stay the same, through an authenticated encrypted channel, or reissue them as in [production section 3](install/production.md#3-prepare-application-and-gateway-identities), with CA private keys staying on the issuing machine. `app.key` and `backend.key` are mode `0600`, and the public PEM files mode `0644` or stricter. A private key's contents never go on a command line or in a report: the commands below name only its path.
 
 4. **Make fresh identities** on the trusted machines: the storefront identity on the issuing machine, and the administrator's client key on that administrator's machine ([steps](install/tor.md#generate-the-administrators-client-key)). Copy only the `.auth` file to `admin-clients/`. `init` generates the administrator onion itself.
 
@@ -320,9 +329,13 @@ Prerequisite: A-694 to A-697 and the tag (A-680) have landed. The steps keep the
    /usr/local/bin/opsecmkt deploy status --dir /srv/opsecmkt/market-stagenet
    ```
 
-   Stop if `plan` does not say stagenet. If the old installation used [reboot control](install/production.md#optional-application-host-reboot-control), configure it for the new directory; whether the old agent interferes is unverified, so stop on a refusal.
+   Stop if `plan` does not say stagenet. If the old installation used [reboot control](install/production.md#optional-application-host-reboot-control), configure it for the new directory. The old agent's unit, policy and state are named for the old project, so they do not collide by name, but whether the old agent interferes is unverified, so stop on a refusal.
 
-6. **Prepare the gateway, with public ingress still fenced.** Transfer only the storefront identity to the gateway host, into a new `HiddenServiceDir` such as `/var/lib/tor/public-market-stagenet/` or a new volume, and never overwrite the populated `/var/lib/tor/public-market/` ([steps](install/tor.md#prepare-the-public-gateway-identity)). Point the Tor fragment at the new directory, without starting it, and `systemctl start opsecmkt-gateway`.
+6. **Prepare the gateway, with public ingress still fenced.** Transfer only the storefront identity to the gateway host, into a new `HiddenServiceDir` such as `/var/lib/tor/public-market-stagenet/` or a new volume, and never overwrite the populated `/var/lib/tor/public-market/` ([steps](install/tor.md#prepare-the-public-gateway-identity)). Point the Tor fragment at the new directory and remove the old one's from the configuration, leaving Tor disabled, then enable the gateway; nothing can publish the old address now, and the new one waits for step 8.
+
+   ```sh
+   systemctl enable --now opsecmkt-gateway
+   ```
 
 7. **Bind the client key** to the new administrator onion that `plan` prints, as in [bind the client key](install/tor.md#bind-the-client-key-and-verify-ingress), keeping `.auth_private` off the server:
 
@@ -330,9 +343,11 @@ Prerequisite: A-694 to A-697 and the tag (A-680) have landed. The steps keep the
    ./opsecmkt keys import tor-client --in ./admin-private/stagenet.key --public-out ./admin-public/bound-stagenet.auth --private-out ./admin-private/stagenet.auth_private --onion YOUR_NEW_ADMINISTRATOR_ONION.onion
    ```
 
-8. **Set up and verify.** Create the administrator at the administrator onion's `/setup` or with the command below, enroll an authenticator, and set **New escrow checkouts** to **Paused**. Then start public Tor, confirm its `hostname` file is the new address, and run the checks in [production section 6](install/production.md#6-complete-first-run-setup-and-verify-journeys). Stagenet synchronization takes as long as it takes; measure it. When the daemon and wallet are synced and **Admin → Payments** accepts the network, wallet secret and seed key, take the first encrypted backups, then set **New escrow checkouts** to **Escrow**.
+8. **Set up and verify.** Create the administrator at the administrator onion's `/setup` or with the command below, enroll an authenticator, and set **New escrow checkouts** to **Paused**. Before starting public Tor, confirm that the old Tor service and the old daemon and wallet RPC are inactive and disabled, on their own hosts, as below; `is-active` must print `inactive` and `is-enabled` `disabled` (for a container, stopped with restart policy `no`), and if a unit name is reused for the new service, confirm instead that its configuration names only the new directory or stagenet. Then enable public Tor with its supervisor, confirm its `hostname` file is the new address, and run the checks in [production section 6](install/production.md#6-complete-first-run-setup-and-verify-journeys). Stagenet synchronization takes as long as it takes; measure it. When the daemon and wallet are synced and **Admin → Payments** accepts the network, wallet secret and seed key, take the first encrypted backups, then set **New escrow checkouts** to **Escrow**.
 
    ```sh
+   systemctl is-active YOUR_OLD_TOR_UNIT YOUR_OLD_MONEROD_UNIT YOUR_OLD_WALLET_RPC_UNIT
+   systemctl is-enabled YOUR_OLD_TOR_UNIT YOUR_OLD_MONEROD_UNIT YOUR_OLD_WALLET_RPC_UNIT
    DATABASE_URL_FILE=/srv/opsecmkt-inputs-stagenet/database.url /usr/local/bin/opsecmkt -bootstrap-admin YOUR_ADMIN_HANDLE -site-name 'Stagenet rehearsal'
    ```
 
