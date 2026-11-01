@@ -1739,7 +1739,7 @@ and a no-ship cancel past its time accepted, only in these cases:
 - When the database comes back with the process still up, until the next tick: up to the poll interval, or up to 10 minutes for
   a pass already in flight.
 - For the whole time `ESCROW_XMR=off`: the watcher does not run, a dispute is refused, a cancel is accepted, and marking an order
-  shipped answers 404. The recheck runs on the first pass after it is on again.
+  shipped answers 404. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again.
 
 Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
 than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved.
