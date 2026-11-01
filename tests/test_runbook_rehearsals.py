@@ -26,7 +26,6 @@ SOURCES = ('cmd/server', 'internal/operator', 'internal/hostbootstrap', 'interna
 
 # A flag the procedure names before its command lands. Each entry names the item that adds it; delete the entry when
 # that item is merged, so the flag is checked like any other.
-PENDING_FLAGS = {'request-deadline-recheck': 'A-741'}
 
 # docs/acceptance.md, by quoted text: A-698's rows carry line numbers (AC:366, 438, 990, 994) that have moved.
 ACCEPTANCE_LINES = (
@@ -129,8 +128,6 @@ class RehearsalSectionTest(unittest.TestCase):
                 if word.startswith('-'):
                     flagged = True
                     name = word.lstrip('-').split('=')[0]
-                    if name in PENDING_FLAGS:
-                        continue
                     if '"%s"' % name not in go:
                         problems.append('flag %s in: %s' % (word, line))
                 elif not flagged and re.fullmatch(r'[a-z][a-z-]*', word) and '"%s"' % word not in go:
