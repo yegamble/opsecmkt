@@ -6,8 +6,11 @@ before any wallet call. It fetches a recent block from the public stagenet
 explorer API and checks its height/hash against the local daemon; a private
 fork claiming stagenet is refused. It requires an already funded,
 open, dedicated funder wallet and an *empty* host-mounted escrow wallet directory.
-It sends 0.01 stagenet XMR through a real digital escrow and waits for the real
-claim settlement to confirm. No block generation, clock changes, or deadline edits.
+It sends 0.01 stagenet XMR through a real digital escrow; the content is delivered
+on funding, the buyer completes the order through the real Confirm receipt form with
+the buyer's password, the vendor claims, and it waits for the real claim settlement
+to confirm. No block generation, clock changes, or deadline edits, so the 48-hour
+dispute window's expiry and the watcher's completion of it are not exercised (A-729).
 
 Required environment:
   ESCROW_XMR_PUBLIC_DAEMON_URL, ESCROW_XMR_PUBLIC_WALLET_URL,
@@ -61,6 +64,10 @@ EVENTS = ("funding_submitted", "funding_confirmed", "settlement_requested",
           "settlement_built", "settlement_relayed", "settlement_confirmed")
 MAX_RPC_BYTES = 2 * 1024 * 1024
 MAX_EXPLORER_BYTES = 2 * 1024 * 1024
+FLOW = ("digital checkout, actual funding, delivery on funding, buyer's Confirm receipt form with password, "
+        "vendor claim, watcher build/relay, confirmed release; the dispute window's expiry was not exercised")
+PASS_LINE = "PASS: one digital claim confirmed on public stagenet after the buyer's Confirm receipt; the dispute window's expiry was not exercised"
+FINAL_PASS = "PASS: public stagenet claim after the buyer's Confirm receipt; the dispute window's expiry was not exercised"
 EXPLORER_HOSTS = frozenset(("stagenet.xmrchain.net", "xmr-stagenet.librenode.com"))
 
 
@@ -478,7 +485,7 @@ def run() -> None:
     finished = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if end_info["height"] < info["height"] or end_fork["version"] < 16:
         raise Refused("public node moved backward before proof completion")
-    transcript = "xmr-public: proof " + json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\nPASS: one digital claim confirmed on public stagenet\n"
+    transcript = "xmr-public: proof " + json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n" + PASS_LINE + "\n"
     passwords = [unquote(urlsplit(values[k]).password or "") for k in (*needed[:3], "TEST_DATABASE_URL")]
     secret_scan(transcript, passwords)
     manifest = {
@@ -506,7 +513,7 @@ def run() -> None:
                                            "loopback_port": urlsplit(values["ESCROW_XMR_PUBLIC_WALLET_URL"]).port},
                          "funder_wallet": {"container": values["ESCROW_XMR_PUBLIC_FUNDER_CONTAINER"],
                                            "loopback_port": urlsplit(values["ESCROW_XMR_PUBLIC_FUNDER_URL"]).port}},
-        "flow": "digital checkout, actual funding, vendor claim, watcher build/relay, confirmed release",
+        "flow": FLOW,
         "price_piconero": 10_000_000_000, "fresh_escrow_wallet_directory_verified": True, "proof": proof,
         "a482_measurement": {"observed_requested_to_confirmed_seconds": int(
             (datetime.fromisoformat(proof["settlement_confirmed"]["at"].replace("Z", "+00:00")) -
@@ -527,7 +534,7 @@ def run() -> None:
             file.unlink()
         out_dir.rmdir()
         raise
-    print(f"PASS: public stagenet claim; record {out_dir.relative_to(ROOT)}; raw private log {raw_path}")
+    print(f"{FINAL_PASS}; record {out_dir.relative_to(ROOT)}; raw private log {raw_path}")
 
 
 if __name__ == "__main__":

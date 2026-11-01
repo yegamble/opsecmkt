@@ -184,7 +184,7 @@ Per-order escrow, off by default. A node alone does not turn it on.
 
 | Coin | Model | Networks | Evidence |
 | --- | --- | --- | --- |
-| Monero | Custodial: market holds keys | stagenet (native default), fakechain (CI/test harness), mainnet | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Mainnet payment and settlement workflows remain unverified. |
+| Monero | Custodial: market holds keys | stagenet (native default), fakechain (CI/test harness), mainnet | CI on fakechain; one public stagenet claim [recorded](docs/evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Mainnet payment and settlement workflows remain unverified. |
 
 Only Monero (XMR) is supported for listing prices, checkout and settlement. Monero testnet is refused.
 

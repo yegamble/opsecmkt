@@ -222,6 +222,49 @@ class PublicXMRScriptTests(unittest.TestCase):
             with self.assertRaises(xmr.Refused):
                 xmr.secret_scan(text, ["password-here"])
 
+    def test_smoke_completes_by_the_buyers_confirm_receipt_and_says_so(self):
+        # A-729: the funded smoke cannot run in CI, so its source is what is pinned. It reaches completion through the
+        # real form with the buyer's password, and edits no deadline; its record says the window's expiry was not run.
+        source = (HERE / "internal/market/escrow_xmr_public_test.go").read_text(encoding="utf-8")
+        start = source.index("func TestXMREscrowPublicStagenetSmoke(")
+        smoke = source[start:]
+        for forbidden in ("endWindows", "forceDeadline", "DISABLE TRIGGER", "release_at", "completedXMR",
+                          "UPDATE escrows", "xmrReleaseDue"):
+            self.assertNotIn(forbidden, smoke)
+        form = smoke.index('action="/escrow-xmr/confirm"')
+        confirm = smoke.index("r.xmrConfirm(order, r.buyerSess, testPassword)")
+        claim = smoke.index("r.xmrClaim(order, r.vendorSess, claim, testPassword)")
+        self.assertLess(smoke.index("FundingConfirmed = event(fundingTx)"), form)
+        self.assertLess(form, confirm)
+        self.assertLess(confirm, claim)
+        self.assertIn("Receipt confirmed by the buyer", smoke[confirm:claim])
+        script = (HERE / "scripts/test-escrow-xmr-public-stagenet.py").read_text(encoding="utf-8")
+        header = " ".join(xmr.__doc__.split())
+        for text in (header, xmr.FLOW, xmr.PASS_LINE, xmr.FINAL_PASS):
+            self.assertIn("Confirm receipt", text)
+            self.assertIn("expiry", text)
+            self.assertIn("not exercised", text)
+        self.assertIn('"flow": FLOW', script)
+        self.assertIn("+ PASS_LINE +", script)
+        self.assertIn("FINAL_PASS", script[script.index("def run("):])
+        xmr.secret_scan(xmr.FLOW + "\n" + xmr.PASS_LINE + "\n" + xmr.FINAL_PASS, [])
+
+    def test_each_citation_of_the_public_record_carries_the_a709_caveat(self):
+        # A-729: every link to the 2026-10-10 record says it proves a journey A-709 superseded. The record itself is
+        # evidence and stays as it was published.
+        caveat = "the dispute window and delivered state have no public-network run"
+        link = "evidence/public-testnet/2026-10-10-ac71878dfde4"
+        files = [HERE / "README.md"] + [p for p in (HERE / "docs").rglob("*.md") if "evidence" not in p.parts]
+        cited = 0
+        for path in files:
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            at = text.find(link)
+            while at != -1:
+                cited += 1
+                self.assertIn(caveat, text[at:at + 500], f"{path.relative_to(HERE)} at {text[at - 60:at]!r}")
+                at = text.find(link, at + 1)
+        self.assertGreaterEqual(cited, 10)
+
     def test_running_images_and_fresh_wallet_mount_are_bound_to_record(self):
         image_id = "sha256:" + "a" * 64
         digest = "repo/wallet@sha256:" + "b" * 64

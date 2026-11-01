@@ -294,7 +294,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   not stop the operator. There is no Monero multisig and none is claimed.
 - **It was built and tested on a fakechain.** Phase 3 refused every daemon but a local fakechain; A-449 admits stagenet
   ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline fork and in one public digital claim
-  ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). That sample verifies actual funding, fees and claim confirmations; public refunds,
+  ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. That sample verifies actual funding, fees and claim confirmations; public refunds,
   physical deadlines, fee/ring-member stress and reorganisations remain unverified. Testnet is refused; mainnet (A-460) is the installer's default for local nodes (A-523), with no recorded run.
 - **Backups keep wallet copies until they expire.** A database dump holds each wallet's sealed seed (anyone with the
   OpenPGP private key can open it), and a backup of the escrow wallet volume holds its files. Destroying a wallet reaches
@@ -501,7 +501,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   restore that finds every funded account, and a watcher pass over 5 such wallets within the pass timeout. The numbers
   and their limits are in [verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04).
 
-The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded digital claim. Other public stagenet
+The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded digital claim. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Other public stagenet
 legs remain untested; A-449's offline fork cannot run them. Not tested: testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
 days in real time, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain), a restore of a real backup into a
 running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
@@ -511,7 +511,7 @@ rows; the fakechain `Restore` leg simulates the database restore in SQL), and a 
 ## Monero escrow on stagenet (A-449)
 
 Phase 4 work (war-room ruling P4-R15, owner decision 2026-10-05), first released in `v0.1.0-alpha.2`. Monero escrow
-(still off by default, still custodial) accepts stagenet as well as a local fakechain. The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed with real funding and a confirmed vendor release.
+(still off by default, still custodial) accepts stagenet as well as a local fakechain. The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed with real funding and a confirmed vendor release. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run.
 The broader network/failure checks below retain their simulated-RPC or offline-fork evidence tiers.
 
 The staff alert for a requested Monero settlement older than 24 hours is a visibility threshold, not a measured settlement
@@ -578,7 +578,7 @@ under the stagenet tags (the integrated one refused) and refused under the fakec
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an
 `--offline` daemon as having no peers. No funded escrow leg can run on that fork (hard fork 1, and `generateblocks`, which
 the fakechain legs mine with, works only on a fakechain), so **funded Monero escrow on stagenet is proven only by the
-recorded public stagenet digital-claim run (A-447/A-491)** ([evidence](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)); the offline fork proves the stagenet address formats, the old-fork
+recorded public stagenet digital-claim run (A-447/A-491)** ([evidence](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. The offline fork proves the stagenet address formats, the old-fork
 refusal and the sync guards, and the network pin rests on the simulated-daemon database tests above. Not tested: the
 other public stagenet workflows, fee stress, ring-member stress and reorganisations, a daemon that loses its
 peers on a public network, and `ESCROW_XMR_MAX_FEE` against stagenet fees. On a restricted RPC a daemon cut off from its

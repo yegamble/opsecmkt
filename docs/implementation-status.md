@@ -666,7 +666,7 @@ Monero escrow is off by default and custodial: the market holds its wallet keys.
 
 Monero conceals sender, recipient and amount details on-chain; it does not conceal order/payment metadata from the market, defeat traffic correlation or protect a compromised host. Tor-mode settlement relay waits for explicit node Tor configuration or explicit acceptance of clearnet exposure. Monero delivery through Tor remains unverified.
 
-One public stagenet digital claim is [recorded](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Public refunds and physical deadlines remain unverified. See [Monero escrow](escrow.md) and [verification](verification.md).
+One public stagenet digital claim is [recorded](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md). Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Public refunds and physical deadlines remain unverified. See [Monero escrow](escrow.md) and [verification](verification.md).
 
 ## Working application behavior
 
