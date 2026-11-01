@@ -109,7 +109,8 @@ func challengePath(next string) string {
 
 var passwordWork = make(chan struct{}, 4)
 
-// registerWork admits at most 1 of passwordWork's 4 slots to the public listener's registrations (SEC725-2): the written
+// registerWork admits at most 1 of passwordWork's 4 slots to registrations, which only the public listener serves
+// (SEC725-2): the written
 // question costs a script nothing, so unbounded registrations would take every slot and refuse real sign-ins. At bcrypt
 // cost 12 one slot is about 4 registrations a second. With 2, three people signing in at once were refused under a flood.
 var registerWork = make(chan struct{}, 1)
@@ -529,7 +530,7 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
 	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
-	limitRegistration := path == "/register" && !privateAdminIngress(c.Ctx()) // that ingress's own slots are not at stake
+	limitRegistration := path == "/register"
 	if limitRegistration {
 		select {
 		case registerWork <- struct{}{}:
@@ -547,7 +548,7 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 		}
 		// A-725: refused password checks are half of the attack signal. Not while registrations hold slots (SEC725-2):
 		// the image on sign-in would stop none of them, and it would only keep people out.
-		if path == "/login" && (privateAdminIngress(c.Ctx()) || len(registerWork) == 0) {
+		if path == "/login" && (privateAdminIngress(c.Ctx()) || len(registerWork) == 0) { // that ingress's slots are its own
 			a.noteSignInBusy(c.Ctx())
 		}
 		return "", "", "", nil, fail(503, "Authentication is busy. Try again shortly.")

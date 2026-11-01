@@ -32,7 +32,21 @@ func TestNewPasswordRule(t *testing.T) {
 		{"handle inside, any case", "River_Otter", "my-RIVER_otter-password", true},
 		{"three-letter handle inside", "bob", "stone-bob-lantern-field", true},
 
+		// SEC725-7: a common word padded with digits or punctuation, leet undone.
+		{"padded word", "someone", "letmein12345", true},
+		{"padded word 2", "someone", "monkey123456", true},
+		{"padded word 3", "someone", "dragon123456", true},
+		{"padded word 4", "someone", "football1234", true},
+		{"padded word 5", "someone", "admin1234567", true},
+		{"leet and padding", "someone", "P@ssw0rd1234", true},
+		{"1 read as i", "someone", "l3tm31n12345", true},
+		{"1 read as l", "someone", "ki11er12345!", true},
+		{"dollar read as s", "someone", "pa$$word!2026", true},
+		{"punctuation padding", "someone", "sunshine!!!!", true},
+		{"padding in front", "someone", "123456monkey", true},
 		{"four-word passphrase", "someone", "lantern orbit velvet quarry", false},
+		{"common words among others", "someone", "monkey dragon football 1234", false},
+		{"a word that only holds a common word", "someone", "monkeypuzzletree1", false},
 		{"passphrase with hyphens", "someone", "maple-torch-gravel-nimbus", false},
 		{"a run inside something longer", "someone", "12345 lantern orbit quarry", false},
 		{"non-ASCII passphrase", "someone", "Passwörd-Sonne-Birke-Kiesel", false},
@@ -44,6 +58,24 @@ func TestNewPasswordRule(t *testing.T) {
 				t.Fatalf("weakPassword(%q, %q) = %v, want %v", tc.handle, tc.password, got, tc.refused)
 			}
 		})
+	}
+}
+
+// The padded-word list is short, and every entry could be the base of a padded password of 12 bytes.
+func TestCommonWordListIsShort(t *testing.T) {
+	list := commonWords()
+	if n := len(list); n < 300 || n > 500 {
+		t.Fatalf("%d entries: keep the list short", n)
+	}
+	for word := range list {
+		if len(word) < 4 || len(word) > 11 || strings.Trim(word, "abcdefghijklmnopqrstuvwxyz") != "" {
+			t.Errorf("entry %q: want 4 to 11 lowercase letters", word)
+		}
+	}
+	for _, must := range []string{"letmein", "monkey", "dragon", "football", "admin", "password"} {
+		if !list[must] {
+			t.Errorf("%q is not listed", must)
+		}
 	}
 }
 
@@ -90,14 +122,16 @@ func TestSetupRefusesCommonPasswords(t *testing.T) {
 func TestExistingWeakPasswordStillSignsIn(t *testing.T) {
 	e := newTestApp(t)
 	id, _ := e.user("old_weak", "buyer")
-	hash, err := hashPassword("password1234")
-	if err != nil {
-		t.Fatal(err)
+	for _, old := range []string{"password1234", "P@ssw0rd1234"} { // a listed password, and a padded word
+		hash, err := hashPassword(old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agExec(e, "UPDATE users SET password_hash=$2 WHERE id=$1", id, hash)
+		w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"old_weak"}, "password": {old}})
+		e.check(w, 303)
+		e.session(w)
 	}
-	agExec(e, "UPDATE users SET password_hash=$2 WHERE id=$1", id, hash)
-	w := e.do("POST", "/login", randomToken(), url.Values{"handle": {"old_weak"}, "password": {"password1234"}})
-	e.check(w, 303)
-	e.session(w)
 }
 
 // SEC725-2: registrations hold at most registerWork's 1 of passwordWork's 4 slots, so with it held a real sign-in still

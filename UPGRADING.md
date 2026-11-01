@@ -34,8 +34,8 @@ Forms open during the upgrade may be refused once; reload the page. An earlier b
 ("upgraded by a newer release"); to go back, follow [Rolling back](#5-rolling-back), which restores the pre-upgrade
 backup, where the setting is what it was. The signal is in memory, so a restart or redeploy turns it off.
 
-New passwords are checked too (SEC725-1), with no configuration: a listed common password, a simple pattern or a
-password containing the handle is refused on `/setup`, `/register`, `/account/password`, `-bootstrap-admin` and
+New passwords are checked too (SEC725-1), with no configuration: a listed common password, a common word with digits or symbols
+added, a simple pattern or a password containing the handle is refused on `/setup`, `/register`, `/account/password`, `-bootstrap-admin` and
 `-reset-admin-password`. Accounts that already have such a password still sign in, and nothing asks them to change it.
 `install.sh init --admin` checks only the length before it starts, so a weak password there is refused after the market
 is running, with the commands to finish. Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused

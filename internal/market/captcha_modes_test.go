@@ -355,7 +355,8 @@ func TestAdminSeesAndChoosesTheHumanCheckMode(t *testing.T) {
 		"Attack signal: off.", "100 failed passwords", "10 refused password checks", "30 minutes",
 		"The question on registration stops only simple bots",
 		"about 100 wrong passwords, or about 14 simultaneous sign-in posts, every 30 minutes hold the image on", // SEC725-5
-		"can test as many handles as they like", "no budget limits that")                                        // SEC725-3
+		"can test as many handles as they like", "no budget limits that",
+		"A registration in progress can keep a refused password check from counting toward the signal.") // SEC725-3
 	mustNotContain(t, idle, attackAlert, captchaWarningMark, "on the private administrator onion: off")
 	mustNotContain(t, e.body("GET", "/admin", admin, nil, 200), overviewTag)
 

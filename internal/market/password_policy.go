@@ -7,26 +7,56 @@ import (
 	"sync"
 )
 
-// SEC725-1: the rule for a new password, on top of validPassword's length: not a listed common password, not a simple
-// pattern, and not containing the account's handle. It applies wherever a new password is set (/setup, /register,
+// SEC725-1: the rule for a new password, on top of validPassword's length: not a listed common password, not a common
+// word padded with digits or punctuation (SEC725-7), not a simple pattern, and not containing the account's handle. It applies wherever a new password is set (/setup, /register,
 // /account/password, -bootstrap-admin, -reset-admin-password), never at sign-in, so an account that already has such a
-// password still signs in. It looks nothing up over a network. It is a floor against the guesses a script tries first,
-// not a strength meter.
+// password still signs in. It looks nothing up over a network. It is a floor, not a strength meter: it stops the guesses
+// a script tries first.
 
 // commonPasswordList is the embedded list; its source and licence are in the file's header.
 //
 //go:embed common_passwords.txt
 var commonPasswordList string
 
-var commonPasswords = sync.OnceValue(func() map[string]bool {
+var commonPasswords = sync.OnceValue(func() map[string]bool { return readPasswordList(commonPasswordList) })
+
+// readPasswordList reads an embedded list: one entry per line, # starting a comment line.
+func readPasswordList(text string) map[string]bool {
 	list := make(map[string]bool)
-	for line := range strings.Lines(commonPasswordList) {
+	for line := range strings.Lines(text) {
 		if line = strings.TrimRight(line, "\r\n"); line != "" && !strings.HasPrefix(line, "#") {
 			list[line] = true
 		}
 	}
 	return list
-})
+}
+
+// commonWordList is the embedded list of words padded passwords are built on; its source is in the file's header.
+//
+//go:embed common_words.txt
+var commonWordList string
+
+var commonWords = sync.OnceValue(func() map[string]bool { return readPasswordList(commonWordList) })
+
+// passwordLeet undoes basic leet; "1" reads as either letter, so a base is tried with each.
+var passwordLeet = [...]*strings.Replacer{
+	strings.NewReplacer("@", "a", "0", "o", "1", "l", "3", "e", "$", "s"),
+	strings.NewReplacer("@", "a", "0", "o", "1", "i", "3", "e", "$", "s"),
+}
+
+// passwordIsPaddedWord reports a lowercased password that is a common word once the digits and punctuation around it
+// are stripped and basic leet is undone (SEC725-7). Only the whole base counts, so a passphrase that holds such a word
+// among others passes.
+func passwordIsPaddedWord(p string) bool {
+	base := strings.TrimFunc(p, func(r rune) bool { return r < 0x80 && (r < 'a' || r > 'z') })
+	// Stripped before leet is undone, so padding digits are not read as letters.
+	for _, leet := range passwordLeet {
+		if commonWords()[leet.Replace(base)] {
+			return true
+		}
+	}
+	return false
+}
 
 // passwordRuns are the sequences a person walks along when typing a pattern; the digit row also wraps from 0 to 1.
 var passwordRuns = [...]string{"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm", "abcdefghijklmnopqrstuvwxyz"}
@@ -79,14 +109,14 @@ func passwordRepeats(p string) bool {
 // weakPassword reports a new password that a guesser tries first. Case is ignored.
 func weakPassword(handle, password string) bool {
 	p := strings.ToLower(password)
-	return commonPasswords()[p] || passwordRepeats(p) || passwordIsRun(p) ||
+	return commonPasswords()[p] || passwordIsPaddedWord(p) || passwordRepeats(p) || passwordIsRun(p) ||
 		handle != "" && strings.Contains(p, strings.ToLower(handle))
 }
 
 // passwordAdvice is what every refusal of a weak new password tells the person to do.
 const passwordAdvice = "Use a passphrase of four or more unrelated words."
 
-const passwordWeakReason = "too easy to guess: it is a common password or a simple pattern, or it contains the handle. " + passwordAdvice
+const passwordWeakReason = "too easy to guess: it is a common password, a common word with digits or symbols added, or a simple pattern, or it contains the handle. " + passwordAdvice
 
 // errWeakPassword refuses a weak new password on a form; errWeakPasswordHost is the host commands' form of it. Neither
 // says which rule matched or repeats the password.

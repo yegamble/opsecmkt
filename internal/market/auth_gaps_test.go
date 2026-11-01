@@ -1266,7 +1266,7 @@ func TestChallengeEnrolledErrorIsServerError(t *testing.T) {
 }
 
 // SEC725-1: a weak new password is refused with advice, wherever it is set; the rule table is TestNewPasswordRule.
-var refusedRegistrationPasswords = []string{"password1234", "aaaaaaaaaaaa", "123456789012", "qwertyuiopas"}
+var refusedRegistrationPasswords = []string{"password1234", "aaaaaaaaaaaa", "123456789012", "qwertyuiopas", "letmein12345", "P@ssw0rd1234"}
 
 func TestRegisterRefusesCommonPasswords(t *testing.T) {
 	e := newTestApp(t)
