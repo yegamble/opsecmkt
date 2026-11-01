@@ -15,6 +15,19 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A restore's recheck also moves deadlines about to pass; a hung wallet-rpc no longer stops completions (A-728)
+
+No migration or configuration. The Monero escrow watcher's restore recheck moved only deadlines that had already passed,
+on a pass that runs before public access returns, so an order with a deadline moments away could complete with no buyer
+able to reach it. It now moves every release deadline and dispute window, of a shipped or delivered order with no
+dispute, that has passed or ends within 72 hours to 72 hours after the recheck, with one order note and one notice to the
+buyer each. Later deadlines stay as they are. An order shipped or delivered after the recheck keeps the deadline it gets
+then, so a dispute window opened after the recheck can still end inside those 72 hours, 48 hours after that delivery. The
+message from `scripts/restore.sh` says so.
+
+The watcher's deadline step now has its own 30-second budget. A wallet-rpc that hung until the pass's budget ran out used
+to stop the step, so a due order stayed open with its dispute already refused as late. A shutdown still stops the step.
+
 ## The image CAPTCHA now appears only under attack (migration 155, A-725)
 
 The image has no audio or text alternative, so it kept screen-reader users out. `captcha_required` now has three values,
@@ -1771,7 +1784,7 @@ against the database. It runs in one transaction and does the following:
   (start with `RETENTION_ENABLED=true` and the current `RETENTION_STATE_DIR`; see [retention](docs/retention.md)).
 - `escrow_xmr_release_recheck` asks the Monero escrow watcher, on its first pass after the gate is cleared, to move every
   release deadline of a shipped Monero escrow order, and every dispute window of a delivered digital one, that has passed
-  in the restored records to 72 hours later, telling each buyer. Until that recheck has succeeded, no such order is
+  in the restored records or ends within 72 hours (A-728) to 72 hours after that pass, telling each buyer. Until that recheck has succeeded, no such order is
   completed on its deadline and a buyer's no-ship cancel of a paid order is refused (A-714); it then records
   `escrow_xmr_cancel_wait_until`, and that cancel stays refused for a further 72 hours (A-720). With `ESCROW_XMR=off` the
   watcher never runs, so the recheck stays pending and the refusal says "try again later" for as long as it stays off; do
@@ -1824,7 +1837,7 @@ again). Before clearing the gate, re-check them on `/admin` against your operato
 cancels made after the backup are not in the restored records either, and a restore cannot move an order's ship-by time
 or delivery deadline: review the escrow orders shipped, delivered or cancelled around the backup point. The restored order
 messages and notices stop at the backup, and the wallet's transfer history shows deposits and claims, not a shipment or
-delivery, so the evidence is the old database, if it survives, or the parties. For 72 hours after the deadline recheck a
+delivery, so the evidence is the old database, if it survives; the parties can only add to it once public access returns, or through a contact you already hold outside the market. [Orders around the backup point](docs/testnet-runbook.md#orders-around-the-backup-point) says what to do in each case, including telling a vendor not to ship when the wallet history shows a refund the records lack. For 72 hours after the deadline recheck a
 buyer's cancel of a paid order whose restored ship-by time or delivery deadline passes before then is refused, and the
 vendor can still ship or deliver it: tell vendors to re-ship or re-deliver in that time, using Mark shipped again for goods
 sent after the backup (A-714, A-720). Afterwards the buyer can cancel it for a refund, even if the vendor shipped or

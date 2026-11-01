@@ -207,8 +207,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   window opened on funding or on delivery, and both parties are told when it ends. In the window the buyer may open a
   dispute (an administrator then decides it) or use **Confirm receipt** with their password to complete the order
   early. When the window ends with no dispute, the Monero watcher completes the order ("dispute window ended"), as it
-  does a physical order at its release deadline, including while the escrow wallet-rpc is down; after a restore from
-  backup a passed window is moved to 72 hours from the recheck, and a vendor's ban moves a sooner end to 72 hours
+  does a physical order at its release deadline, including while the escrow wallet-rpc is down or hangs; after a restore from
+  backup a window that has passed or ends within 72 hours is moved to 72 hours from the recheck, and a vendor's ban moves a sooner end to 72 hours
   after the ban. Only a completed order can be claimed: the vendor then claims the escrow with a fresh Monero address
   and their password. Orders completed before this change keep their history unchanged.
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
@@ -221,7 +221,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   completes by the system and the release is built. The buyer is reminded 72 hours before, in the market only, and
   `/orders` shows a banner. Banning the vendor moves a deadline less than 72 hours away to 72 hours after the ban,
   never earlier, and tells the buyer that the payment is then held (A-652d, with A-652c's hold). The deadlines run in the Monero watcher, so they apply whenever Monero escrow is configured, even while the
-  escrow wallet-rpc is down. The no-ship cancel of Phase 2 is shared: a buyer may cancel a paid physical order that was not
+  escrow wallet-rpc is down, and on their own 30-second budget, so a wallet-rpc that hangs and uses up the pass does not stop them (A-728). The no-ship cancel of Phase 2 is shared: a buyer may cancel a paid physical order that was not
   shipped once the dispatch window plus 48 hours has passed, and the escrow is refunded.
 - **Disputes: decisions are final.** An administrator decides a dispute on a Monero escrow order with their password; a
   moderator's resolve is refused. A Monero decision cannot be changed once made, because the
@@ -243,8 +243,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)) holds every restored Monero settlement that has a
   stored transaction until an administrator confirms its relay on `/admin/payments`; retires every free account; moves every
   active or sealed wallet to *closing*, so no account of a restored wallet, one the restored records lack included, is
-  offered to a new order; asks for a release deadline recheck (the deadline of a shipped order that had passed in the
-  restored records moves 72 hours later, and the buyer is told, and a buyer's no-ship cancel of an order whose ship-by time
+  offered to a new order; asks for a release deadline recheck (the deadline of a shipped or delivered order that has passed in the
+  restored records or ends within 72 hours moves to 72 hours after the recheck, and the buyer is told, and a buyer's no-ship cancel of an order whose ship-by time
   or delivery deadline passes in those 72 hours waits for their end); and sets `xmr_escrow_sweep_required`. Until the
   watcher's sweep has run, checkout answers 503 and no wallet or account is created. The sweep looks for wallets created
   after the backup: in each month from 12 months back through next month, the names after that month's newest row. One
@@ -294,7 +294,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   not stop the operator. There is no Monero multisig and none is claimed.
 - **It was built and tested on a fakechain.** Phase 3 refused every daemon but a local fakechain; A-449 admits stagenet
   ([below](#monero-escrow-on-stagenet-a-449)), checked on an offline fork and in one public digital claim
-  ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). That sample verifies actual funding, fees and claim confirmations; public refunds,
+  ([record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. That sample verifies actual funding, fees and claim confirmations; public refunds,
   physical deadlines, fee/ring-member stress and reorganisations remain unverified. Testnet is refused; mainnet (A-460) is the installer's default for local nodes (A-523), with no recorded run.
 - **Backups keep wallet copies until they expire.** A database dump holds each wallet's sealed seed (anyone with the
   OpenPGP private key can open it), and a backup of the escrow wallet volume holds its files. Destroying a wallet reaches
@@ -367,7 +367,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowShipNoShipCancelRaceOneOutcome`, `TestXMRConcessionResolveRaceOneOutcome`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
-  `TestXMREscrowRestoreExtendsDeadline`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`, `TestXMREscrowCancelGraceAfterRecheck`.
+  `TestXMREscrowRestoreExtendsDeadline`, `TestXMRDeadlinesRunAfterWalletHang`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`, `TestXMREscrowCancelGraceAfterRecheck`.
   Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
   `TestXMREscrowConfirmDestroyedRefusesUnspent`,
@@ -501,7 +501,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   restore that finds every funded account, and a watcher pass over 5 such wallets within the pass timeout. The numbers
   and their limits are in [verification](verification.md#monero-escrow-wallet-scale-paye-e2-war-room-a-429-p3-r12--2026-10-04).
 
-The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded digital claim. Other public stagenet
+The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded digital claim. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Other public stagenet
 legs remain untested; A-449's offline fork cannot run them. Not tested: testnet and mainnet, Monero multisig, the escrow pages in Firefox or WebKit, deadlines of 7 to 30
 days in real time, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain), a restore of a real backup into a
 running market with Phase 3 orders on a real chain (`scripts/test-backup-restore.sh` restores a real dump and checks its
@@ -511,7 +511,7 @@ rows; the fakechain `Restore` leg simulates the database restore in SQL), and a 
 ## Monero escrow on stagenet (A-449)
 
 Phase 4 work (war-room ruling P4-R15, owner decision 2026-10-05), first released in `v0.1.0-alpha.2`. Monero escrow
-(still off by default, still custodial) accepts stagenet as well as a local fakechain. The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed with real funding and a confirmed vendor release.
+(still off by default, still custodial) accepts stagenet as well as a local fakechain. The [2026-10-10 public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed with real funding and a confirmed vendor release. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run.
 The broader network/failure checks below retain their simulated-RPC or offline-fork evidence tiers.
 
 The staff alert for a requested Monero settlement older than 24 hours is a visibility threshold, not a measured settlement
@@ -578,7 +578,7 @@ under the stagenet tags (the integrated one refused) and refused under the fakec
 and that the escrow sync guard reads a restricted stagenet daemon with a peer and a fresh tip as synced and an
 `--offline` daemon as having no peers. No funded escrow leg can run on that fork (hard fork 1, and `generateblocks`, which
 the fakechain legs mine with, works only on a fakechain), so **funded Monero escrow on stagenet is proven only by the
-recorded public stagenet digital-claim run (A-447/A-491)** ([evidence](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)); the offline fork proves the stagenet address formats, the old-fork
+recorded public stagenet digital-claim run (A-447/A-491)** ([evidence](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md)). Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. The offline fork proves the stagenet address formats, the old-fork
 refusal and the sync guards, and the network pin rests on the simulated-daemon database tests above. Not tested: the
 other public stagenet workflows, fee stress, ring-member stress and reorganisations, a daemon that loses its
 peers on a public network, and `ESCROW_XMR_MAX_FEE` against stagenet fees. On a restricted RPC a daemon cut off from its

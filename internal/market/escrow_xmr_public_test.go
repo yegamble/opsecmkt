@@ -16,8 +16,9 @@ import (
 	"time"
 )
 
-// This deliberately separate public-stagenet leg never mines, moves the clock, or uses the fakechain helpers'
-// wallet creation. scripts/test-escrow-xmr-public-stagenet.py is the only intended entry point. It is not CI.
+// This deliberately separate public-stagenet leg never mines, moves the clock, edits a deadline, or uses the fakechain
+// helpers' wallet creation; the buyer's Confirm receipt completes its order, so a dispute window's expiry is not
+// exercised (A-729). scripts/test-escrow-xmr-public-stagenet.py is the only intended entry point. It is not CI.
 const xmrPublicPrice int64 = 10_000_000_000     // 0.01 XMR, paid by a dedicated, already funded stagenet wallet.
 const xmrPublicFeeCushion int64 = 5_000_000_000 // 0.005 XMR beyond the price, including for a recycled test wallet.
 
@@ -487,9 +488,16 @@ func TestXMREscrowPublicStagenetSmoke(t *testing.T) {
 		Address string `json:"address"`
 		Index   int64  `json:"address_index"`
 	}
-	r.endWindows() // the 48-hour dispute window, ended by the watcher's deadline step (A-709)
-	if r.state(order) != stateCompleted {
-		t.Fatalf("after the dispute window: %s", r.state(order))
+	// The buyer's Confirm receipt, with the password the form asks for, ends the order's dispute window early (A-709,
+	// A-729). A public run edits no deadline, so the window's expiry and the watcher's completion of it are not exercised.
+	if page := r.page("/order?id="+order, r.buyerSess); !strings.Contains(page, `action="/escrow-xmr/confirm"`) {
+		t.Fatal("the buyer is not offered Confirm receipt on the delivered order")
+	}
+	if code, _ := r.xmrConfirm(order, r.buyerSess, testPassword); code != 303 {
+		t.Fatalf("public Confirm receipt refused: HTTP %d", code)
+	}
+	if r.state(order) != stateCompleted || !anyContains(r.events(order), "Receipt confirmed by the buyer") {
+		t.Fatalf("after Confirm receipt: %s", r.state(order))
 	}
 	r.call(funder, "create_address", map[string]any{"account_index": 0}, &claimAddress)
 	claim := claimAddress.Address

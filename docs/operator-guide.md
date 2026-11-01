@@ -1283,7 +1283,8 @@ refunded to the buyer's refund address. Every delivery, automatic on funding or 
 completes the order when the window ends, and only then can the vendor claim the coins. Both lengths are fixed (not
 the release-deadline setting), stated on the product, checkout and order pages, and kept by the watcher while the
 escrow wallet-rpc is down; a restore from backup and a vendor's ban move a passed or sooner window as they move a
-release deadline. Once a release deadline or dispute window has passed, no dispute is offered or accepted.
+release deadline. Once a release deadline or dispute window has passed, no dispute is offered or accepted, except while
+a restore's deadline recheck is pending: until then a passed deadline is not yet due, so the form is offered again.
 
 Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), independent moderators receive review notices but cannot resolve Monero escrow, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
 
@@ -1334,7 +1335,7 @@ move these coins**: there is no 2-of-3, no key of the buyer's or
 vendor's and nothing for them to sign. It runs against a local Monero fakechain (`monerod --regtest`) or, since A-449, Monero
 stagenet (`monerod --stagenet`); coins on both have no value. On a market with `MONERO_NETWORK=mainnet` it runs on
 mainnet instead (real funds, no recorded run; [Mainnet](#mainnet)); it refuses testnet, a mainnet daemon on any other
-market, and anything else. The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded claim; broader public journeys
+market, and anything else. The [public stagenet digital-claim record](evidence/public-testnet/2026-10-10-ac71878dfde4/stagenet-xmr/README.md) covers one funded claim. Before A-709 funding completed the order, so that run proves a superseded journey: the dispute window and delivered state have no public-network run. Broader public journeys
 remain unverified. Offline-fork evidence is separate ([per-order escrow](escrow.md#monero-escrow-on-stagenet-a-449)).
 With Monero escrow off, Monero checkout is unavailable. What it does, protects and does not protect, and the tests behind it, are in
 [per-order escrow, Phase 3](escrow.md#phase-3-monero-escrow-on-a-local-fakechain) and
@@ -1691,8 +1692,8 @@ the `.env` (the same `MONERO_WALLET_SECRET`, `ESCROW_XMR_SEED_KEY`) from the bac
 Monero escrow: holds every restored settlement that has a stored transaction (built or relayed) until you confirm it on
 `/admin/payments` (below); retires every free account; moves every active or sealed wallet to closing, so that no account of a
 restored wallet, one the restored records lack included, is offered to a new order; asks for the release deadline recheck
-(`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every passed deadline of a shipped
-order, and every passed dispute window of a delivered digital one, moves 72 hours later and its buyer is told; until that
+(`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every deadline of a shipped
+order, and every dispute window of a delivered digital one, that has passed or ends within 72 hours moves to 72 hours after that pass and its buyer is told, A-728; until that
 recheck has succeeded no order completes on a passed deadline and a buyer's no-ship cancel of a paid order is refused,
 A-714, and it then records a 72-hour grace for the vendor, `escrow_xmr_cancel_wait_until`, A-720); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
 answer 503 ("Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a
@@ -1705,7 +1706,7 @@ too, reads every wallet that may hold coins, and gives a wallet older than the d
 rescan so that deposits to accounts it does not know are seen. Before clearing the gate, review the escrow orders shipped,
 delivered or cancelled around the backup point: the restored records lack those made after it, with their order messages
 and notices, and the wallet's transfer history shows deposits and claims, not a shipment or delivery, so the evidence is
-the old database, if it survives, or the parties. A restore cannot move a paid order's ship-by time or delivery deadline.
+the old database, if it survives; the parties can only add to it once public access returns, or through a contact you already hold outside the market. [Orders around the backup point](testnet-runbook.md#orders-around-the-backup-point) says what to do in each case, including telling a vendor not to ship when the wallet history shows a refund the records lack. A restore cannot move a paid order's ship-by time or delivery deadline.
 For 72 hours after the recheck a buyer's cancel of a paid order whose restored deadline passes before then is refused
 (A-720), and the vendor can still ship or deliver it: tell vendors to re-ship or re-deliver in that time, using **Mark
 shipped** again for goods sent after the backup (they need no second dispatch). The 72 hours run from the first pass after

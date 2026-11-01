@@ -279,9 +279,9 @@ assert match.group(2) == 'UTC' and started - 1 <= taken <= finished + 1, \
 PY
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
-# The escrow release deadline recheck is asked for (escrow_deadline.go moves passed deadlines on its next pass).
+# The escrow release deadline recheck is asked for (escrow_xmr_deadline.go moves what has passed or ends within 72 hours on its next pass).
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == true ]]
-grep -q 'release deadlines that passed in the restored records move to 72 hours' "$work/app-restore.log"
+grep -q 'has passed or ends within 72 hours moves to 72 hours' "$work/app-restore.log"
 # P3-R10: the restored Monero escrow is held, its free account retired, its wallet closing, and the sweep asked for.
 [[ $(pg "$app_target_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
 [[ $(pg "$app_source_db" -Atq -c "$xmr_state") == 'built:false 1:claimed,2:free escrow-202610-01:active bond-01:sealed' ]]
