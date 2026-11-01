@@ -15,6 +15,21 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A recheck also tells the vendor; a paid order with no counted deposit can be cancelled from its form (A-737)
+
+No migration or configuration. A restore's or an outage's recheck used to notify only the buyer, so a vendor kept the date of an
+earlier reminder, or had no date at all, since the move suppresses the reminder. Each moved order's vendor now gets one notice with
+the new date, the cause and what follows: the release, the vendor's claim, or, for a banned vendor, the held payment. The order page
+names an outage as the cause, as it does a restore, from the order note the recheck writes. Deadlines moved before this upgrade by
+an outage's recheck have that note too, so their pages say so; their vendors get no notice for that move.
+
+The cancel form of a paid order whose deposits no longer count (the wallet no longer lists them) used to answer 400 for lack of the
+confirmation it did not show. It now shows that confirmation and says nothing is refunded unless the deposit returns. No settlement
+is requested; a deposit that returns and confirms after the cancel goes back to the buyer's refund address by the existing stray
+refund, and the buyer and staff are told. The cancelled order's status no longer says nothing was received when a deposit was seen.
+
+Evidence: database integration tests against a simulated wallet RPC, on test networks; no public network or real outage.
+
 ## An outage gives orders near their deadline 72 hours (A-730, A-732)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_last_deadline_step` and
