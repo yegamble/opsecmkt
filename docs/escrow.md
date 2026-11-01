@@ -207,8 +207,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   window opened on funding or on delivery, and both parties are told when it ends. In the window the buyer may open a
   dispute (an administrator then decides it) or use **Confirm receipt** with their password to complete the order
   early. When the window ends with no dispute, the Monero watcher completes the order ("dispute window ended"), as it
-  does a physical order at its release deadline, including while the escrow wallet-rpc is down; after a restore from
-  backup a passed window is moved to 72 hours from the recheck, and a vendor's ban moves a sooner end to 72 hours
+  does a physical order at its release deadline, including while the escrow wallet-rpc is down or hangs; after a restore from
+  backup a window that has passed or ends within 72 hours is moved to 72 hours from the recheck, and a vendor's ban moves a sooner end to 72 hours
   after the ban. Only a completed order can be claimed: the vendor then claims the escrow with a fresh Monero address
   and their password. Orders completed before this change keep their history unchanged.
 - **Confirm receipt and deadlines.** For a digital order the vendor claims the escrow with a fresh Monero address and their
@@ -221,7 +221,7 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   completes by the system and the release is built. The buyer is reminded 72 hours before, in the market only, and
   `/orders` shows a banner. Banning the vendor moves a deadline less than 72 hours away to 72 hours after the ban,
   never earlier, and tells the buyer that the payment is then held (A-652d, with A-652c's hold). The deadlines run in the Monero watcher, so they apply whenever Monero escrow is configured, even while the
-  escrow wallet-rpc is down. The no-ship cancel of Phase 2 is shared: a buyer may cancel a paid physical order that was not
+  escrow wallet-rpc is down, and on their own 30-second budget, so a wallet-rpc that hangs and uses up the pass does not stop them (A-728). The no-ship cancel of Phase 2 is shared: a buyer may cancel a paid physical order that was not
   shipped once the dispatch window plus 48 hours has passed, and the escrow is refunded.
 - **Disputes: decisions are final.** An administrator decides a dispute on a Monero escrow order with their password; a
   moderator's resolve is refused. A Monero decision cannot be changed once made, because the
@@ -243,8 +243,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   [UPGRADING.md](../UPGRADING.md#6-backups-now-need-the-wallets-too)) holds every restored Monero settlement that has a
   stored transaction until an administrator confirms its relay on `/admin/payments`; retires every free account; moves every
   active or sealed wallet to *closing*, so no account of a restored wallet, one the restored records lack included, is
-  offered to a new order; asks for a release deadline recheck (the deadline of a shipped order that had passed in the
-  restored records moves 72 hours later, and the buyer is told, and a buyer's no-ship cancel of an order whose ship-by time
+  offered to a new order; asks for a release deadline recheck (the deadline of a shipped or delivered order that has passed in the
+  restored records or ends within 72 hours moves to 72 hours after the recheck, and the buyer is told, and a buyer's no-ship cancel of an order whose ship-by time
   or delivery deadline passes in those 72 hours waits for their end); and sets `xmr_escrow_sweep_required`. Until the
   watcher's sweep has run, checkout answers 503 and no wallet or account is created. The sweep looks for wallets created
   after the backup: in each month from 12 months back through next month, the names after that month's newest row. One
@@ -367,7 +367,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowShipNoShipCancelRaceOneOutcome`, `TestXMRConcessionResolveRaceOneOutcome`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
-  `TestXMREscrowRestoreExtendsDeadline`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`, `TestXMREscrowCancelGraceAfterRecheck`.
+  `TestXMREscrowRestoreExtendsDeadline`, `TestXMRDeadlinesRunAfterWalletHang`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`, `TestXMREscrowCancelGraceAfterRecheck`.
   Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
   `TestXMREscrowConfirmDestroyedRefusesUnspent`,

@@ -258,7 +258,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	}
 	var gate, sweep bool
 	if err = a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1 AND value='true')", xmrEscrowSweepKey).Scan(&gate, &sweep); err != nil {
-		return err
+		return errors.Join(err, a.xmrDeadlines(ctx)) // A-728: an expired pass still completes what is due
 	}
 	paused := gate || sweep
 	now := x.clock()
@@ -284,7 +284,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	}
 	wallets, err := a.xmrWallets(ctx)
 	if err != nil {
-		return errors.Join(append(errs, err)...)
+		return errors.Join(append(errs, err, a.xmrDeadlines(ctx))...) // A-728, as above
 	}
 	read := map[int64]bool{}
 	touched := map[string]bool{}

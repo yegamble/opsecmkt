@@ -1691,8 +1691,8 @@ the `.env` (the same `MONERO_WALLET_SECRET`, `ESCROW_XMR_SEED_KEY`) from the bac
 Monero escrow: holds every restored settlement that has a stored transaction (built or relayed) until you confirm it on
 `/admin/payments` (below); retires every free account; moves every active or sealed wallet to closing, so that no account of a
 restored wallet, one the restored records lack included, is offered to a new order; asks for the release deadline recheck
-(`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every passed deadline of a shipped
-order, and every passed dispute window of a delivered digital one, moves 72 hours later and its buyer is told; until that
+(`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every deadline of a shipped
+order, and every dispute window of a delivered digital one, that has passed or ends within 72 hours moves to 72 hours after that pass and its buyer is told, A-728; until that
 recheck has succeeded no order completes on a passed deadline and a buyer's no-ship cancel of a paid order is refused,
 A-714, and it then records a 72-hour grace for the vendor, `escrow_xmr_cancel_wait_until`, A-720); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
 answer 503 ("Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a

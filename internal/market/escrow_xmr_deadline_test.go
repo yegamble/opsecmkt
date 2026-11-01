@@ -604,3 +604,93 @@ func TestXMREscrowDisputeSupersedes(t *testing.T) {
 		t.Fatalf("the refused decision changed something: %s %v", x.state(final), got)
 	}
 }
+
+// A-728 (PAY101-3): a wallet-rpc that hangs can use up the pass's budget. The deadline step makes no RPC and has its
+// own, so the pass still completes a due order, shipped or delivered: otherwise a dispute is refused as late while
+// nothing completes. A shutdown is different: a cancelled pass does not run the step, and one that cancels it midway
+// ends it at once.
+func TestXMRDeadlinesRunAfterWalletHang(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	physical := x.physical(x.vendor)
+	due := func() (string, string) {
+		shipped, _, _ := x.shippedXMR(physical)
+		delivered, _ := x.deliveredXMR(x.product)
+		for _, o := range []string{shipped, delivered} {
+			x.forceDeadline(o, "release_at=now()-interval '1 minute'")
+		}
+		return shipped, delivered
+	}
+	// hung runs a pass whose budget ends while method's call hangs, and checks that the budget did end.
+	hung := func(method string) error {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		x.fake.hook(method, func() { <-ctx.Done() })
+		defer x.fake.hook(method, nil)
+		err := x.A.xmrEscrowPollOnce(ctx)
+		if ctx.Err() == nil || err == nil {
+			t.Fatalf("the pass did not outlast its budget in %s: ctx %v, pass %v", method, ctx.Err(), err)
+		}
+		return err
+	}
+	completed := func(when, shipped, delivered string, err error) {
+		t.Helper()
+		if x.state(shipped) != stateCompleted || x.state(delivered) != stateCompleted ||
+			!anyContains(x.events(shipped), "auto-release deadline passed") || !anyContains(x.events(delivered), digitalWindowNote) {
+			t.Fatalf("%s: %s %s (%v)", when, x.state(shipped), x.state(delivered), err)
+		}
+	}
+
+	shipped, delivered := due()
+	completed("after a hang in the wallet loop", shipped, delivered, hung("open_wallet"))
+
+	// The budget ends before the wallet list is read: the sweep's probe opens wallets first.
+	shipped, delivered = due()
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrEscrowSweepKey)
+	completed("after a hang in the sweep's probe", shipped, delivered, hung("open_wallet"))
+	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrEscrowSweepKey)
+
+	// The budget ends at the daemon check.
+	shipped, delivered = due()
+	completed("after a hang in the daemon check", shipped, delivered, hung("get_info"))
+
+	// A shutdown during the wallet work stops the pass, and the deadline step does not run.
+	shipped, delivered = due()
+	stopped, stop := context.WithCancel(context.Background())
+	defer stop()
+	x.fake.hook("open_wallet", stop)
+	start := time.Now()
+	err := x.A.xmrEscrowPollOnce(stopped)
+	x.fake.hook("open_wallet", nil)
+	if took := time.Since(start); took > 5*time.Second || err == nil {
+		t.Fatalf("a shutdown stopped the pass in %s: %v", took, err)
+	}
+	if x.state(shipped) != stateShipped || x.state(delivered) != stateDelivered {
+		t.Fatalf("the deadline step ran after a shutdown: %s %s", x.state(shipped), x.state(delivered))
+	}
+
+	// A shutdown while the step waits on an order's row lock ends the wait at once.
+	tx, err := x.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("SELECT 1 FROM orders WHERE id=$1 FOR UPDATE", shipped); err != nil {
+		t.Fatal(err)
+	}
+	waiting, stopWaiting := context.WithCancel(context.Background())
+	defer stopWaiting()
+	done := make(chan error, 1)
+	go func() { done <- x.A.xmrDeadlines(waiting) }()
+	x.waitForLockWaits(1)
+	stopWaiting()
+	select {
+	case err = <-done:
+		if err == nil {
+			t.Fatal("a deadline step cancelled at a row lock reported no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a shutdown did not end the deadline step's lock wait")
+	}
+}
