@@ -502,6 +502,11 @@ func TestXMREscrowRestoreExtendsDigitalWindow(t *testing.T) {
 			!anyContains(notices, "dispute window of this order has passed or ends within 72 hours", utcUntil(moved[o]), "delivered content works") {
 			t.Fatalf("the recheck's note and notice: %q %q", notes, notices)
 		}
+		// VEN103-1: its vendor is told the same date and cause, and what follows for them.
+		x.wantVendorMoved(o, "restored its records from a backup", "dispute window", "the order completes at that time and you can claim the coins in this Monero escrow from the order page")
+		if p := x.panel(o, x.vendorSess); !strings.Contains(p, restoreMovedLine) || strings.Contains(p, outageMovedLine) {
+			t.Fatalf("the vendor's panel after a restore's recheck:\n%s", p)
+		}
 	}
 	for _, o := range []string{shipped, soon} {
 		if x.state(o) != stateShipped {
@@ -514,10 +519,14 @@ func TestXMREscrowRestoreExtendsDigitalWindow(t *testing.T) {
 			!anyContains(notices, "release deadline of this order has passed or ends within 72 hours", utcUntil(moved[o]), "goods have arrived") {
 			t.Fatalf("the recheck's note and notice: %q %q", notes, notices)
 		}
+		x.wantVendorMoved(o, "restored its records from a backup", "release deadline", "the order completes at that time and the market releases the coins in this Monero escrow to you")
 	}
 	for o, at := range kept {
 		if !x.releaseAt(o).Equal(at) || anyContains(x.events(o), "after a restore from backup") {
 			t.Fatalf("the recheck touched order %s: %s, was %s; %q", shortID(o), x.releaseAt(o), at, x.events(o))
+		}
+		if n := x.movedNotices(x.vendor, o); len(n) != 0 {
+			t.Fatalf("the vendor of an order not moved was told: %q", n)
 		}
 	}
 
@@ -530,6 +539,9 @@ func TestXMREscrowRestoreExtendsDigitalWindow(t *testing.T) {
 		}
 		if n := countContaining(x.noticesOf(x.partyOf(o, roleBuyer), o), "restored its records from a backup"); n != 1 {
 			t.Fatalf("%d restore notices for order %s after the second pass", n, shortID(o))
+		}
+		if n := x.movedNotices(x.vendor, o); len(n) != 1 {
+			t.Fatalf("the vendor's notices for order %s after the second pass: %q", shortID(o), n)
 		}
 	}
 	// Only the buyer completes it sooner.
@@ -559,6 +571,216 @@ func countContaining(list []string, part string) int {
 		}
 	}
 	return n
+}
+
+// BE103-1: a paid order whose only deposit the wallet no longer lists counts no coins, so its cancel form used to carry
+// neither field the action requires, and its one button answered 400. The form now carries both, and says nothing is
+// refunded; the action still refuses a forged post without the tick, a buyer before the ship-by time still gets no form,
+// and a form shown at zero is refused once the deposit is back. A deposit back after the cancel goes by a stray refund.
+func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
+	const nothing = "No counted coins are in this escrow, so cancelling refunds nothing unless the deposit returns"
+	vanish := func(x *xmrEscrowEnv, order string) {
+		x.t.Helper()
+		x.dropTransfer(hex64("fund " + order))
+		x.mustPoll()
+		if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations=-1", order); n != 1 || x.state(order) != statePaid {
+			x.t.Fatalf("the vanished deposit of a %s order: %v", x.state(order), x.creditedRows(order))
+		}
+	}
+	cancelForm := func(x *xmrEscrowEnv, order, sess string) string {
+		x.t.Helper()
+		body := x.page("/order?id="+order, sess)
+		i := strings.Index(body, `action="/orders/cancel"`)
+		if i < 0 {
+			return ""
+		}
+		form := body[i:]
+		return html.UnescapeString(form[:strings.Index(form, "</form>")])
+	}
+	wantZeroForm := func(x *xmrEscrowEnv, order, sess string) {
+		x.t.Helper()
+		form := cancelForm(x, order, sess)
+		if !containsAll(form, `name="amount_seen" value="0"`, `name="payout_confirmed" value="confirmed"`, nothing, "stray refund") {
+			x.t.Fatalf("the cancel form with no counted coins:\n%s", form)
+		}
+	}
+	post := func(x *xmrEscrowEnv, order, sess string, extra url.Values) (int, string) {
+		x.t.Helper()
+		form := url.Values{"order_id": {order}, "from": {statePaid}}
+		for k, v := range extra {
+			form[k] = v
+		}
+		return x.xmrPost("/orders/cancel", sess, form)
+	}
+	ticked := url.Values{"payout_confirmed": {"confirmed"}, "amount_seen": {"0"}}
+	wantClosedNothingSent := func(x *xmrEscrowEnv, order string) {
+		x.t.Helper()
+		if x.state(order) != stateCancelled {
+			x.t.Fatalf("the cancelled order is %s", x.state(order))
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
+			x.t.Fatalf("%d settlements on a cancel of no counted coins", n)
+		}
+	}
+	addressOf := func(x *xmrEscrowEnv, order string) string {
+		return agStr(x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)
+	}
+
+	t.Run("vendor", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, _ := x.paidXMRPhysical(x.physical(x.vendor))
+		txid := hex64("fund " + order)
+		vanish(x, order)
+		wantZeroForm(x, order, x.vendorSess)
+		// A forged post without the tick stays refused, with or without the amount.
+		for _, forged := range []url.Values{{}, {"amount_seen": {"0"}}} {
+			if code, body := post(x, order, x.vendorSess, forged); code != 400 || x.state(order) != statePaid || !strings.Contains(body, "Tick the box") {
+				t.Fatalf("a post without the tick: %d %s %s", code, x.state(order), body)
+			}
+		}
+		// The deposit back before the form is posted: zero is no longer what the form must state.
+		x.fake.payAddress(addressOf(x, order), txid, xmrListingPrice, 30)
+		x.mustPoll()
+		if code, body := post(x, order, x.vendorSess, ticked); code != 409 || x.state(order) != statePaid || !strings.Contains(body, "review again") {
+			t.Fatalf("a form at zero once the deposit is back: %d %s %s", code, x.state(order), body)
+		}
+		if form := cancelForm(x, order, x.vendorSess); strings.Contains(form, nothing) || !strings.Contains(form, `name="amount_seen" value="`+strconv.FormatInt(xmrListingPrice, 10)+`"`) {
+			t.Fatalf("the form with the deposit back:\n%s", form)
+		}
+		// Gone again, the cancel goes through and nothing is sent.
+		vanish(x, order)
+		wantZeroForm(x, order, x.vendorSess)
+		if code, body := post(x, order, x.vendorSess, ticked); code != 303 {
+			t.Fatalf("the form's own post: %d %s", code, body)
+		}
+		wantClosedNothingSent(x, order)
+		// After the reload the panel neither says nothing was received nor promises the order's refund.
+		if p := x.panel(order, x.vendorSess); !strings.Contains(p, "no deposit to this escrow counted, so nothing was refunded") ||
+			strings.Contains(p, "nothing was received") || strings.Contains(p, "by a refund the market builds and sends") {
+			t.Fatalf("the panel after the cancel:\n%s", p)
+		}
+	})
+
+	// A-740: a form that stated the price, posted after the deposit vanished, is refused with the form again at the amount
+	// counted now, and nothing changes; that form then succeeds.
+	t.Run("stale form", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, _ := x.paidXMRPhysical(x.physical(x.vendor))
+		vanish(x, order)
+		price := url.Values{"order_id": {order}, "from": {statePaid}, "payout_confirmed": {"confirmed"}, "amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}}
+		x.refused(order, "/orders/cancel", x.vendorSess, price, 409, "The amount changed to 0 XMR")
+		w := x.do("POST", "/orders/cancel", x.vendorSess, price)
+		body := html.UnescapeString(w.Body.String())
+		if w.Code != 409 || !containsAll(body, `<div class="alert error" role="alert">The amount changed to 0 XMR`, `action="/orders/cancel"`, `name="amount_seen" value="0"`, nothing) {
+			t.Fatalf("the re-rendered form: %d\n%s", w.Code, body)
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 || x.state(order) != statePaid {
+			t.Fatalf("a refused cancel changed the order: %s, %d settlements", x.state(order), n)
+		}
+		if code, body := post(x, order, x.vendorSess, ticked); code != 303 {
+			t.Fatalf("the re-rendered form's own post: %d %s", code, body)
+		}
+		wantClosedNothingSent(x, order)
+	})
+
+	// A-740: a staff decision follows the same rule: the form at zero says zero and can succeed by posting it, for either
+	// outcome, and one that stated the price is refused with the dispute left open.
+	t.Run("staff", func(t *testing.T) {
+		for _, outcome := range []string{"refund", "release"} {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			order, sess := x.paidXMRPhysical(x.physical(x.vendor))
+			if code, body := x.xmrDispute(order, sess); code != 303 {
+				t.Fatalf("dispute: %d %s", code, body)
+			}
+			x.dropTransfer(hex64("fund " + order))
+			x.mustPoll()
+			if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations=-1", order); n != 1 || x.state(order) != stateDisputed {
+				t.Fatalf("the vanished deposit of a %s order: %v", x.state(order), x.creditedRows(order))
+			}
+			dispute := agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
+			_, admin := x.user("zero_judge_"+outcome, "admin")
+			if page := x.page("/moderator", admin); !containsAll(page, `action="/resolve"`, `name="amount_seen" value="0"`) {
+				t.Fatalf("the staff form at zero:\n%s", page)
+			}
+			resolve := func(seen string) url.Values {
+				return url.Values{"id": {dispute}, "outcome": {outcome}, "resolution": {"Decided from the evidence both parties sent."},
+					"payout_confirmed": {"confirmed"}, "amount_seen": {seen}, "reply_seen": {"0"}, "password": {testPassword}}
+			}
+			x.refused(order, "/resolve", admin, resolve(strconv.FormatInt(xmrListingPrice, 10)), 409, "The amount changed to 0 XMR")
+			if status := agStr(x.testEnv, "SELECT status FROM disputes WHERE id=$1", dispute); status != "Open" || x.state(order) != stateDisputed {
+				t.Fatalf("a refused decision: dispute %s, order %s", status, x.state(order))
+			}
+			if code, body := x.xmrPost("/resolve", admin, resolve("0")); code != 303 || x.state(order) != stateResolved {
+				t.Fatalf("the form's own post at zero: %d %s %s", code, x.state(order), body)
+			}
+			if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
+				t.Fatalf("%d settlements on a decision of no counted coins", n)
+			}
+		}
+	})
+
+	t.Run("buyer", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, sess := x.paidXMRPhysical(x.physical(x.vendor))
+		txid := hex64("fund " + order)
+		vanish(x, order)
+		if form := cancelForm(x, order, sess); form != "" {
+			t.Fatalf("a buyer before the ship-by time got a form:\n%s", form)
+		}
+		if code, body := post(x, order, sess, ticked); code == 303 || x.state(order) != statePaid {
+			t.Fatalf("a buyer's post before the ship-by time: %d %s %s", code, x.state(order), body)
+		}
+		x.forceDeadline(order, "ship_by=now()-interval '1 minute'")
+		wantZeroForm(x, order, sess)
+		if code, body := post(x, order, sess, url.Values{}); code != 400 || x.state(order) != statePaid {
+			t.Fatalf("a post without the tick: %d %s %s", code, x.state(order), body)
+		}
+		if code, body := post(x, order, sess, ticked); code != 303 {
+			t.Fatalf("the form's own post: %d %s", code, body)
+		}
+		wantClosedNothingSent(x, order)
+
+		// The deposit returns after the cancel: what the form says happens. It is left out for a stray refund to the buyer's
+		// refund address, the buyer is told, and no ordinary refund appears.
+		x.fake.payAddress(addressOf(x, order), txid, xmrListingPrice, 30)
+		x.mustPoll()
+		x.mustPoll()
+		if x.state(order) != stateCancelled {
+			t.Fatalf("the deposit's return reopened the order: %s", x.state(order))
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND escrow_left_out AND confirmations>=0", order); n != 1 {
+			t.Fatalf("the returned deposit: %v", x.creditedRows(order))
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='refund'", order); n != 0 {
+			t.Fatalf("%d ordinary refunds", n)
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='stray_refund'", order); n != 1 {
+			t.Fatalf("%d stray refunds; events %q", n, x.events(order))
+		}
+		if n := x.noticesOf(x.partyOf(order, roleBuyer), order); !anyContains(n, "a stray refund returns them") {
+			t.Fatalf("the buyer's notices: %q", n)
+		}
+	})
+
+	t.Run("digital buyer", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, sess := x.undeliveredXMR()
+		vanish(x, order)
+		if form := cancelForm(x, order, sess); form != "" {
+			t.Fatalf("a buyer before the delivery deadline got a form:\n%s", form)
+		}
+		x.forceDeadline(order, "ship_by=now()-interval '1 minute'")
+		wantZeroForm(x, order, sess)
+		if code, body := post(x, order, sess, ticked); code != 303 {
+			t.Fatalf("the form's own post: %d %s", code, body)
+		}
+		wantClosedNothingSent(x, order)
+	})
 }
 
 // Migration 153 gives a digital Monero escrow order paid before A-709, and still paid, a delivery deadline 72 hours from

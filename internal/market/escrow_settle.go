@@ -321,13 +321,11 @@ func (a *App) escrowSettleTerminal(ctx context.Context, tx *sql.Tx, o *Order) er
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount),0),count(*) `+escrowCountedFrom, o.ID).Scan(&sum, &n); err != nil {
 		return err
 	}
-	// Existing staff resolutions with no deposits keep their original behavior.
-	// A concession explicitly confirms even zero, so a deposit seen after its
-	// form was shown must refuse the transition before closing the dispute.
-	if concession, ok := ctx.Value(concessionTransitionKey{}).(concessionTransition); n > 0 || ok && concession.orderID == o.ID {
-		if err := checkPayoutSeen(ctx, o, sum); err != nil {
-			return err
-		}
+	// What the actor confirmed is compared at zero too (A-740): a form that stated a refund, posted after its deposit
+	// vanished, must not close the order with nothing sent, and a form at zero is refused once a deposit counts. Every form
+	// that sets it states the amount escrowCountedSQL counts, zero included, so one at zero can still succeed.
+	if err := checkPayoutSeen(ctx, o, sum); err != nil {
+		return err
 	}
 	// The order's live release or refund, if any: a physical order's release was requested when it was shipped (P2-R1).
 	var liveID int64

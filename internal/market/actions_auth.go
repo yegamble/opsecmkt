@@ -783,7 +783,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 			}
 			if required {
 				if account.suspended {
-					return actionResult{}, suspendedRefusal(ctx, a.db, account.banned)
+					return actionResult{}, suspendedRefusal(ctx, a.db, account.id, account.banned)
 				}
 				return a.secondFactor(c, account.id, account.hash, "", a.signInNext(f.Get("next")))
 			}
@@ -795,7 +795,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		}
 		a.refund(ingressKey(ctx, signInKey(handle))) // a correct password spends no sign-in budget
 		if account.suspended {
-			return actionResult{}, suspendedRefusal(ctx, a.db, account.banned)
+			return actionResult{}, suspendedRefusal(ctx, a.db, account.id, account.banned)
 		}
 		return a.secondFactor(c, account.id, account.hash, strings.TrimSpace(f.Get("rescue_code")), a.signInNext(f.Get("next")))
 	}
@@ -1354,7 +1354,7 @@ func (a *App) startSession(ctx context.Context, tx *sql.Tx, id, old, method, pas
 		return "", fail(404, pageNotFound)
 	}
 	if suspended {
-		return "", suspendedRefusal(ctx, tx, banned)
+		return "", suspendedRefusal(ctx, tx, id, banned)
 	}
 	if subtle.ConstantTimeCompare([]byte(digest(hash)), []byte(passwordDigest)) != 1 {
 		return "", errPasswordChanged

@@ -60,11 +60,14 @@ func withPayoutSeen(ctx context.Context, orderID string, amount int64) context.C
 	return context.WithValue(ctx, payoutSeenKey{}, payoutSeen{orderID, amount})
 }
 
+// amountChangedPrefix opens checkPayoutSeen's refusal.
+const amountChangedPrefix = "The amount changed to "
+
 // checkPayoutSeen refuses (409) a settlement of sum for o when the actor confirmed a different amount; the action's
 // transaction then rolls back, so the order and any dispute stay as they were.
 func checkPayoutSeen(ctx context.Context, o *Order, sum int64) error {
 	if seen, ok := ctx.Value(payoutSeenKey{}).(payoutSeen); ok && seen.orderID == o.ID && seen.amount != sum {
-		return fail(409, "The amount changed to "+amount(sum, currencyDecimals(o.Currency))+" "+o.Currency+" — review again. Nothing was changed.")
+		return fail(409, amountChangedPrefix+amount(sum, currencyDecimals(o.Currency))+" "+o.Currency+" — review again. Nothing was changed.")
 	}
 	return nil
 }
