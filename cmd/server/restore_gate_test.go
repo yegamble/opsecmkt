@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"opsecmkt/internal/market"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -253,4 +254,167 @@ func TestRestoreGateCLI(t *testing.T) {
 			t.Fatalf("output names the database URL: %q", s)
 		}
 	}
+}
+
+// -request-deadline-recheck's invocation mistakes are refused before the database is touched (OPS104-1).
+func TestRestoreGateRequestRecheckRefusesBadInvocation(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=2")
+	for _, tc := range []struct {
+		flags []string
+		args  []string
+		msg   string
+	}{
+		{flags: []string{"request-deadline-recheck", "set-restore-gate"}, msg: "-set-restore-gate"},
+		{flags: []string{"request-deadline-recheck", "clear-restore-gate"}, msg: "-clear-restore-gate"},
+		{flags: []string{"request-deadline-recheck", "preview"}, msg: "-preview"},
+		{flags: []string{"request-deadline-recheck", "set-role"}, msg: "-set-role"},
+		{flags: []string{"request-deadline-recheck"}, args: []string{"extra"}, msg: "takes no arguments"},
+	} {
+		var out bytes.Buffer
+		err := requestDeadlineRecheck(context.Background(), given(tc.flags...), tc.args, &out)
+		if err == nil || !strings.Contains(err.Error(), tc.msg) || out.Len() != 0 {
+			t.Fatalf("%+v: err %v out %q", tc, err, out.String())
+		}
+	}
+	// Each other restore gate command refuses the new flag as well.
+	var out, prompt bytes.Buffer
+	if err := setRestoreGate(context.Background(), given("set-restore-gate", "request-deadline-recheck"), nil, &out); err == nil || !strings.Contains(err.Error(), "-request-deadline-recheck") {
+		t.Fatalf("set with the new flag: %v", err)
+	}
+	if err := clearRestoreGate(context.Background(), "root_admin", given("clear-restore-gate", "request-deadline-recheck"), nil, strings.NewReader(""), true, &out, &prompt); err == nil || !strings.Contains(err.Error(), "-request-deadline-recheck") {
+		t.Fatalf("clear with the new flag: %v", err)
+	}
+	t.Setenv("DATABASE_URL", "")
+	if err := requestDeadlineRecheck(context.Background(), given("request-deadline-recheck"), nil, &out); err == nil || !strings.Contains(err.Error(), "DATABASE_URL required") || out.Len() != 0 {
+		t.Fatalf("no database: err %v out %q", err, out.String())
+	}
+	for _, args := range [][]string{
+		{"-request-deadline-recheck", "-set-role", "root_admin", "buyer"}, {"-request-deadline-recheck", "-status"}, {"-request-deadline-recheck", "-healthcheck"},
+		{"-request-deadline-recheck", "-check-startup"}, {"-request-deadline-recheck", "-enroll-retention"}, {"-request-deadline-recheck", "-export-audit", "1"},
+	} {
+		stdout, stderr, code := runServer(t, []string{"DATABASE_URL=postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=2"}, args...)
+		if code == 0 || stdout != "" || !strings.Contains(stderr, "combined") {
+			t.Fatalf("%v: code %d stdout %q stderr %q", args, code, stdout, stderr)
+		}
+	}
+	if _, stderr, code := runServer(t, nil, "-request-deadline-recheck=false"); code != 2 || !strings.Contains(stderr, "without =false") {
+		t.Fatalf("=false: code %d stderr %q", code, stderr)
+	}
+}
+
+// -request-deadline-recheck against a real database (OPS104-1): it asks for the outage's recheck with the application
+// running, from DATABASE_URL or DATABASE_URL_FILE; says so when one is already pending, an outage's or a restore's; refuses
+// under the restore gate; changes nothing else, writes no audit row, and prints no connection detail.
+func TestRestoreGateRequestRecheckCLI(t *testing.T) {
+	dsn := cliSchema(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const key = "escrow_xmr_release_recheck"
+	settingsNow := func() string {
+		t.Helper()
+		var s string
+		if err := db.QueryRow(`SELECT COALESCE((SELECT string_agg(key||'='||value, ',' ORDER BY key) FROM settings),'')||'/'||(SELECT count(*) FROM audit_events)`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	value := func() string {
+		t.Helper()
+		var v sql.NullString
+		if err := db.QueryRow("SELECT (SELECT value FROM settings WHERE key=$1)", key).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v.String
+	}
+	noURL := func(s string) {
+		t.Helper()
+		if strings.Contains(s, "postgres://") || strings.Contains(s, dsn) {
+			t.Fatalf("output names the database URL: %q", s)
+		}
+	}
+
+	// None pending, while an application serves the database (market.New holds the serving lock until Close): now pending.
+	t.Setenv("SETUP_TOKEN", "integration-test-setup-token-5f2c9e7a1b4d8036cafe0123456789abcdef")
+	app, err := market.New(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	exec("DELETE FROM settings WHERE key=$1", key)
+	before := settingsNow()
+	stdout, stderr, code := runServer(t, nil, "-request-deadline-recheck")
+	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || !strings.Contains(stdout, "cannot undo a completion") || !strings.Contains(stdout, "within every 72 hours") {
+		t.Fatalf("none pending: code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	noURL(stdout + stderr)
+	if value() != "outage" {
+		t.Fatalf("the request wrote %q", value())
+	}
+	wrote := settingsNow()
+	exec("DELETE FROM settings WHERE key=$1", key)
+	if settingsNow() != before {
+		t.Fatalf("the request changed more than its key: %s, was %s", settingsNow(), before)
+	}
+	exec("INSERT INTO settings(key,value) VALUES($1,'outage')", key)
+
+	// An outage's already pending: said so, nothing changed.
+	stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
+	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck already pending (outage); nothing was changed.") {
+		t.Fatalf("outage pending: code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	noURL(stdout + stderr)
+	if settingsNow() != wrote {
+		t.Fatalf("settings %s, was %s", settingsNow(), wrote)
+	}
+
+	// A restore's pending keeps saying a restore: an outage's value must not replace it. Any other value is a restore's.
+	for _, restore := range []string{"true", "outgae"} {
+		exec("UPDATE settings SET value=$2 WHERE key=$1", key, restore)
+		held := settingsNow()
+		stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
+		if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "A restore's deadline recheck is already pending; nothing was changed.") {
+			t.Fatalf("value %s pending: code %d stdout %q stderr %q", restore, code, stdout, stderr)
+		}
+		noURL(stdout + stderr)
+		if settingsNow() != held {
+			t.Fatalf("settings %s, was %s", settingsNow(), held)
+		}
+	}
+
+	// The restore gate, with or without a request: refused, and nothing written.
+	exec("INSERT INTO settings(key,value) VALUES('payments_recovery_required','true') ON CONFLICT (key) DO UPDATE SET value='true'")
+	for _, withRequest := range []bool{true, false} {
+		if !withRequest {
+			exec("DELETE FROM settings WHERE key=$1", key)
+		}
+		held := settingsNow()
+		stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "request-deadline-recheck: the restore gate is set") || !strings.Contains(stderr, "nothing was changed") {
+			t.Fatalf("under the gate: code %d stdout %q stderr %q", code, stdout, stderr)
+		}
+		noURL(stdout + stderr)
+		if settingsNow() != held {
+			t.Fatalf("settings %s, was %s", settingsNow(), held)
+		}
+	}
+	// A gate that was cleared (the value false) stops nothing. From DATABASE_URL_FILE, as a native install runs it.
+	exec("UPDATE settings SET value='false' WHERE key='payments_recovery_required'")
+	file := filepath.Join(t.TempDir(), "database.url")
+	if err = os.WriteFile(file, []byte(dsn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runServer(t, []string{"DATABASE_URL=", "DATABASE_URL_FILE=" + file}, "-request-deadline-recheck")
+	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || value() != "outage" {
+		t.Fatalf("from the file: code %d stdout %q stderr %q value %q", code, stdout, stderr, value())
+	}
+	noURL(stdout + stderr)
 }

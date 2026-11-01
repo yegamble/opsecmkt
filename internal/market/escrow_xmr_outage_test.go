@@ -3,6 +3,8 @@ package market
 import (
 	"context"
 	"html"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +63,34 @@ func (x *xmrEscrowEnv) wantVendorMoved(order, cause string, says ...string) {
 	}
 }
 
+// recheckLogPrefix opens the log line of a deadline recheck.
+const recheckLogPrefix = "monero escrow deadline recheck"
+
+// recheckRecords lists the audit rows of the deadline recheck as user:action.
+func (x *xmrEscrowEnv) recheckRecords() []string {
+	x.t.Helper()
+	return agStrings(x.t, x.testEnv, "SELECT COALESCE(user_id,'-')||':'||action FROM audit_events WHERE action LIKE 'Monero escrow deadline recheck%' ORDER BY id")
+}
+
+// wantRecheckRecorded fails unless exactly one recheck has logged and audited, with this cause and count and no order data.
+func (x *xmrEscrowEnv) wantRecheckRecorded(logs *lockedBuffer, cause string, moved int, orders ...string) {
+	x.t.Helper()
+	line := recheckLogPrefix + ": cause=" + cause + " moved=" + strconv.Itoa(moved) + "\n"
+	if text := logs.String(); strings.Count(text, recheckLogPrefix) != 1 || !strings.Contains(text, line) {
+		x.t.Fatalf("the log, want one %q:\n%s", line, text)
+	}
+	audit := "-:Monero escrow deadline recheck (cause: " + cause + "): moved " + strconv.Itoa(moved) + " order deadline(s)"
+	rows := x.recheckRecords()
+	if len(rows) != 1 || rows[0] != audit {
+		x.t.Fatalf("the audit rows, want one %q: %q", audit, rows)
+	}
+	for _, o := range orders {
+		if strings.Contains(logs.String(), shortID(o)) {
+			x.t.Fatalf("the recheck's log names order %s", shortID(o))
+		}
+	}
+}
+
 // outageMovedLine is what the panel says of a deadline an outage moved; restoreMovedLine of one a restore moved.
 const (
 	outageMovedLine  = "This deadline was moved because " + outageWhy + "."
@@ -74,6 +104,7 @@ const (
 func TestXMROutageMovesNearDeadlines(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
+	logs := captureLog(t)
 	physical := x.physical(x.vendor)
 	passed, passedSess, _ := x.shippedXMR(physical)
 	near, _, _ := x.shippedXMR(physical)
@@ -91,8 +122,13 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 	x.forceDeadline(paid, "ship_by=now()-interval '1 minute'")
 	farAt := x.releaseAt(far)
 	x.setLastDeadlineStep("2 hours")
+	if strings.Contains(logs.String(), recheckLogPrefix) || len(x.recheckRecords()) != 0 {
+		t.Fatalf("a recheck record before any recheck: %q, %q", logs.String(), x.recheckRecords())
+	}
 
 	x.mustPoll()
+	// DA104-5: one fixed log line and one audit row with the cause and the count, and no order data.
+	x.wantRecheckRecorded(logs, "outage", 4, passed, near, window, remindedOrder)
 	for _, o := range []string{passed, near, window} {
 		if d := x.releaseAt(o).Sub(x.dbNow()); d < 71*time.Hour || d > 72*time.Hour {
 			t.Fatalf("the deadline of %s is %s away, want 72 hours", shortID(o), d)
@@ -167,8 +203,9 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 		}
 	}
 
-	// Once: the next pass finds no gap, and no second notice or reminder follows.
+	// Once: the next pass finds no gap, and no second notice, reminder, log line or audit row follows.
 	x.mustPoll()
+	x.wantRecheckRecorded(logs, "outage", 4, passed, near, window, remindedOrder)
 	notices := x.noticesOf(x.partyOf(passed, roleBuyer), passed)
 	if countContaining(notices, "an outage") != 1 || anyContains(notices, "Reminder") {
 		t.Fatalf("after another pass: %q", notices)
@@ -272,9 +309,9 @@ func (x *xmrEscrowEnv) wantLatestMoved(order, cause string) {
 	}
 }
 
-// A-730: escrow switched off for over an hour leaves the same gap: the first pass after it is switched on again, however
-// it reaches the deadline step, takes the same path. Here the daemon check fails, so that pass does nothing else.
-func TestXMROutageAfterEscrowOff(t *testing.T) {
+// A-730: a pass whose daemon check fails does nothing else, and still reaches the deadline step: the gap it finds takes
+// the same path. Monero escrow actually switched off is TestXMROutageEscrowOffPaths.
+func TestXMROutageWhileDaemonNotReady(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	order, _, _ := x.shippedXMR(x.physical(x.vendor))
@@ -286,6 +323,84 @@ func TestXMROutageAfterEscrowOff(t *testing.T) {
 	if x.state(order) != stateShipped || x.releaseAt(order).Before(x.dbNow().Add(71*time.Hour)) || x.recheckKey() != "" ||
 		countContaining(x.noticesOf(x.partyOf(order, roleBuyer), order), "an outage") != 1 {
 		t.Fatalf("order %s, deadline %s, request %q", x.state(order), x.releaseAt(order), x.recheckKey())
+	}
+}
+
+// DA104-3: with ESCROW_XMR off no watcher runs. A dispute on a passed deadline is refused as late, a no-ship cancel past
+// its time is accepted while no recheck is pending and no vendor's grace has time left, and is refused otherwise, and
+// marking an order shipped answers 404. On again, an off period over the threshold rechecks and a shorter one does not.
+func TestXMROutageEscrowOffPaths(t *testing.T) {
+	t.Run("while off", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		physical := x.physical(x.vendor)
+		late, lateSess, _ := x.shippedXMR(physical)
+		lateAfter, lateAfterSess, _ := x.shippedXMR(physical)
+		cancelled, cancelledSess := x.paidXMRPhysical(physical)
+		pending, pendingSess := x.paidXMRPhysical(physical)
+		more := x.physical(x.vendor) // a listing's stock is limited
+		grace, graceSess := x.paidXMRPhysical(more)
+		unshipped, _ := x.paidXMRPhysical(more)
+		for _, o := range []string{late, lateAfter} {
+			x.forceDeadline(o, "release_at=now()-interval '1 minute'")
+		}
+		for _, o := range []string{cancelled, pending, grace} {
+			x.forceDeadline(o, "ship_by=now()-interval '1 minute'")
+		}
+		on := x.A.escrowXMR
+		x.A.escrowXMR = nil
+
+		if code, body := x.xmrDispute(late, lateSess); code != 409 || !strings.Contains(body, "a dispute can no longer be opened") {
+			t.Fatalf("a late dispute with escrow off: %d %s", code, body)
+		}
+		if code, body := x.xmrBuyerCancel(cancelled, cancelledSess); code != 303 || x.state(cancelled) != stateCancelled {
+			t.Fatalf("a cancel with escrow off and nothing pending: %d %s, order %s", code, body, x.state(cancelled))
+		}
+		if code, body := x.xmrShip(unshipped, x.vendorSess, testXMRAddr("off ship", true), testPassword); code != 404 || x.state(unshipped) != statePaid {
+			t.Fatalf("marking shipped with escrow off: %d %s, order %s", code, body, x.state(unshipped))
+		}
+		// The request stays pending with no watcher to consume it: the cancel waits, and a dispute is not refused as late.
+		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2)", xmrReleaseRecheckKey, xmrRecheckOutage)
+		if code, body := x.xmrBuyerCancel(pending, pendingSess); code != 409 || x.state(pending) != statePaid || !strings.Contains(body, "an outage") {
+			t.Fatalf("a cancel with a recheck pending: %d %s, order %s", code, body, x.state(pending))
+		}
+		if code, body := x.xmrDispute(lateAfter, lateAfterSess); code != 303 {
+			t.Fatalf("a dispute with a recheck pending: %d %s", code, body)
+		}
+		// Back on, the recheck runs and records the vendor's grace; off again, the cancel waits for its end.
+		x.A.escrowXMR = on
+		x.mustPoll()
+		if x.recheckKey() != "" {
+			t.Fatalf("the request stayed: %q", x.recheckKey())
+		}
+		x.A.escrowXMR = nil
+		if code, body := x.xmrBuyerCancel(grace, graceSess); code != 409 || x.state(grace) != statePaid || !strings.Contains(body, utcFrom(x.cancelWaitUntil())) {
+			t.Fatalf("a cancel in the vendor's grace: %d %s, order %s", code, body, x.state(grace))
+		}
+		x.A.escrowXMR = on
+	})
+	for _, c := range []struct {
+		name, off string
+		recheck   bool
+	}{{"off for longer than the threshold", "2 hours", true}, {"off for less than the threshold", "30 minutes", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			order, _, _ := x.shippedXMR(x.physical(x.vendor))
+			on := x.A.escrowXMR
+			x.A.escrowXMR = nil
+			x.forceDeadline(order, "release_at=now()-interval '1 minute'")
+			x.setLastDeadlineStep(c.off)
+			x.A.escrowXMR = on
+			x.mustPoll() // the first pass with it on again
+			told := anyContains(x.noticesOf(x.partyOf(order, roleBuyer), order), "an outage")
+			if c.recheck && (x.state(order) != stateShipped || !told || x.releaseAt(order).Before(x.dbNow().Add(71*time.Hour))) {
+				t.Fatalf("over the threshold: order %s, told %v, deadline %s", x.state(order), told, x.releaseAt(order))
+			}
+			if !c.recheck && (x.state(order) != stateCompleted || told) {
+				t.Fatalf("under the threshold: order %s, told %v", x.state(order), told)
+			}
+		})
 	}
 }
 
@@ -796,5 +911,103 @@ func TestXMROutageCheckedWithLockHeld(t *testing.T) {
 	wg.Wait()
 	if asks := agInt(x.testEnv, "SELECT count(*) FROM a730_asks"); asks != 1 || x.recheckKey() != xmrRecheckOutage {
 		t.Fatalf("%d asks, request %q", asks, x.recheckKey())
+	}
+}
+
+// OPS104-1: Admin → Payments shows, read-only and to an administrator only, a recheck pending and its cause, and when the
+// last one ran, its cause and how many orders it moved; each recheck records them in its own transaction. With escrow off
+// a pending request stays pending, and the page says so.
+func TestAdminPaymentsDeadlineRecheck(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	logs := captureLog(t)
+	_, admin := x.user("xrecheck_"+randomToken()[:6], "admin")
+	_, moderator := x.user("xrecheckm_"+randomToken()[:6], "moderator")
+	section := func() string {
+		t.Helper()
+		page := html.UnescapeString(x.page("/admin/payments", admin))
+		_, after, found := strings.Cut(page, `id="xmr-deadline-recheck"`)
+		if !found {
+			t.Fatalf("no recheck section:\n%s", page)
+		}
+		block, _, _ := strings.Cut(after, "<h3")
+		return block
+	}
+	if s := section(); !containsAll(s, "No deadline recheck is pending.", "No deadline recheck has been recorded.", "-request-deadline-recheck") || strings.Contains(s, "<form") {
+		t.Fatalf("nothing pending or recorded:\n%s", s)
+	}
+	order, _, _ := x.shippedXMR(x.physical(x.vendor))
+	x.forceDeadline(order, "release_at=now()+interval '24 hours'")
+
+	// An outage's request, pending: the command's own write.
+	out, err := RequestDeadlineRecheck(context.Background(), x.DB)
+	if err != nil || !strings.HasPrefix(out, "Deadline recheck now pending (outage).") {
+		t.Fatalf("request: %q, %v", out, err)
+	}
+	if s := section(); !strings.Contains(s, "Deadline recheck pending: an outage asked for it.") {
+		t.Fatalf("an outage's pending:\n%s", s)
+	}
+	// Other roles and signed-out visitors do not see it.
+	for name, sess := range map[string]string{"buyer": x.sessOf(order, roleBuyer), "vendor": x.vendorSess, "moderator": moderator, "signed out": ""} {
+		w := x.do("GET", "/admin/payments", sess, nil)
+		if w.Code == 200 || strings.Contains(w.Body.String(), "xmr-deadline-recheck") || strings.Contains(w.Body.String(), "Deadline recheck") {
+			t.Fatalf("%s reads the section: %d", name, w.Code)
+		}
+	}
+	// Escrow off leaves it pending.
+	on := x.A.escrowXMR
+	x.A.escrowXMR = nil
+	if s := section(); !containsAll(s, "Deadline recheck pending: an outage asked for it.", "Monero escrow is off, so it stays pending") {
+		t.Fatalf("pending with escrow off:\n%s", s)
+	}
+	x.A.escrowXMR = on
+
+	// It ran: when, the cause and the count, with no order data.
+	x.mustPoll()
+	x.wantRecheckRecorded(logs, "outage", 1, order)
+	at := x.lastRecheckAt()
+	if s := section(); !containsAll(s, "No deadline recheck is pending.", "Last deadline recheck: "+utcUntil(at)+", after an outage; it moved 1 order deadline(s).") || strings.Contains(s, shortID(order)) {
+		t.Fatalf("after the recheck:\n%s", s)
+	}
+	// A restore's request reads as one, and its recheck replaces the record, here moving nothing.
+	x.forceDeadline(order, "release_at=now()+interval '5 days'")
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	if s := section(); !strings.Contains(s, "Deadline recheck pending: a restore asked for it.") {
+		t.Fatalf("a restore's pending:\n%s", s)
+	}
+	x.mustPoll()
+	if s := section(); !strings.Contains(s, "after a restore from backup; it moved 0 order deadline(s).") {
+		t.Fatalf("after a restore's recheck:\n%s", s)
+	}
+	if rows := x.recheckRecords(); len(rows) != 2 || rows[1] != "-:Monero escrow deadline recheck (cause: restore): moved 0 order deadline(s)" {
+		t.Fatalf("the audit rows: %q", rows)
+	}
+	// A record only a hand could have spoiled shows as none, and does not break the page.
+	agExec(x.testEnv, "UPDATE settings SET value='not a record' WHERE key=$1", xmrLastRecheckKey)
+	if s := section(); !strings.Contains(s, "No deadline recheck has been recorded.") {
+		t.Fatalf("an unreadable record:\n%s", s)
+	}
+}
+
+// lastRecheckAt is the time the last recheck recorded.
+func (x *xmrEscrowEnv) lastRecheckAt() time.Time {
+	x.t.Helper()
+	var at time.Time
+	if err := x.DB.QueryRow("SELECT (value::jsonb->>'at')::timestamptz FROM settings WHERE key=$1", xmrLastRecheckKey).Scan(&at); err != nil {
+		x.t.Fatal(err)
+	}
+	return at
+}
+
+// OPS104-1: the read-only preview renders the section without a database: nothing pending, nothing recorded.
+func TestAdminPaymentsDeadlineRecheckPreview(t *testing.T) {
+	a, err := New(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, httptest.NewRequest("GET", "/admin/payments", nil))
+	if w.Code != 200 || !containsAll(w.Body.String(), `id="xmr-deadline-recheck"`, "No deadline recheck is pending.", "No deadline recheck has been recorded.") {
+		t.Fatalf("preview: %d %s", w.Code, w.Body.String())
 	}
 }
