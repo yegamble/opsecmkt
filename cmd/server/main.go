@@ -80,6 +80,7 @@ func main() {
 	exportAuditDir := flag.String("export-audit-dir", ".", "with -export-audit: existing directory for private export/signature files; refuses overwrite")
 	setRestoreGateFlag := flag.Bool("set-restore-gate", false, "host-only: apply the restore protection of UPGRADING.md section 6 (set the restore gate, hold restored Monero settlements, retire free escrow accounts) to a database restored without scripts/restore.sh, audit it and exit (reads no stdin; starts no server; refused while the app runs)")
 	clearRestoreGateFlag := flag.String("clear-restore-gate", "", "host-only: after reconciling a restored database, confirm each runbook step in a terminal and clear the restore gate in this administrator's name, audited, then exit (starts no server; refused while the app runs)")
+	requestDeadlineRecheckFlag := flag.Bool("request-deadline-recheck", false, "host-only: public access failed while the watcher runs: ask for the outage's Monero deadline recheck (writes one setting; works with the app running and on a remote database; changes nothing under the restore gate or while a recheck is pending), then exit (starts no server or wallets)")
 	enrollRetentionFlag := flag.Bool("enroll-retention", false, "host-only: enroll the current original database and external retention state before backup or encoding migration; starts no server, replay, expiry or wallets")
 	flag.Parse()
 	if flagGiven("reset-admin-pgp-key-file") && !flagGiven("reset-admin-factors") {
@@ -89,7 +90,7 @@ func main() {
 	if flagGiven("check-startup") {
 		combined := false
 		for _, name := range []string{"preview", "status", "healthcheck", "reset-admin-password", "bootstrap-admin", "site-name", "set-role", "reset-admin-factors",
-			"reset-admin-pgp-key-file", "export-audit", "export-audit-from", "export-audit-dir", "set-restore-gate", "clear-restore-gate", "enroll-retention"} {
+			"reset-admin-pgp-key-file", "export-audit", "export-audit-from", "export-audit-dir", "set-restore-gate", "clear-restore-gate", "request-deadline-recheck", "enroll-retention"} {
 			combined = combined || flagGiven(name)
 		}
 		if !*checkStartupFlag || combined || len(flag.Args()) != 0 {
@@ -121,7 +122,7 @@ func main() {
 		return
 	}
 	if (*healthcheckFlag || *statusFlag) && (flagGiven("reset-admin-factors") || flagGiven("set-role") ||
-		flagGiven("set-restore-gate") || flagGiven("clear-restore-gate") ||
+		flagGiven("set-restore-gate") || flagGiven("clear-restore-gate") || flagGiven("request-deadline-recheck") ||
 		flagGiven("bootstrap-admin") || flagGiven("site-name") || flagGiven("reset-admin-password")) {
 		fmt.Fprintln(os.Stderr, "-status and -healthcheck cannot be combined with host commands")
 		os.Exit(2)
@@ -154,6 +155,17 @@ func main() {
 	if flagGiven("clear-restore-gate") {
 		if err := clearRestoreGate(context.Background(), *clearRestoreGateFlag, flagGiven, flag.Args(), os.Stdin, isInteractiveTerminal(os.Stdin), os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, "clear-restore-gate:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if flagGiven("request-deadline-recheck") {
+		if !*requestDeadlineRecheckFlag {
+			fmt.Fprintln(os.Stderr, "request-deadline-recheck: use -request-deadline-recheck without =false")
+			os.Exit(2)
+		}
+		if err := requestDeadlineRecheck(context.Background(), flagGiven, flag.Args(), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "request-deadline-recheck:", err)
 			os.Exit(1)
 		}
 		return

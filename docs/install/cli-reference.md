@@ -680,6 +680,7 @@ DATABASE_URL_FILE=./private/database.url ./opsecmkt -bootstrap-admin ADMIN_HANDL
 | `-reset-admin-factors HANDLE` | Administrator break-glass: disable TOTP, recovery codes and PGP sign-in; end sessions/pending sign-ins. Reads no stdin. Password and saved PGP public key remain. |
 | `-set-restore-gate` | Restore protection of UPGRADING.md section 6 for a database restored without `scripts/restore.sh`: sets the restore gate and the other restore settings, holds restored Monero settlements, retires free escrow accounts, closes escrow and bond wallets, audits it. Reads no stdin; prints counts only. Refused while the app runs (or starts) against the database. |
 | `-clear-restore-gate HANDLE` | After [restore reconciliation](../testnet-runbook.md#clear-the-gate), clear the restore gate in that administrator's name with an audit row. Needs a terminal on stdin: asks for each reconciliation step to be confirmed with `yes` (no flag answers for you). Refused while the app runs (apps of earlier releases are not detected), for a handle that is not an administrator's, when the gate is not set, or before an application has started on the restored database; refusals change nothing. |
+| `-request-deadline-recheck` | Public access failed while the watcher runs, which the watcher cannot see: ask for the outage's Monero deadline recheck ([operator guide](../operator-guide.md)). Works with the app running and on a remote database, and writes that request and nothing else. Reads no stdin; prints whether the recheck is now or already pending, and no connection detail. Changes nothing while a restore's recheck is pending, and says so; refused, exit `1`, under the restore gate. In Compose: `docker compose run --rm --no-deps app -request-deadline-recheck`. |
 | `-export-audit N` | Export retained settled audit events through positive ID `N`, with detached signature. Requires database and `AUDIT_SIGNING_KEY`/its `_FILE`. Refuses existing output files. |
 | `-export-audit-from N` | With export: exclude IDs at or below this nonnegative bound; default `0`, cannot exceed upper bound. |
 | `-export-audit-dir DIR` | With export: existing output directory, default `.`. Private `.jsonl`/`.sig` and retention metadata are written; configured recipient adds encryption suffixes. Empty retained range creates no files. |
@@ -700,6 +701,7 @@ DATABASE_URL_FILE=./private/database.url ./opsecmkt -reset-admin-password ADMIN_
 DATABASE_URL_FILE=./private/database.url ./opsecmkt -reset-admin-factors ADMIN_HANDLE
 DATABASE_URL_FILE=./private/database.url ./opsecmkt -set-restore-gate
 DATABASE_URL_FILE=./private/database.url ./opsecmkt -clear-restore-gate ADMIN_HANDLE
+DATABASE_URL_FILE=./private/database.url ./opsecmkt -request-deadline-recheck
 DATABASE_URL_FILE=./private/database.url AUDIT_SIGNING_KEY_FILE=./private/audit.seed \
   AUDIT_EXPORT_RECIPIENT=./public/audit-recipient.asc \
   ./opsecmkt -export-audit 1000 -export-audit-from 500 -export-audit-dir ./exports

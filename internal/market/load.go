@@ -607,8 +607,10 @@ func previewData(page string) PageData {
 	}
 	o := Order{ID: previewDraftID, ProductID: p[0].ID, Title: p[0].Title, Buyer: u.Handle, Vendor: p[0].Vendor, Currency: "XMR", Amount: p[0].PriceXMR, State: stateDraft, Status: stateLabel(stateDraft), Kind: p[0].Kind, BuyerID: u.ID, VendorID: p[0].VendorID, Created: "Sample order", Updated: "Sample order"}
 	var fee *XMRFeeView
+	var recheck *XMRDeadlineRecheckView
 	if page == "admin" {
 		fee = &XMRFeeView{} // the preview has no payment provider: Monero escrow is off (xmrFeeLoader's view)
+		recheck = &XMRDeadlineRecheckView{}
 	}
-	return PageData{XMRFee: fee, Page: page, AdminSection: section, Title: title, Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSEC Market"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", VendorVerified: true}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
+	return PageData{XMRFee: fee, XMRDeadlineRecheck: recheck, Page: page, AdminSection: section, Title: title, Preview: true, User: u, Products: p, Product: &p[0], Orders: []Order{o}, Order: &o, Currency: "XMR", Settings: map[string]string{"site_name": "OPSEC Market"}, Users: []User{{ID: "ghost", Handle: "ghost_circuit", Role: "vendor", VendorVerified: true}}, Events: []Event{{Handle: u.Handle, Action: "Preview only — no real activity", Created: "—"}}}
 }

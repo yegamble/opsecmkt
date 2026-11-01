@@ -142,6 +142,34 @@ class UpgradingAlpha2Test(unittest.TestCase):
                     broken.append('%s: #%s' % (path.relative_to(REPOSITORY), anchor))
         self.assertEqual(broken, [], 'links to UPGRADING.md headings that do not exist')
 
+    def test_outage_recheck_has_a_command_and_one_story(self):
+        # OPS104-1, DA104-3: db_sql is bundled-database only and a mistyped value reads as a restore's, so no guide tells
+        # an operator to write the recheck's request by hand; each gives the host command for Compose and for a native
+        # executable, and all three tell the same story of the time Monero escrow is off.
+        main = (REPOSITORY / 'cmd' / 'server' / 'main.go').read_text()
+        self.assertIn('flag.Bool("request-deadline-recheck"', main)
+        for path in [REPOSITORY / 'README.md', REPOSITORY / 'UPGRADING.md', *sorted((REPOSITORY / 'docs').rglob('*.md'))]:
+            if 'evidence' in path.parts:
+                continue
+            self.assertNotRegex(path.read_text(), r"INSERT INTO settings\(key,value\) VALUES \('escrow_xmr_release_recheck'",
+                                path.relative_to(REPOSITORY))
+        for name in ('UPGRADING.md', 'docs/operator-guide.md', 'docs/testnet-runbook.md'):
+            flat = ' '.join((REPOSITORY / name).read_text().split())
+            for want in ('docker compose run --rm --no-deps app -request-deadline-recheck',
+                         'DATABASE_URL_FILE=./private/database.url ./opsecmkt -request-deadline-recheck',
+                         'Repeat it within every 72 hours until ingress returns',
+                         'It cannot undo a completion',
+                         "A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended"
+                         if name != 'docs/testnet-runbook.md' else
+                         "a cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended",
+                         'marking an order shipped answers 404',
+                         'if it was off for longer than the threshold, the recheck runs on the first pass after it is on again'
+                         if name == 'docs/testnet-runbook.md' else
+                         'If it was off for longer than the threshold, the recheck runs on the first pass after it is on again'):
+                self.assertIn(want, flat, name)
+            self.assertNotIn('The recheck runs on the first pass after it is on again', flat, name)
+        self.assertIn('-request-deadline-recheck', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

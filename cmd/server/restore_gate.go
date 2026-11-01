@@ -31,7 +31,7 @@ var reconciliationSteps = []string{
 // it reads no stdin, starts no HTTP server, payment provider or background work, and refuses while the application
 // serves the database. Success output is counts only.
 func setRestoreGate(ctx context.Context, given func(string) bool, args []string, out io.Writer) error {
-	for _, other := range append([]string{"clear-restore-gate"}, restoreGateExclusive...) {
+	for _, other := range append([]string{"clear-restore-gate", "request-deadline-recheck"}, restoreGateExclusive...) {
 		if given(other) {
 			return errors.New("cannot be combined with -" + other)
 		}
@@ -53,13 +53,40 @@ func setRestoreGate(ctx context.Context, given func(string) bool, args []string,
 	})
 }
 
+// requestDeadlineRecheck is -request-deadline-recheck: public access failed while the watcher runs, so the operator asks
+// for the outage's deadline recheck (market.RequestDeadlineRecheck). It reads no stdin, starts no HTTP server, payment
+// provider or background work, and works while the application serves the database and on a remote one: it needs only
+// DATABASE_URL or DATABASE_URL_FILE. Its output names no connection detail.
+func requestDeadlineRecheck(ctx context.Context, given func(string) bool, args []string, out io.Writer) error {
+	for _, other := range append([]string{"set-restore-gate", "clear-restore-gate"}, restoreGateExclusive...) {
+		if given(other) {
+			return errors.New("cannot be combined with -" + other)
+		}
+	}
+	if len(args) > 0 {
+		return errors.New("-request-deadline-recheck takes no arguments")
+	}
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL required")
+	}
+	return withHostDB(ctx, dsn, func(ctx context.Context, db *sql.DB) error {
+		summary, err := market.RequestDeadlineRecheck(ctx, db)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, summary)
+		return nil
+	})
+}
+
 // clearRestoreGate is -clear-restore-gate HANDLE: the operator's assertion, in an administrator's name, that the
 // restored database was reconciled with the wallets (market.ClearRestoreGate; A-505, A-29: a host action, never a web
 // one). It needs a terminal on stdin (terminal): there is no flag that answers for the operator. It checks the handle,
 // the gate and that the application is stopped, asks for each of reconciliationSteps on prompt (each must be answered
 // "yes"), then clears the gate in one audited transaction that checks everything again. Anything else changes nothing.
 func clearRestoreGate(ctx context.Context, handle string, given func(string) bool, args []string, in io.Reader, terminal bool, out, prompt io.Writer) error {
-	for _, other := range append([]string{"set-restore-gate"}, restoreGateExclusive...) {
+	for _, other := range append([]string{"set-restore-gate", "request-deadline-recheck"}, restoreGateExclusive...) {
 		if given(other) {
 			return errors.New("cannot be combined with -" + other)
 		}
