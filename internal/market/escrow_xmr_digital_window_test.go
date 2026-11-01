@@ -655,11 +655,24 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 			t.Fatalf("the form's own post: %d %s", code, body)
 		}
 		wantClosedNothingSent(x, order)
-		// After the reload the panel neither says nothing was received nor promises the order's refund.
-		if p := x.panel(order, x.vendorSess); !strings.Contains(p, "no deposit to this escrow counted, so nothing was refunded") ||
-			strings.Contains(p, "nothing was received") || strings.Contains(p, "by a refund the market builds and sends") {
-			t.Fatalf("the panel after the cancel:\n%s", p)
+		// After the reload the panel neither says nothing was received nor promises the order's refund, also once the deposit
+		// is back and still confirming (BE103V-2): no refund was requested, so a stray refund returns it once it has confirmed.
+		const cancelledAtZero = "no deposit to this escrow counted when the order was cancelled, so nothing was refunded"
+		wantPanel := func(when string) {
+			t.Helper()
+			if p := x.panel(order, x.vendorSess); !containsAll(p, cancelledAtZero, "by a stray refund once it has confirmed") ||
+				strings.Contains(p, "nothing was received") || strings.Contains(p, "by a refund the market builds and sends") {
+				t.Fatalf("the panel %s:\n%s", when, p)
+			}
 		}
+		wantPanel("after the cancel")
+		x.fake.payAddress(addressOf(x, order), txid, xmrListingPrice, 2)
+		x.mustPoll()
+		wantClosedNothingSent(x, order)
+		if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations=2 AND NOT escrow_left_out", order); n != 1 {
+			t.Fatalf("the deposit back at 2 confirmations: %v", x.creditedRows(order))
+		}
+		wantPanel("with the deposit back at 2 confirmations")
 	})
 
 	// A-740: a form that stated the price, posted after the deposit vanished, is refused with the form again at the amount
@@ -687,6 +700,39 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 
 	// A-740: a staff decision follows the same rule: the form at zero says zero and can succeed by posting it, for either
 	// outcome, and one that stated the price is refused with the dispute left open.
+	// BE103V-1: the same on an order awaiting payment: a form that stated a partial deposit, posted after it vanished, is
+	// refused with the form again and nothing changed, a tick is still required, and a form with no amount still cancels.
+	t.Run("stale awaiting form", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		txid := hex64("part " + order)
+		x.fake.payAddress(addr, txid, xmrListingPrice/4, 12)
+		x.mustPoll()
+		x.dropTransfer(txid)
+		x.mustPoll()
+		if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations=-1", order); n != 1 || x.state(order) != stateAwaitingPayment {
+			t.Fatalf("the vanished deposit of a %s order: %v", x.state(order), x.creditedRows(order))
+		}
+		sess := x.sessOf(order, roleBuyer)
+		partial := strconv.FormatInt(xmrListingPrice/4, 10)
+		stale := url.Values{"order_id": {order}, "from": {stateAwaitingPayment}, "payout_confirmed": {"confirmed"}, "amount_seen": {partial}}
+		x.refused(order, "/orders/cancel", sess, stale, 409, "The amount changed to 0 XMR")
+		w := x.do("POST", "/orders/cancel", sess, stale)
+		body := html.UnescapeString(w.Body.String())
+		if w.Code != 409 || !containsAll(body, `<div class="alert error" role="alert">The amount changed to 0 XMR`, `action="/orders/cancel"`) || strings.Contains(body, `name="amount_seen" value="`+partial+`"`) {
+			t.Fatalf("the re-rendered form: %d\n%s", w.Code, body)
+		}
+		x.refused(order, "/orders/cancel", sess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}, "amount_seen": {partial}}, 400, "Tick the box")
+		if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 || x.state(order) != stateAwaitingPayment {
+			t.Fatalf("a refused cancel changed the order: %s, %d settlements", x.state(order), n)
+		}
+		if code, body := x.xmrPost("/orders/cancel", sess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}}); code != 303 {
+			t.Fatalf("a form with no amount: %d %s", code, body)
+		}
+		wantClosedNothingSent(x, order)
+	})
+
 	t.Run("staff", func(t *testing.T) {
 		for _, outcome := range []string{"refund", "release"} {
 			x := newXMREscrowEnv(t)
