@@ -42,7 +42,13 @@ type ModerationAdminView struct {
 	// are the worker's stored interval and its last recovered database outage (migration 152, A-683).
 	CaptureOn                       bool
 	Stale, PassInterval, LastOutage string
+	// BudgetAlert is the overview's capture alert when it applies (A-648): it opens the capacity and budget panels (A-723).
+	BudgetAlert *ModerationBudgetView
 }
+
+// ModerationQueueView is the /admin overview's queue line: counts only, never an account, target, kind or time, on
+// private administrator ingress only (A-723; the rule of A-648).
+type ModerationQueueView struct{ Open, Escalations, Expired int }
 
 // moderationQueueFilter is a validated queue view: each value is "" or one of moderationQueueStates, the moderation
 // kinds or the dispositions, so the query only ever binds an allowlisted value as a parameter.
@@ -54,9 +60,104 @@ var (
 	moderationQueueDispositions = []string{"ESCALATE_ADMIN", "QUEUE_HUMAN", "HOLD", "AUTO_APPLY"}
 )
 
-// KindOptions and DispositionOptions are the queue filter's choices.
-func (*ModerationAdminView) KindOptions() []string        { return moderationQueueKinds }
-func (*ModerationAdminView) DispositionOptions() []string { return moderationQueueDispositions }
+// moderationKindLabel is what staff read for a stored kind; an unknown one never shows raw.
+func moderationKindLabel(kind string) string {
+	switch kind {
+	case "listing":
+		return "Listing"
+	case "upload":
+		return "Image upload"
+	case "dispute":
+		return "Dispute"
+	case "review":
+		return "Buyer review"
+	case "payment_flag":
+		return "Payment flag"
+	}
+	return "Other content"
+}
+
+// moderationDispositionLabel is what staff read for a stored disposition; an unknown one reads as the default, Hold.
+func moderationDispositionLabel(disposition string) string {
+	switch moderation.Disposition(disposition) {
+	case moderation.EscalateAdmin:
+		return "Escalate to an administrator"
+	case moderation.QueueHuman:
+		return "Human review"
+	case moderation.AutoApply:
+		return "Automatic classification"
+	}
+	return "Hold"
+}
+
+// ModerationOption is one choice of a queue filter: the allowlisted stored value and what staff read.
+type ModerationOption struct{ Value, Label string }
+
+// KindOptions is the kind filter's choices.
+func (*ModerationAdminView) KindOptions() []ModerationOption {
+	var options []ModerationOption
+	for _, kind := range moderationQueueKinds {
+		options = append(options, ModerationOption{kind, moderationKindLabel(kind)})
+	}
+	return options
+}
+
+// DispositionOptions is the Proposed filter's choices: the stored disposition, so it also matches a proposal now
+// shown as on hold (A-723). An automatic classification is history only, so the unreviewed views cannot match it.
+func (v *ModerationAdminView) DispositionOptions() []ModerationOption {
+	var options []ModerationOption
+	for _, disposition := range moderationQueueDispositions {
+		if disposition != string(moderation.AutoApply) || v.State == "reviewed" {
+			options = append(options, ModerationOption{disposition, moderationDispositionLabel(disposition)})
+		}
+	}
+	return options
+}
+
+// FilterLabel names the kind and Proposed filters in force ("" for none), for the empty view.
+func (v *ModerationAdminView) FilterLabel() string {
+	var parts []string
+	if v.Kind != "" {
+		parts = append(parts, "Kind: "+moderationKindLabel(v.Kind))
+	}
+	if v.Disposition != "" {
+		parts = append(parts, "Proposed: "+moderationDispositionLabel(v.Disposition))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ClearFilterURL is this view without its kind and Proposed filters.
+func (v *ModerationAdminView) ClearFilterURL() string {
+	if v.State != "" {
+		return "/admin/moderation?state=" + url.QueryEscape(v.State)
+	}
+	return "/admin/moderation"
+}
+
+// moderationQueuePage is a validated queue page number; blank is the first.
+func moderationQueuePage(value string) (int, error) {
+	if value == "" {
+		return 1, nil
+	}
+	page, err := strconv.Atoi(value)
+	if err != nil || page < 1 || page > 10000 {
+		return 0, fail(400, "Choose a moderation queue page between 1 and 10000.")
+	}
+	return page, nil
+}
+
+// moderationQueueReturn is the queue page a posted moderation form came from, from its validated view fields (A-723).
+func moderationQueueReturn(form url.Values) (string, error) {
+	page, err := moderationQueuePage(form.Get("page"))
+	if err != nil {
+		return "", err
+	}
+	filter, err := moderationQueueFilterFrom(form)
+	if err != nil {
+		return "", err
+	}
+	return moderationQueueURL(page, filter), nil
+}
 
 func moderationQueueFilterFrom(q url.Values) (moderationQueueFilter, error) {
 	var f moderationQueueFilter
@@ -89,6 +190,24 @@ type ModerationOverflowView struct {
 	Count              int64
 }
 
+// KindLabel is the kind as staff read it.
+func (v ModerationOverflowView) KindLabel() string { return moderationKindLabel(v.Kind) }
+
+// ReasonLabel is the reason as staff read it, with the code the operator guides name.
+func (v ModerationOverflowView) ReasonLabel() string {
+	switch v.Reason {
+	case "actor_capacity":
+		return "Per-account active-job limit (actor_capacity)"
+	case "pending_capacity":
+		return "Active-job limit (pending_capacity)"
+	case "retained_capacity":
+		return "Lifetime budget (retained_capacity)"
+	case "backfill_capacity":
+		return "Marker table full (backfill_capacity)"
+	}
+	return v.Reason
+}
+
 type ModerationSuggestionView struct {
 	ID, Kind, TargetID, TargetURL, Created, Expires string
 	EscalationURL                                   string
@@ -102,16 +221,45 @@ type ModerationSuggestionView struct {
 	Proposed string
 }
 
+// KindLabel is the kind as staff read it.
+func (v ModerationSuggestionView) KindLabel() string { return moderationKindLabel(v.Kind) }
+
+// ItemName identifies the item in its heading and in each control's accessible name (A-723): fifty items otherwise
+// offer fifty controls named alike. The kind is a fixed label and the id a validated digest, never untrusted text.
+func (v ModerationSuggestionView) ItemName() string {
+	return v.KindLabel() + " proposal " + v.ID[:min(8, len(v.ID))]
+}
+
+// ProposedText is what the proposal proposed, which is what the Proposed filter matches, and what its deadline made of it.
+func (v ModerationSuggestionView) ProposedText() string {
+	switch {
+	case v.Proposed != "":
+		return moderationDispositionLabel(v.Proposed) + "; deadline passed, on hold"
+	case v.Expired && v.Disposition != string(moderation.AutoApply): // an automatic classification waits for no one
+		return moderationDispositionLabel(v.Disposition) + "; deadline passed"
+	}
+	return moderationDispositionLabel(v.Disposition)
+}
+
+// DefaultActionLabel is the action on expiry as staff read it.
+func (v ModerationSuggestionView) DefaultActionLabel() string {
+	return moderationDispositionLabel(v.DefaultAction)
+}
+
 func init() {
 	registerLoader("admin", func(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 		d.PrivateModerationAccess = !a.preview && a.adminSocket != "" && privateAdminIngress(ctx) && d.User != nil && d.User.Role == "admin"
 		d.ModerationWorkerStale = ""
+		d.ModerationQueue = nil
 		if !d.PrivateModerationAccess || a.db == nil || d.AdminSection != "" {
 			return nil
 		}
 		var err error
-		_, d.ModerationWorkerStale, err = moderationWorkerStale(ctx, a.db)
-		return err
+		if _, d.ModerationWorkerStale, err = moderationWorkerStale(ctx, a.db); err != nil {
+			return err
+		}
+		d.ModerationQueue = &ModerationQueueView{}
+		return moderationQueueCounts(ctx, a.db, d.ModerationQueue)
 	})
 	registerPage("admin/moderation", pageSpec{Protected: true, Roles: []string{"admin"}})
 	registerLoader("admin/moderation", loadModerationAdmin)
@@ -144,6 +292,14 @@ func moderationWorkerStale(ctx context.Context, db *sql.DB) (bool, string, error
 	return true, "No pass for " + strconv.FormatInt(minutes, 10) + " minutes; the worker may have stopped.", nil
 }
 
+// moderationQueueCounts reads the unreviewed counts the panel's summary and the overview's line show, bounded by the
+// lifetime allocation budget like the queue itself. One plain read, no lock.
+func moderationQueueCounts(ctx context.Context, db *sql.DB, s *ModerationQueueView) error {
+	return db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE s.expires_at>$1),count(*) FILTER (WHERE s.expires_at>$1 AND s.disposition='ESCALATE_ADMIN'),
+	 count(*) FILTER (WHERE s.expires_at<=$1) FROM moderation_suggestions s
+	 WHERE s.disposition<>'AUTO_APPLY' AND NOT EXISTS(SELECT 1 FROM moderation_reviews r WHERE r.suggestion_id=s.id)`, time.Now().UTC()).Scan(&s.Open, &s.Escalations, &s.Expired)
+}
+
 func moderationPrivateRoute(path string) bool {
 	return path == "/admin/moderation" || strings.HasPrefix(path, "/admin/moderation/")
 }
@@ -163,11 +319,10 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		return err
 	}
 	d.Security = &SecurityView{TOTPEnabled: totp}
-	page, err := strconv.Atoi(r.URL.Query().Get("page"))
-	if r.URL.Query().Get("page") == "" {
-		page = 1
-	} else if err != nil || page < 1 || page > 10000 {
-		return fail(400, "Choose a moderation queue page between 1 and 10000.")
+	d.PrivateModerationAccess = true // this page's section navigation entry; the checks above are its authority
+	page, err := moderationQueuePage(r.URL.Query().Get("page"))
+	if err != nil {
+		return err
 	}
 	filter, err := moderationQueueFilterFrom(r.URL.Query())
 	if err != nil {
@@ -184,6 +339,12 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	}
 	if v.CaptureOn, v.Stale, err = moderationWorkerStale(ctx, a.db); err != nil {
 		return err
+	}
+	if v.BudgetAlert, err = moderationBudgetAlert(ctx, a.db); err != nil {
+		return err
+	}
+	if v.BudgetAlert != nil {
+		v.BudgetAlert.Private = true
 	}
 	v.ModelState = moderationModelState(state)
 	if !v.CaptureOn {
@@ -235,12 +396,11 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 		return err
 	}
 	now := time.Now().UTC()
-	// The summary's unreviewed counts, bounded by the lifetime allocation budget like the queue itself.
-	if err = a.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE s.expires_at>$1),count(*) FILTER (WHERE s.expires_at>$1 AND s.disposition='ESCALATE_ADMIN'),
-	 count(*) FILTER (WHERE s.expires_at<=$1) FROM moderation_suggestions s
-	 WHERE s.disposition<>'AUTO_APPLY' AND NOT EXISTS(SELECT 1 FROM moderation_reviews r WHERE r.suggestion_id=s.id)`, now).Scan(&v.QueueOpen, &v.QueueEscalations, &v.QueueExpired); err != nil {
+	var counts ModerationQueueView
+	if err = moderationQueueCounts(ctx, a.db, &counts); err != nil {
 		return err
 	}
+	v.QueueOpen, v.QueueEscalations, v.QueueExpired = counts.Open, counts.Escalations, counts.Expired
 	// A-685: the default view holds unreviewed proposals whose deadline is ahead, escalations first and then the
 	// soonest deadline; "expired" holds the unreviewed ones past it (shown as HOLD), escalations first and then the
 	// most recently expired; "reviewed" is the history, newest first. Every filter value is allowlisted and bound.
@@ -354,7 +514,7 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 	if err := moderationReviewAuthorize(c); err != nil {
 		return actionResult{}, err
 	}
-	allowed := []string{"csrf", formNonceField, "password", "code", "suggestion_id", "action"}
+	allowed := []string{"csrf", formNonceField, "password", "code", "suggestion_id", "action", "state", "kind", "disposition", "page"}
 	for key, values := range c.Form {
 		if !slices.Contains(allowed, key) || len(values) != 1 {
 			return actionResult{}, fail(400, "Reload the moderation form and choose one review action.")
@@ -363,6 +523,10 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 	id, action := c.Form.Get("suggestion_id"), c.Form.Get("action")
 	if !moderationDigestPattern.MatchString(id) || !slices.Contains([]string{"accept", "dismiss", "hold"}, action) {
 		return actionResult{}, fail(400, "Choose an existing proposal and a review action.")
+	}
+	back, err := moderationQueueReturn(c.Form)
+	if err != nil {
+		return actionResult{}, err
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		// The capacity row first, before the proposal and source rows
@@ -421,7 +585,7 @@ func moderationReviewAction(c *actionCtx) (actionResult, error) {
 		if _, err = c.Tx.ExecContext(c.Ctx(), `INSERT INTO moderation_reviews(suggestion_id,reviewer_user_id,action) VALUES($1,$2,$3)`, id, c.User.ID, action); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/moderation", Audit: "Moderation proposal " + id + " review recorded: " + action + "; marketplace state unchanged"}, nil
+		return actionResult{Redirect: back, Notice: "moderation-review", Audit: "Moderation proposal " + id + " review recorded: " + action + "; marketplace state unchanged"}, nil
 	})
 }
 
