@@ -582,7 +582,8 @@ type CaptchaAdminView struct {
 	Public, Private          SignInAttackView
 }
 
-// SignInAttackView is one ingress's attack signal on /admin/security: Failures and Busy are the current windows' counts,
+// SignInAttackView is one ingress's attack signal on /admin/security: Failures, Busy, HeldBusy (sign-ins refused while a
+// registration held a password slot) and RegisterBusy (registrations refused for want of a slot) are the current windows' counts,
 // Trips how many times it turned on since this process started; Where names the ingress and Effective says the mode
 // lets the signal act. The limits are the constants, for the page's copy.
 type SignInAttackView struct {
@@ -590,7 +591,9 @@ type SignInAttackView struct {
 	Active, Effective                    bool
 	Since, Until                         string
 	Failures, Busy, Trips                int
+	HeldBusy, RegisterBusy               int
 	FailureLimit, BusyLimit, HoldMinutes int
+	HeldBusyLimit                        int
 	HoldPosts                            int // simultaneous sign-in posts that trip it: the password slots and BusyLimit
 }
 

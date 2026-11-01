@@ -202,7 +202,8 @@ func TestRegisterFloodCannotTakeEverySignInSlot(t *testing.T) {
 	if e.A.signInAttackOn(context.Background()) || len(registerWork) != 0 {
 		t.Fatalf("signal on=%v, registration slots held %d", e.A.signInAttackOn(context.Background()), len(registerWork))
 	}
-	// A sign-in refused while a registration holds a slot is not sign-in's signal: the image would stop no registration.
+	// A sign-in refused while a registration holds a slot does not reach the ordinary threshold: it counts apart, at a
+	// higher one (TestRegistrationHeldSlotSignInFloodIsVisible).
 	registerWork <- struct{}{}
 	defer func() { <-registerWork }()
 	for i := range signInAttackBusy {
@@ -211,7 +212,7 @@ func TestRegisterFloodCannotTakeEverySignInSlot(t *testing.T) {
 		}
 	}
 	if e.A.signInAttackOn(context.Background()) {
-		t.Fatal("sign-ins refused during a registration flood tripped the signal")
+		t.Fatal("sign-ins refused during a registration flood tripped the signal at the ordinary threshold")
 	}
 }
 

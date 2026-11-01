@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -146,6 +147,301 @@ func TestRefusedPasswordSlotsTurnTheImageOn(t *testing.T) {
 		}
 	}
 	mustNotContain(t, e.body("GET", "/login", randomToken(), nil, 200), "captcha-image")
+}
+
+// Refused sign-ins that a held registration slot used to hide (SEC102-1): a password that is right refunds its budget and
+// never fails, so nothing else sees them. They have their own count, its threshold turns the existing signal on (image,
+// one notification, one log line naming no one), and the ordinary counts stay untouched. No timing: the slots are held,
+// as a registration flood holds them.
+func TestRegistrationHeldSlotSignInFloodIsVisible(t *testing.T) {
+	e := newTestApp(t)
+	e.user("held_victim", "buyer")
+	adminID, _ := e.user("held_admin", "admin")
+	setCaptchaMode(e, captchaModeUnderAttack)
+	logs := captureLog(t)
+	releaseRegister, releasePassword := holdSlots(t, registerWork), holdSlots(t, passwordWork)
+	defer releaseRegister()
+	defer releasePassword()
+	refused := func() {
+		t.Helper()
+		if w := e.do("POST", "/login", randomToken(), signInForm("held_victim", testPassword)); w.Code != 503 {
+			t.Fatalf("sign-in with no slot: %d", w.Code)
+		}
+	}
+	for range signInAttackHeldBusy - 1 {
+		refused()
+	}
+	e.A.mu.Lock()
+	before := e.A.signInAttackPublic
+	e.A.mu.Unlock()
+	if before.heldBusy != signInAttackHeldBusy-1 || before.busy != 0 || before.failures != 0 || before.trips != 0 {
+		t.Fatalf("before the threshold: held %d busy %d failures %d trips %d", before.heldBusy, before.busy, before.failures, before.trips)
+	}
+	mustNotContain(t, e.body("GET", "/login", randomToken(), nil, 200), "captcha-image")
+	if n := signalNotices(e, adminID); n != 0 {
+		t.Fatalf("%d notifications before the threshold", n)
+	}
+	if strings.Contains(logs.String(), "sign-in attack signal on") {
+		t.Fatalf("logged before the threshold:\n%s", logs.String())
+	}
+
+	refused()
+	if !e.A.signInAttackOn(context.Background()) {
+		t.Fatal("the threshold did not turn the signal on")
+	}
+	mustContain(t, html.UnescapeString(e.body("GET", "/login", randomToken(), nil, 200)), "captcha-image", attackImageCopy)
+	if n := signalNotices(e, adminID); n != 1 {
+		t.Fatalf("%d notifications at the threshold", n)
+	}
+	line := logs.String()
+	if !strings.Contains(line, "sign-in attack signal on private_ingress=false route=registration_held_slot") {
+		t.Fatalf("no log line naming the route:\n%s", line)
+	}
+	if strings.Contains(line, "held_victim") || strings.Contains(line, "127.0.0.1") {
+		t.Fatalf("the log line names someone:\n%s", line)
+	}
+	e.A.mu.Lock()
+	after := e.A.signInAttackPublic
+	e.A.mu.Unlock()
+	if after.trips != 1 || after.busy != 0 || after.failures != 0 {
+		t.Fatalf("after the threshold: trips %d busy %d failures %d", after.trips, after.busy, after.failures)
+	}
+}
+
+func signalNotices(e *testEnv, adminID string) int {
+	return agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE 'Sign-in attack signal on%'", adminID)
+}
+
+// The window and threshold of that count, and that the two counts of refused sign-ins do not add up.
+func TestRegistrationHeldSlotCountStaysItsOwn(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	if signInAttackHeldBusy != 30 {
+		t.Fatal("the stated threshold changed: update the operator guide and the /admin/security copy with it")
+	}
+	var s signInAttack
+	for range signInAttackHeldBusy - 1 {
+		if s.noteHeldBusy(now) {
+			t.Fatal("on too early")
+		}
+	}
+	for range signInAttackBusy - 1 {
+		if s.noteBusy(now) {
+			t.Fatal("the held count fed the ordinary one")
+		}
+	}
+	if s.active(now) {
+		t.Fatal("the two counts added up")
+	}
+	later := now.Add(signInAttackBusyWindow)
+	if s.noteHeldBusy(later) || s.active(later) || s.heldBusy != 1 {
+		t.Fatalf("refusals from an ended window still counted: %+v", s)
+	}
+	if v := s.view(later.Add(signInAttackBusyWindow)); v.HeldBusy != 0 {
+		t.Fatalf("an ended window is still shown: %d", v.HeldBusy)
+	}
+	var r signInAttack
+	for range signInAttackHeldBusy * 2 {
+		r.noteRegisterBusy(now)
+	}
+	if r.active(now) || r.trips != 0 {
+		t.Fatal("refused registrations turned the signal on")
+	}
+	if v := r.view(now); v.RegisterBusy != signInAttackHeldBusy*2 || v.HeldBusy != 0 || v.Busy != 0 {
+		t.Fatalf("registration count: %+v", v)
+	}
+	if v := r.view(now.Add(signInAttackBusyWindow)); v.RegisterBusy != 0 {
+		t.Fatalf("an ended window is still shown: %d", v.RegisterBusy)
+	}
+}
+
+// The private ingress keeps its behaviour: its slots are its own, so a registration held on the public listener changes
+// nothing there, and its refusals trip its own signal at the ordinary threshold.
+func TestRegistrationHeldSlotLeavesPrivateIngressAlone(t *testing.T) {
+	e := newTestApp(t)
+	e.A.adminSocket = "/run/market-admin/http.sock"
+	e.user("held_private", "buyer")
+	setCaptchaMode(e, captchaModeUnderAttack)
+	defer holdSlots(t, registerWork)()
+	defer holdSlots(t, adminPasswordWork)()
+	for i := range signInAttackBusy {
+		if w := ingressDo(e, true, "POST", "/login", randomToken(), signInForm("held_private", testPassword)); w.Code != 503 {
+			t.Fatalf("private refusal %d: %d", i, w.Code)
+		}
+	}
+	mustContain(t, ingressDo(e, true, "GET", "/login", randomToken(), nil).Body.String(), "captcha-image")
+	mustNotContain(t, ingressDo(e, false, "GET", "/login", randomToken(), nil).Body.String(), "captcha-image")
+	e.A.mu.Lock()
+	defer e.A.mu.Unlock()
+	if e.A.signInAttackPrivate.heldBusy != 0 || e.A.signInAttackPublic.heldBusy != 0 {
+		t.Fatalf("the held count moved: private %d public %d", e.A.signInAttackPrivate.heldBusy, e.A.signInAttackPublic.heldBusy)
+	}
+}
+
+// A registration flood with no sign-in attempt puts no image on sign-in (SEC725-2's rule stays), however long it runs:
+// no refused registration counts toward the signal. It is counted, for the panel.
+func TestRegistrationOnlyFloodShowsNoSignInImage(t *testing.T) {
+	e := newTestApp(t)
+	e.user("regonly_install", "buyer")
+	adminID, _ := e.user("regonly_admin", "admin")
+	setCaptchaMode(e, captchaModeUnderAttack)
+	defer holdSlots(t, registerWork)()
+	defer holdSlots(t, passwordWork)()
+	session := randomToken()
+	for i := range signInAttackHeldBusy + 1 {
+		id := e.captcha("/register", session)
+		w := e.do("POST", "/register", session, signInForm(fmt.Sprintf("regonly_%d", i), testPassword, "captcha_id", id, "captcha", e.A.captchaTextChallenge(id).Answers[0]))
+		if w.Code != 503 || !strings.Contains(w.Body.String(), "Registration is busy") {
+			t.Fatalf("registration %d with no slot: %d", i, w.Code)
+		}
+	}
+	mustNotContain(t, e.body("GET", "/login", randomToken(), nil, 200), "captcha-image")
+	if n := signalNotices(e, adminID); n != 0 {
+		t.Fatalf("%d notifications", n)
+	}
+	e.A.mu.Lock()
+	defer e.A.mu.Unlock()
+	s := e.A.signInAttackPublic
+	if s.trips != 0 || s.heldBusy != 0 || s.busy != 0 || s.registerBusy != signInAttackHeldBusy+1 {
+		t.Fatalf("trips %d held %d busy %d registrations %d", s.trips, s.heldBusy, s.busy, s.registerBusy)
+	}
+}
+
+// /admin/security shows both counts, labelled as what they count, after a reload, whichever slot refused the
+// registration, while the signal is off and while it is on; a reload moves neither. Only an administrator reads them.
+func TestAdminSecurityShowsBusyCounts(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("counts_admin", "admin")
+	_, buyer := e.user("counts_buyer", "buyer")
+	e.check(e.do("GET", "/admin/security", buyer, nil), 403)
+	setCaptchaMode(e, captchaModeUnderAttack)
+	page := func() string { return html.UnescapeString(e.body("GET", "/admin/security", admin, nil, 200)) }
+	counts := func(signIns, registrations int) string {
+		return fmt.Sprintf("%d of %d sign-ins refused while a registration held a password slot, and %d registrations refused because no slot was free.", signIns, signInAttackHeldBusy, registrations)
+	}
+	mustContain(t, page(), counts(0, 0))
+
+	session := randomToken()
+	register := func(handle string) {
+		t.Helper()
+		id := e.captcha("/register", session)
+		w := e.do("POST", "/register", session, signInForm(handle, testPassword, "captcha_id", id, "captcha", e.A.captchaTextChallenge(id).Answers[0]))
+		if w.Code != 503 || !strings.Contains(w.Body.String(), "Registration is busy") {
+			t.Fatalf("registration with no slot: %d", w.Code)
+		}
+	}
+	releasePassword := holdSlots(t, passwordWork)
+	defer releasePassword()
+	register("counts_no_password_slot") // the registration slot is free; every password slot is not
+	releaseRegister := holdSlots(t, registerWork)
+	defer releaseRegister()
+	register("counts_no_register_slot")
+	for range 3 {
+		if w := e.do("POST", "/login", randomToken(), signInForm("counts_buyer", testPassword)); w.Code != 503 {
+			t.Fatalf("sign-in with no slot: %d", w.Code)
+		}
+	}
+	releaseRegister()
+	releasePassword()
+	mustContain(t, page(), counts(3, 2))
+	mustContain(t, page(), counts(3, 2)) // after a reload
+
+	// The signal's own line hides its counts while it is on; these stay, since the registrations may still be going on.
+	tripSignInAttack(context.Background(), e.A)
+	mustContain(t, page(), "Attack signal: on.", counts(3, 2))
+}
+
+// SEC102-2: a registration that can only be refused for its missing key is refused before the human check and the slot,
+// so it spends no bcrypt, no question and no slot: with every slot held it still gets its own answer. A registration
+// with the same question and a key then succeeds.
+func TestRegisterWithoutRequiredKeyTakesNoSlot(t *testing.T) {
+	e := newTestApp(t)
+	e.user("nokey_install", "buyer")
+	setCaptchaMode(e, captchaModeUnderAttack)
+	hashes := countRegistrationHashes(t)
+	const keyRequired = "A usable PGP public key is required"
+	_, pub := testPGPKey(t, "nokey_vendor")
+	session := randomToken()
+	id := e.captcha("/register", session)
+	answer := e.A.captchaTextChallenge(id).Answers[0]
+	users := agInt(e, "SELECT count(*) FROM users")
+	refused := func(handle string, extra ...string) {
+		t.Helper()
+		form := signInForm(handle, testPassword, append([]string{"captcha_id", id, "captcha", answer}, extra...)...)
+		agExpect(e, "/register", session, form, 400, keyRequired)
+	}
+	unspent := func() {
+		t.Helper()
+		if n := agInt(e, "SELECT count(*) FROM captcha_spent"); n != 0 {
+			t.Fatalf("%d questions spent", n)
+		}
+		if n := agInt(e, "SELECT count(*) FROM users"); n != users || hashes.Load() != 0 {
+			t.Fatalf("%d accounts (was %d), %d hashes", n, users, hashes.Load())
+		}
+		e.A.mu.Lock()
+		defer e.A.mu.Unlock()
+		if s := e.A.signInAttackPublic; s.registerBusy != 0 {
+			t.Fatalf("refused for want of a slot %d times", s.registerBusy)
+		}
+	}
+	releaseRegister, releasePassword := holdSlots(t, registerWork), holdSlots(t, passwordWork)
+	defer releaseRegister()
+	defer releasePassword()
+	refused("nokey_vendor", "account_type", "vendor")
+	refused("nokey_vendor", "account_type", "vendor", "pgp", " \n ") // what the transaction's check reads as no key
+	unspent()
+	agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+	refused("nokey_strict")
+	unspent()
+	agExec(e, "UPDATE settings SET value='true' WHERE key=$1", settingAllowLoginWithoutPGP)
+	// A buyer on a market that requires no key still waits for a slot like any other registration.
+	buyerSession := randomToken()
+	buyerID := e.captcha("/register", buyerSession)
+	agExpect(e, "/register", buyerSession, signInForm("nokey_buyer", testPassword, "captcha_id", buyerID, "captcha", e.A.captchaTextChallenge(buyerID).Answers[0]), 503, "Registration is busy")
+	releaseRegister()
+	releasePassword()
+	w := e.do("POST", "/register", session, signInForm("nokey_vendor", testPassword, "captcha_id", id, "captcha", answer, "account_type", "vendor", "pgp", pub))
+	e.check(w, 303)
+	if n := agInt(e, "SELECT count(*) FROM users WHERE handle='nokey_vendor'"); n != 1 || hashes.Load() != 1 {
+		t.Fatalf("the unspent question did not register: %d accounts, %d hashes", n, hashes.Load())
+	}
+	if len(registerWork) != 0 || len(passwordWork) != 0 {
+		t.Fatalf("slots leaked: register %d password %d", len(registerWork), len(passwordWork))
+	}
+}
+
+// The preflight reads the policy without a lock: a market that turns strict after it, while the registration hashes, is
+// still refused by the check under the lock in the transaction, and no account is made.
+func TestRegisterKeyCheckStillHoldsInTheTransaction(t *testing.T) {
+	e := newTestApp(t)
+	e.user("race_install", "buyer")
+	setCaptchaMode(e, captchaModeOff)
+	orig := generateAccountHash
+	generateAccountHash = func(password []byte, cost int) ([]byte, error) {
+		agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+		return orig(password, cost)
+	}
+	t.Cleanup(func() { generateAccountHash = orig })
+	agExpect(e, "/register", randomToken(), signInForm("race_strict", testPassword), 400, "A usable PGP public key is required")
+	if n := agInt(e, "SELECT count(*) FROM users WHERE handle='race_strict'"); n != 0 {
+		t.Fatalf("%d accounts", n)
+	}
+	if len(registerWork) != 0 || len(passwordWork) != 0 {
+		t.Fatalf("slots leaked: register %d password %d", len(registerWork), len(passwordWork))
+	}
+}
+
+// countRegistrationHashes counts the password hashes /register and /setup generate, as countSignInPasswordChecks counts
+// sign-in's checks.
+func countRegistrationHashes(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var n atomic.Int64
+	orig := generateAccountHash
+	generateAccountHash = func(password []byte, cost int) ([]byte, error) {
+		n.Add(1)
+		return orig(password, cost)
+	}
+	t.Cleanup(func() { generateAccountHash = orig })
+	return &n
 }
 
 // The public listener, with every header that claims the private onion, cannot put the image on the private
@@ -356,7 +652,7 @@ func TestAdminSeesAndChoosesTheHumanCheckMode(t *testing.T) {
 		"The question on registration stops only simple bots",
 		"about 100 wrong passwords, or about 14 simultaneous sign-in posts, every 30 minutes hold the image on", // SEC725-5
 		"can test as many handles as they like", "no budget limits that",
-		"A registration in progress can keep a refused password check from counting toward the signal.") // SEC725-3
+		"A sign-in refused while a registration holds a password slot counts apart from those: 30 in one minute also turn the signal on. Refused registrations alone never do.") // SEC102-1
 	mustNotContain(t, idle, attackAlert, captchaWarningMark, "on the private administrator onion: off")
 	mustNotContain(t, e.body("GET", "/admin", admin, nil, 200), overviewTag)
 

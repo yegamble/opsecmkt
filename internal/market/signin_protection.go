@@ -44,7 +44,11 @@ func signInProtectionLoader(_ context.Context, a *App, _ *http.Request, d *PageD
 // no per-client signal, and A-132's per-handle trigger was refused (D-24), since every unknown handle is a free bcrypt.
 // It reads the two things the A-151 limiter work measures: passwords that failed bcrypt (signInAttackFailures in a
 // fixed window) and sign-ins refused because every password slot was taken (signInAttackBusy in a fixed window: real
-// sign-ins are failing). A malformed handle, a wrong CAPTCHA, a paused handle's refusal and a wrong rescue code cost
+// sign-ins are failing). A sign-in refused while a registration holds a slot counts apart (SEC102-1): the image stops no
+// registration, but a right password refunds its budget and fails nothing, so no other count would see these people kept
+// out. signInAttackHeldBusy of them in the same window, more because a registration flood alone can refuse some, trip the
+// same signal. A refused registration with no sign-in attempt never does; it is only counted, for /admin/security. A
+// malformed handle, a wrong CAPTCHA, a paused handle's refusal and a wrong rescue code cost
 // the server no bcrypt and do not count. Either threshold holds the image on for signInAttackHold; only another trip
 // extends it, and while it is on each failure needs a solved image. So the image never stays on without new evidence,
 // but about 100 wrong passwords every 30 minutes, or about 14 simultaneous sign-in posts (the 4 slots and 10 refusals),
@@ -59,6 +63,7 @@ const (
 	signInAttackFailureWindow = 10 * time.Minute
 	signInAttackBusy          = 10
 	signInAttackBusyWindow    = time.Minute
+	signInAttackHeldBusy      = 30 // in signInAttackBusyWindow
 	signInAttackHold          = 30 * time.Minute
 	signInAttackTime          = "2006-01-02 15:04 UTC"
 )
@@ -68,6 +73,9 @@ type signInAttack struct {
 	failuresFrom, busyFrom time.Time
 	since, until           time.Time
 	trips                  int
+	// Per signInAttackBusyWindow: sign-ins refused while a registration held a slot, and registrations refused for want of one.
+	heldBusy, registerBusy int
+	heldFrom, registerFrom time.Time
 }
 
 func (s *signInAttack) active(now time.Time) bool { return now.Before(s.until) }
@@ -109,9 +117,31 @@ func (s *signInAttack) noteBusy(now time.Time) bool {
 	return s.trip(now)
 }
 
+// noteHeldBusy counts one sign-in refused while a registration held a password slot and reports whether that turned the
+// signal on.
+func (s *signInAttack) noteHeldBusy(now time.Time) bool {
+	if now.Sub(s.heldFrom) >= signInAttackBusyWindow {
+		s.heldBusy, s.heldFrom = 0, now
+	}
+	s.heldBusy++
+	if s.heldBusy < signInAttackHeldBusy {
+		return false
+	}
+	s.heldBusy = 0
+	return s.trip(now)
+}
+
+// noteRegisterBusy counts one registration refused for want of a slot, for /admin/security alone: it never trips.
+func (s *signInAttack) noteRegisterBusy(now time.Time) {
+	if now.Sub(s.registerFrom) >= signInAttackBusyWindow {
+		s.registerBusy, s.registerFrom = 0, now
+	}
+	s.registerBusy++
+}
+
 func (s *signInAttack) view(now time.Time) SignInAttackView {
 	v := SignInAttackView{Active: s.active(now), Trips: s.trips, HoldPosts: signInAttackBusy + cap(passwordWork),
-		FailureLimit: signInAttackFailures, BusyLimit: signInAttackBusy, HoldMinutes: int(signInAttackHold / time.Minute)}
+		FailureLimit: signInAttackFailures, BusyLimit: signInAttackBusy, HeldBusyLimit: signInAttackHeldBusy, HoldMinutes: int(signInAttackHold / time.Minute)}
 	if v.Active {
 		v.Since, v.Until = s.since.UTC().Format(signInAttackTime), s.until.UTC().Format(signInAttackTime)
 	}
@@ -120,6 +150,12 @@ func (s *signInAttack) view(now time.Time) SignInAttackView {
 	}
 	if now.Sub(s.busyFrom) < signInAttackBusyWindow {
 		v.Busy = s.busy
+	}
+	if now.Sub(s.heldFrom) < signInAttackBusyWindow {
+		v.HeldBusy = s.heldBusy
+	}
+	if now.Sub(s.registerFrom) < signInAttackBusyWindow {
+		v.RegisterBusy = s.registerBusy
 	}
 	return v
 }
@@ -139,21 +175,33 @@ func (a *App) signInAttackOn(ctx context.Context) bool {
 }
 
 func (a *App) noteSignInFailure(ctx context.Context) {
-	a.noteSignInAttack(ctx, (*signInAttack).noteFailure)
+	a.noteSignInAttack(ctx, "failed_passwords", (*signInAttack).noteFailure)
 }
 
 func (a *App) noteSignInBusy(ctx context.Context) {
-	a.noteSignInAttack(ctx, (*signInAttack).noteBusy)
+	a.noteSignInAttack(ctx, "refused_sign_ins", (*signInAttack).noteBusy)
 }
 
-// noteSignInAttack counts through note and, when that turns the signal on, logs it and notifies the administrators,
-// naming no handle, account or client. An extension does neither, so that is at most once per hold.
-func (a *App) noteSignInAttack(ctx context.Context, note func(*signInAttack, time.Time) bool) {
+// noteSignInHeldBusy counts a sign-in refused while a registration held a password slot.
+func (a *App) noteSignInHeldBusy(ctx context.Context) {
+	a.noteSignInAttack(ctx, "registration_held_slot", (*signInAttack).noteHeldBusy)
+}
+
+// noteRegisterBusy counts a registration refused for want of a slot.
+func (a *App) noteRegisterBusy(ctx context.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.signInAttackFor(ctx).noteRegisterBusy(time.Now())
+}
+
+// noteSignInAttack counts through note and, when that turns the signal on, logs it with which count did and notifies the
+// administrators, naming no handle, account or client. An extension does neither, so that is at most once per hold.
+func (a *App) noteSignInAttack(ctx context.Context, route string, note func(*signInAttack, time.Time) bool) {
 	a.mu.Lock()
 	on := note(a.signInAttackFor(ctx), time.Now())
 	a.mu.Unlock()
 	if on {
-		log.Printf("sign-in attack signal on private_ingress=%t", privateAdminIngress(ctx))
+		log.Printf("sign-in attack signal on private_ingress=%t route=%s", privateAdminIngress(ctx), route)
 		a.notifySignInAttack(ctx)
 	}
 }

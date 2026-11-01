@@ -52,7 +52,9 @@ added, a simple pattern or a password containing the handle is refused on `/setu
 `-reset-admin-password`. Accounts that already have such a password still sign in, and nothing asks them to change it.
 `install.sh init --admin` checks only the length before it starts, so a weak password there is refused after the market
 is running, with the commands to finish. Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused
-one answers 503 "Registration is busy".
+one answers 503 "Registration is busy". Since SEC102, 30 sign-ins refused in one minute while a registration holds a slot also turn
+the attack signal on, `/admin/security` shows that count and the refused registrations, the signal's log line adds `route=`, and a
+vendor or strict registration without a PGP key is refused before the question and any slot.
 
 ## Finished XMPP receipts keep no address (migration 154, A-717)
 
