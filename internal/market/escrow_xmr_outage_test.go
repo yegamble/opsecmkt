@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"net/http/httptest"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // setLastDeadlineStep stores the time of the last deadline step, age before the database's now.
@@ -979,6 +982,9 @@ func TestAdminPaymentsDeadlineRecheck(t *testing.T) {
 	if s := section(); !strings.Contains(s, "after a restore from backup; it moved 0 order deadline(s).") {
 		t.Fatalf("after a restore's recheck:\n%s", s)
 	}
+	if !strings.Contains(logs.String(), recheckLogPrefix+": cause=restore moved=0\n") {
+		t.Fatalf("the log after a restore's recheck:\n%s", logs.String())
+	}
 	if rows := x.recheckRecords(); len(rows) != 2 || rows[1] != "-:Monero escrow deadline recheck (cause: restore): moved 0 order deadline(s)" {
 		t.Fatalf("the audit rows: %q", rows)
 	}
@@ -1009,5 +1015,19 @@ func TestAdminPaymentsDeadlineRecheckPreview(t *testing.T) {
 	a.ServeHTTP(w, httptest.NewRequest("GET", "/admin/payments", nil))
 	if w.Code != 200 || !containsAll(w.Body.String(), `id="xmr-deadline-recheck"`, "No deadline recheck is pending.", "No deadline recheck has been recorded.") {
 		t.Fatalf("preview: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// OPS105-N1: a connection lost after the command's first check is reported by class: pgconn's own text names the URL's user
+// and database.
+func TestRestoreGateRecheckRequestErrorIsClassOnly(t *testing.T) {
+	err := recheckRequestFailed(fmt.Errorf("exec: %w", &pgconn.ConnectError{Config: &pgconn.Config{User: "dsn_user_name", Database: "dsn_db_name", Host: "dsn.host.name"}}))
+	if !strings.Contains(err.Error(), "database statement failed (") {
+		t.Fatalf("connect error: %v", err)
+	}
+	for _, private := range []string{"dsn_user_name", "dsn_db_name", "dsn.host.name"} {
+		if strings.Contains(err.Error(), private) {
+			t.Fatalf("the error names %q: %v", private, err)
+		}
 	}
 }

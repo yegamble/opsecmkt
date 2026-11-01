@@ -192,7 +192,13 @@ class UpgradingAlpha2Test(unittest.TestCase):
         for name in ('UPGRADING.md', 'docs/operator-guide.md', 'docs/testnet-runbook.md'):
             flat = ' '.join((REPOSITORY / name).read_text().split())
             for want in ('docker compose run --rm --no-deps app -request-deadline-recheck',
-                         'DATABASE_URL_FILE=./private/database.url ./opsecmkt -request-deadline-recheck',
+                         'DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck',
+                         'for the database the installation uses now',
+                         '/srv/opsecmkt-inputs/database-rollback.url',
+                         'Do not use `DIR/secrets/database-url`',
+                         'A native development installation',
+                         'this command is not available there',
+                         'confirm on **Admin → Payments**',
                          'Repeat it within every 72 hours until ingress returns',
                          'It cannot undo a completion',
                          "A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended"
@@ -204,6 +210,12 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          'If it was off for longer than the threshold, the recheck runs on the first pass after it is on again'):
                 self.assertIn(want, flat, name)
             self.assertNotIn('The recheck runs on the first pass after it is on again', flat, name)
+            self.assertNotIn('./private/database.url ./opsecmkt -request-deadline-recheck', flat, name)
+        # OPS105-1: after a native rollback database.url still names the upgraded database.
+        rollback = ' '.join(UPGRADING[UPGRADING.index('### Rolling back a native installation'):
+                                      UPGRADING.index('## Native production encryption prerequisite')].split())
+        self.assertIn('Until you roll forward, `/srv/opsecmkt-inputs/database-rollback.url` is the file for the database the installation uses now', rollback)
+        self.assertIn('-request-deadline-recheck', rollback)
         self.assertIn('-request-deadline-recheck', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
 
 

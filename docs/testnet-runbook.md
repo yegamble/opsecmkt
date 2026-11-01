@@ -31,9 +31,11 @@ Run Compose commands from the deployment directory with its restored `.env`. Pre
 ```sh
 # Compose, with the bundled or an external database
 docker compose run --rm --no-deps app -request-deadline-recheck
-# Native executable with an external database (a protected URL file this host can read, with a host-readable CA path)
-DATABASE_URL_FILE=./private/database.url ./opsecmkt -request-deadline-recheck
+# Native production installation: the URL file for the database the installation uses now
+DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck
 ```
+
+On a native installation, name the host-readable URL file of the [production layout](install/production.md) for the database the installation uses now. After a [native rollback](../UPGRADING.md#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request.
 
 The command works with the app running and writes the request and nothing else. It prints whether the recheck is now pending or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. Repeat it within every 72 hours until ingress returns. It cannot undo a completion: an order already completed stays completed, its release stands, and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many order deadlines it moved.
 

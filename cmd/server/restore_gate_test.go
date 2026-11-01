@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"net/url"
 	"opsecmkt/internal/market"
 	"os"
 	"path/filepath"
@@ -352,7 +353,7 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	exec("DELETE FROM settings WHERE key=$1", key)
 	before := settingsNow()
 	stdout, stderr, code := runServer(t, nil, "-request-deadline-recheck")
-	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || !strings.Contains(stdout, "cannot undo a completion") || !strings.Contains(stdout, "within every 72 hours") {
+	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || !strings.Contains(stdout, "cannot undo a completion") || !strings.Contains(stdout, "within every 72 hours") || !strings.Contains(stdout, "Confirm on Admin > Payments") {
 		t.Fatalf("none pending: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	noURL(stdout + stderr)
@@ -417,4 +418,25 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 		t.Fatalf("from the file: code %d stdout %q stderr %q value %q", code, stdout, stderr, value())
 	}
 	noURL(stdout + stderr)
+}
+
+// OPS105-N1: a failed statement is reported by class, naming no user, database or host of the URL. A search path with no
+// settings table makes the statement fail after the connection check succeeded.
+func TestRestoreGateRequestRecheckErrorIsClassOnly(t *testing.T) {
+	u, err := url.Parse(cliSchema(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", "no_such_schema")
+	u.RawQuery = q.Encode()
+	stdout, stderr, code := runServer(t, []string{"DATABASE_URL=" + u.String()}, "-request-deadline-recheck")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "database statement failed (42P01)") {
+		t.Fatalf("code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	for _, private := range []string{u.User.Username(), strings.TrimPrefix(u.Path, "/"), u.Hostname(), "settings", "does not exist"} {
+		if strings.Contains(stderr, private) {
+			t.Fatalf("the error names %q: %q", private, stderr)
+		}
+	}
 }

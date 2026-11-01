@@ -571,19 +571,19 @@ type xmrLastRecheck struct {
 func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 	r, err := db.ExecContext(ctx, "INSERT INTO settings(key,value) SELECT $1,$2 WHERE NOT "+restoreGateSQL+" ON CONFLICT (key) DO NOTHING", xmrReleaseRecheckKey, xmrRecheckOutage)
 	if err != nil {
-		return "", err
+		return "", recheckRequestFailed(err)
 	}
 	const next = " The Monero escrow watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. "
-	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns. Admin > Payments shows it pending and when it last ran."
+	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns. Confirm on Admin > Payments that it shows pending or has just run: this command writes only to the database its URL names."
 	if n, err := r.RowsAffected(); err != nil {
-		return "", err
+		return "", recheckRequestFailed(err)
 	} else if n > 0 {
 		return "Deadline recheck now pending (outage)." + next + limits, nil
 	}
 	var gate bool
 	var value sql.NullString
 	if err = db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",(SELECT value FROM settings WHERE key=$1)", xmrReleaseRecheckKey).Scan(&gate, &value); err != nil {
-		return "", err
+		return "", recheckRequestFailed(err)
 	}
 	switch {
 	case gate:
@@ -594,6 +594,12 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 		return "Deadline recheck already pending (outage); nothing was changed." + next + limits, nil
 	}
 	return "A restore's deadline recheck is already pending; nothing was changed. Its notices say a restore, as they must." + next + limits, nil
+}
+
+// recheckRequestFailed is RequestDeadlineRecheck's failed statement, by class only: pgconn's own text names the URL's user,
+// database and host. It does not say nothing changed, since a connection lost at the commit cannot tell; a repeat is safe.
+func recheckRequestFailed(err error) error {
+	return errors.New("database statement failed (" + errorCause(err) + "); check DATABASE_URL and service health, then run this again")
 }
 
 // XMRDeadlineRecheckView is Admin → Payments' read-only line on the recheck (step 4 of the file comment): whether one is
