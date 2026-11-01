@@ -171,7 +171,7 @@ func bannedSellerPolicy(ctx context.Context, q rowQuerier, userID string) (strin
 	if err != nil {
 		return "", err
 	}
-	return "While it is closed, payments for its orders are held: the market sends nothing to this account, and no other address is ever paid. After " + strconv.Itoa(days) + " days held, an administrator may refund the buyer instead. ", nil
+	return "While it is closed, payments to this account not yet sent are held, with no other address paid in their place, and after " + strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. ", nil
 }
 
 // staffContactNeedsAccount: a contact that is exactly a handle can be messaged only from an account, so it is no

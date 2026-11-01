@@ -256,10 +256,11 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		if deposits {
-			if c.Form.Get("amount_seen") == "" {
-				return actionResult{}, fail(409, "A deposit arrived for this order after the page was shown. Reload it to review the refund cancelling queues. Nothing was changed.")
-			}
+		stated := c.Form.Get("amount_seen") != ""
+		if deposits && !stated {
+			return actionResult{}, fail(409, "A deposit arrived for this order after the page was shown. Reload it to review the refund cancelling queues. Nothing was changed.")
+		}
+		if stated { // BE103V-1: with no deposit left too, so a form that stated one is refused (checkPayoutSeen)
 			if seen, err = payoutConfirmation(c); err != nil {
 				return actionResult{}, err
 			}
