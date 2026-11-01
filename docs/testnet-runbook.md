@@ -404,7 +404,7 @@ Expect, after the first watcher pass: O still **Delivered**; one order note, "Di
 DATABASE_URL_FILE=/srv/opsecmkt-inputs-stagenet/database.url /usr/local/bin/opsecmkt -request-deadline-recheck
 ```
 
-Over the private administrator onion, which stays up, check that `/admin/payments` shows the request, and copy what it says into the private record. Expect O's window, which now ends within 72 hours, to move once more on the next watcher pass: exactly one more note and one more notice to each party, and nothing completed. Keep ingress down for the rest of the hour, start Tor again, and read those notices as the buyer and as the vendor through the storefront. Finish O with **Confirm receipt** and a claim.
+Over the private administrator onion, which stays up, check that `/admin/payments` shows the request (A-741), and copy what it says into the private record. Expect O's window, which now ends within 72 hours, to move once more on the next watcher pass: exactly one more note and one more notice to each party, and nothing completed. Keep ingress down for the rest of the hour, start Tor again, and read those notices as the buyer and as the vendor through the storefront. Finish O with **Confirm receipt** and a claim.
 
 **Record:** a row each in verification.md with tier "deployed instance on public stagenet", stating the stop and start times in UTC, the threshold in force, the note and notice counts, the deadline before and after, and what `/admin/payments` said. Omit order IDs, handles and onions. A failure also goes in the [deployment notes](install/deployment-notes.md#issues-during-the-fresh-reset) as an issue, kept, not retried away.
 
