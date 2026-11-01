@@ -126,6 +126,13 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 	}
 	section := deskSection(t, dash, "vendor-waiting")
 	mustContain(t, section, "Waiting for you")
+	// A-721: the section comes first, above the tiles and any number of listings, and its table scrolls as a named Tab stop.
+	w, tiles, listings := strings.Index(dash, `id="vendor-waiting"`), strings.Index(dash, `class="stats"`), strings.Index(dash, `id="publish-listing"`)
+	if tiles < 0 || listings < 0 || w > tiles || w > listings {
+		t.Fatalf("the Waiting for you section is not above the tiles and the listings:\n%s", dash)
+	}
+	mustContain(t, section, `class="table-wrap" tabindex="0" role="region" aria-label="Orders waiting for you"`)
+	mustContain(t, deskSection(t, dash, "vendor-orders"), `class="table-wrap" tabindex="0" role="region" aria-labelledby="vendor-orders"`)
 	// The disputes tile says who decides: not the vendor.
 	mustContain(t, dash, "Open disputes</div>\n<strong>2</strong>\n<span>Disputes on your orders awaiting an administrator's decision</span>")
 	mustNotContain(t, dash, "needing a dispute decision")
@@ -136,7 +143,7 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 		completed: {"Claim your payment", `href="/order?id=` + completed + `#xmr-escrow-claim"`},
 		decided:   {"Claim your payment"},
 		paid:      {"Mark shipped", "Ship by " + shipBy(paid)},
-		manual:    {"Fulfil this order", "Deliver by " + shipBy(manual)},
+		manual:    {"Fulfil this order", `href="/order?id=` + manual + `#order-next"`, "Deliver by " + shipBy(manual)},
 		disputed:  {"Reply to dispute", `href="/order?id=` + disputed + `#order-dispute"`},
 	} {
 		row := deskRow(section, order)
@@ -149,6 +156,13 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 			}
 		}
 	}
+	// A-721: each link lands on what it names; the vendor shipping a paid order is one link from the correspondence
+	// where the buyer's encrypted address arrives.
+	mustContain(t, x.page("/order?id="+manual, x.vendorSess), `id="order-next"`)
+	paidPage := x.page("/order?id="+paid, x.vendorSess)
+	shipSection := paidPage[strings.Index(paidPage, `id="xmr-escrow-ship"`):]
+	mustContain(t, shipSection[:strings.Index(shipSection, "</section>")], `href="#order-messages"`)
+	mustContain(t, paidPage, `id="order-messages"`)
 	for _, o := range []string{shippedDecided, refunded, confirmed, vendorOpened} {
 		if row := deskRow(section, o); row != "" {
 			t.Errorf("the section lists %s (%s):\n%s", shortID(o), x.state(o), row)

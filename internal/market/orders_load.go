@@ -851,7 +851,7 @@ func vendorWaitingFor(o Order) VendorWaiting {
 	case o.State == statePaid && o.Kind == "physical":
 		return VendorWaiting{Order: o, Action: "Mark shipped", Anchor: "xmr-escrow-ship"}
 	case o.State == statePaid:
-		return VendorWaiting{Order: o, Action: "Fulfil this order"}
+		return VendorWaiting{Order: o, Action: "Fulfil this order", Anchor: "order-next"}
 	}
 	return VendorWaiting{Order: o, Action: "Claim your payment", Anchor: "xmr-escrow-claim"}
 }
@@ -1107,7 +1107,8 @@ func previewVendorOrders(d *PageData) {
 	o.ID, o.Buyer, o.BuyerID, o.Vendor, o.VendorID = previewIncomingID, "sample_buyer", "sample-buyer", d.User.Handle, d.User.ID
 	o.State, o.Status = statePaid, stateLabel(statePaid)
 	d.IncomingOrders, d.NeedsAction = []Order{o}, 1
-	d.VendorWaiting = []VendorWaiting{vendorWaitingFor(o)} // the paid order waits for the vendor (A-710)
+	d.VendorWaiting = []VendorWaiting{vendorWaitingFor(o)}                                    // the paid order waits for the vendor (A-710)
+	d.VendorWaiting[0].ShipBy, d.VendorWaiting[0].ShipByPassed = "2026-01-31 12:00 UTC", true // the longest row (A-721)
 }
 
 func previewDisputes(d *PageData) {
