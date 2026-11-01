@@ -353,7 +353,9 @@ func TestAdminSeesAndChoosesTheHumanCheckMode(t *testing.T) {
 	idle := page()
 	mustContain(t, idle, checked, "Only under attack", "Always the image",
 		"Attack signal: off.", "100 failed passwords", "10 refused password checks", "30 minutes",
-		"The question on registration stops only simple bots")
+		"The question on registration stops only simple bots",
+		"about 100 wrong passwords, or about 14 simultaneous sign-in posts, every 30 minutes hold the image on", // SEC725-5
+		"can test as many handles as they like", "no budget limits that")                                        // SEC725-3
 	mustNotContain(t, idle, attackAlert, captchaWarningMark, "on the private administrator onion: off")
 	mustNotContain(t, e.body("GET", "/admin", admin, nil, 200), overviewTag)
 
@@ -361,6 +363,7 @@ func TestAdminSeesAndChoosesTheHumanCheckMode(t *testing.T) {
 	tripSignInAttack(context.Background(), e.A)
 	on := page()
 	mustContain(t, on, attackAlert, "Everyone signing in must read the image", "Someone may be holding this on deliberately",
+		"about 100 wrong passwords, or about 14 simultaneous sign-in posts, every 30 minutes are enough",
 		"Turned on 1 time since this process started", captchaWarningMark, captchaWarningUnset)
 	e.A.mu.Lock()
 	since, until := e.A.signInAttackPublic.since.UTC().Format(signInAttackTime), e.A.signInAttackPublic.until.UTC().Format(signInAttackTime)

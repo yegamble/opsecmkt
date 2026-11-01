@@ -417,7 +417,7 @@ func TestPasswordWorkBusyReturns503(t *testing.T) {
 	t.Cleanup(drain)
 	creds := url.Values{"handle": {"busy_user"}, "password": {testPassword}}
 	agExpect(e, "/login", randomToken(), creds, 503, "Authentication is busy")
-	agExpect(e, "/register", randomToken(), url.Values{"handle": {"busy_new"}, "password": {testPassword}}, 503, "Authentication is busy")
+	agExpect(e, "/register", randomToken(), url.Values{"handle": {"busy_new"}, "password": {testPassword}}, 503, "Registration is busy")
 	agExpect(e, "/setup", randomToken(), url.Values{"handle": {"busy_admin"}, "password": {testPassword}, "token": {testSetupToken}}, 503, "Authentication is busy")
 	agExpect(e, "/pgp/2fa", s, url.Values{"enable": {"0"}, "password": {testPassword}}, 503, "Authentication is busy")
 	// Refused before any per-handle budget is spent and before anything is written.
@@ -1263,4 +1263,66 @@ func TestChallengeEnrolledErrorIsServerError(t *testing.T) {
 	if agUserSessions(e, id) != 1 || agInt(e, "SELECT count(*) FROM pending_logins WHERE token_hash=$1", digest(pc.Value)) != 1 {
 		t.Fatal("failed enrolment check signed in or consumed the pending login")
 	}
+}
+
+// SEC725-1: a weak new password is refused with advice, wherever it is set; the rule table is TestNewPasswordRule.
+var refusedRegistrationPasswords = []string{"password1234", "aaaaaaaaaaaa", "123456789012", "qwertyuiopas"}
+
+func TestRegisterRefusesCommonPasswords(t *testing.T) {
+	e := newTestApp(t)
+	e.user("weak_install", "buyer") // any account: with none, every page redirects to /setup
+	checks := countSignInPasswordChecks(t)
+	for _, password := range append(refusedRegistrationPasswords, "reg_handle-long-enough") {
+		token := randomToken()
+		w := e.do("POST", "/register", token, url.Values{"handle": {"reg_handle"}, "password": {password}})
+		b := w.Body.String()
+		if w.Code != 400 || !strings.Contains(b, passwordAdvice) || strings.Contains(b, password) {
+			t.Fatalf("register with %q: %d\n%s", password, w.Code, b)
+		}
+		if n := agInt(e, "SELECT count(*) FROM users WHERE lower(handle)='reg_handle'"); n != 0 {
+			t.Fatalf("%q made %d rows", password, n)
+		}
+		if limiterCount(e, "register:reg_handle") != 0 {
+			t.Fatalf("%q spent the handle's registration budget", password)
+		}
+		if !strings.Contains(b, `name="handle" value="reg_handle"`) {
+			t.Fatalf("the refused form lost the handle:\n%s", b)
+		}
+	}
+	if checks.Load() != 0 {
+		t.Fatal("a refused new password ran bcrypt")
+	}
+	// A refused password leaves the human check's answer unspent, so the person is not asked to solve it for nothing.
+	setCaptchaMode(e, captchaModeAlways)
+	session := randomToken()
+	id := e.captcha("/register", session)
+	if w := e.do("POST", "/register", session, url.Values{"handle": {"reg_handle"}, "password": {"password1234"}, "captcha_id": {id}, "captcha": {"WRONG1"}}); w.Code != 400 || !strings.Contains(w.Body.String(), passwordAdvice) {
+		t.Fatalf("refused password with a check: %d", w.Code)
+	}
+	if n := agInt(e, "SELECT count(*) FROM captcha_spent WHERE id=$1", id); n != 0 {
+		t.Fatal("a refused password spent the challenge")
+	}
+	setCaptchaMode(e, captchaModeOff)
+
+	w := e.do("POST", "/register", randomToken(), url.Values{"handle": {"reg_handle"}, "password": {"lantern orbit velvet quarry"}})
+	e.check(w, 303)
+	e.session(w)
+}
+
+func TestPasswordChangeRefusesCommonPasswords(t *testing.T) {
+	e := newTestApp(t)
+	id, token := e.user("pw_changer", "buyer")
+	before := passwordHash(e, id)
+	for _, next := range append(refusedRegistrationPasswords, "pw_changer-long-enough") {
+		w := e.do("POST", "/account/password", token, url.Values{"password": {testPassword}, "new_password": {next}, "new_password_confirm": {next}})
+		if w.Code != 400 || !strings.Contains(w.Body.String(), passwordAdvice) {
+			t.Fatalf("change to %q: %d", next, w.Code)
+		}
+		if passwordHash(e, id) != before {
+			t.Fatalf("%q changed the password", next)
+		}
+	}
+	const next = "lantern orbit velvet quarry"
+	w := e.do("POST", "/account/password", token, url.Values{"password": {testPassword}, "new_password": {next}, "new_password_confirm": {next}})
+	e.check(w, 303)
 }

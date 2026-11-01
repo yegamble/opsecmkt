@@ -3,7 +3,8 @@
 -- image on both forms, and 'false' stays off. Migration 010 seeded 'true', so 'true' alone cannot tell an operator's
 -- choice from the seed; a 'Turned on CAPTCHA' audit row can, so such a market stays on 'true'. Every other 'true' moves
 -- to the new default. An operator who kept the seed on purpose, or whose audit row has aged out of retention, chooses
--- again on /admin/security (UPGRADING.md). An earlier binary reads 'under_attack' as the image required.
+-- again on /admin/security (UPGRADING.md). An earlier binary refuses to start on this schema; rolling back restores the
+-- pre-upgrade backup, where the value is what it was (UPGRADING.md, Rolling back).
 UPDATE settings SET value='under_attack'
  WHERE key='captcha_required' AND value='true'
    AND NOT EXISTS (SELECT 1 FROM audit_events WHERE action LIKE 'Turned on CAPTCHA%');

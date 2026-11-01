@@ -134,7 +134,7 @@ test('with images blocked, a person registers by the written question and signs 
   const mode = (value: string) => execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
     `UPDATE settings SET value='${value}' WHERE key='captcha_required'`]);
   const handle = uniqueHandle('blocked');
-  const password = `${handle}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const images: string[] = [];
   await context.route('**/*', route => {
@@ -175,7 +175,7 @@ test('with images blocked, a person registers by the written question and signs 
 // and through the TOTP challenge, with JavaScript disabled.
 test('a refused registration keeps the pasted PGP key and the handle, never the password', async ({ browser, baseURL }) => {
   const taken = uniqueHandle('taken');
-  const password = `${taken}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const key = '-----BEGIN PGP PUBLIC KEY BLOCK-----\nnot really a key <b>\n-----END PGP PUBLIC KEY BLOCK-----';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const page = await context.newPage();
@@ -200,7 +200,7 @@ test('a refused registration keeps the pasted PGP key and the handle, never the 
 
 test('anonymous checkout returns to the checkout after registering and after the TOTP challenge', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('next');
-  const passphrase = `${handle}-long-enough`;
+  const passphrase = 'lantern-orbit-velvet-quarry';
   const anonymous = async () => {
     const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 900 } });
     return context.newPage();
@@ -257,7 +257,7 @@ test('anonymous checkout returns to the checkout after registering and after the
 // next; a wrong code moves the sign-in on to /challenge, which says the code was not accepted. No JavaScript.
 test('sign in with the authenticator code on the sign-in page in one step', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('onestep');
-  const password = `${handle}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto('/register');
@@ -300,7 +300,7 @@ test('sign in with the authenticator code on the sign-in page in one step', asyn
 // blank code shows why sign-in is paused. No JavaScript.
 test('a paused handle signs in with the password and authenticator code together', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('rescue');
-  const password = `${handle}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto('/register');

@@ -32,6 +32,7 @@ func signInProtectionLoader(_ context.Context, a *App, _ *http.Request, d *PageD
 		v.Public, v.Private = a.signInAttackPublic.view(now), a.signInAttackPrivate.view(now)
 		a.mu.Unlock()
 		v.Public.Where, v.Private.Where = "Attack signal", "Attack signal on the private administrator onion"
+		v.Private.HoldPosts = signInAttackBusy + cap(adminPasswordWork)
 		v.Public.Effective, v.Private.Effective = v.UnderAttack, v.UnderAttack
 		v.ImageNow = v.Always || v.UnderAttack && v.Public.Active
 		d.CaptchaAdmin = v
@@ -46,8 +47,9 @@ func signInProtectionLoader(_ context.Context, a *App, _ *http.Request, d *PageD
 // sign-ins are failing). A malformed handle, a wrong CAPTCHA, a paused handle's refusal and a wrong rescue code cost
 // the server no bcrypt and do not count. Either threshold holds the image on for signInAttackHold; only another trip
 // extends it, and while it is on each failure needs a solved image. So the image never stays on without new evidence,
-// but about 100 wrong passwords every 30 minutes do hold it on, which costs an attacker little: /admin/security and the
-// log say so, and the operator can answer with the Off mode. The per-handle budgets apply in every mode.
+// but about 100 wrong passwords every 30 minutes, or about 14 simultaneous sign-in posts (the 4 slots and 10 refusals),
+// do hold it on, which costs an attacker little: /admin/security, the log and one notification per hold say so, and the
+// operator can answer with the Off mode. The per-handle budgets apply in every mode.
 //
 // It is in memory, as those budgets are: a restart clears it, so it never locks anyone out without evidence from this
 // process, and gives an attacker at most one threshold's worth of guesses more. Each ingress has its own (A-570), so
@@ -108,7 +110,7 @@ func (s *signInAttack) noteBusy(now time.Time) bool {
 }
 
 func (s *signInAttack) view(now time.Time) SignInAttackView {
-	v := SignInAttackView{Active: s.active(now), Trips: s.trips,
+	v := SignInAttackView{Active: s.active(now), Trips: s.trips, HoldPosts: signInAttackBusy + cap(passwordWork),
 		FailureLimit: signInAttackFailures, BusyLimit: signInAttackBusy, HoldMinutes: int(signInAttackHold / time.Minute)}
 	if v.Active {
 		v.Since, v.Until = s.since.UTC().Format(signInAttackTime), s.until.UTC().Format(signInAttackTime)
@@ -144,13 +146,40 @@ func (a *App) noteSignInBusy(ctx context.Context) {
 	a.noteSignInAttack(ctx, (*signInAttack).noteBusy)
 }
 
-// noteSignInAttack counts through note and logs the signal turning on, naming no handle, account or client.
+// noteSignInAttack counts through note and, when that turns the signal on, logs it and notifies the administrators,
+// naming no handle, account or client. An extension does neither, so that is at most once per hold.
 func (a *App) noteSignInAttack(ctx context.Context, note func(*signInAttack, time.Time) bool) {
 	a.mu.Lock()
 	on := note(a.signInAttackFor(ctx), time.Now())
 	a.mu.Unlock()
 	if on {
 		log.Printf("sign-in attack signal on private_ingress=%t", privateAdminIngress(ctx))
+		a.notifySignInAttack(ctx)
+	}
+}
+
+// notifySignInAttack tells every active administrator the signal turned on (SEC725-6). It is best effort with a bound of
+// its own, whatever became of the request that tripped it: a failure is logged by class and refuses no one.
+func (a *App) notifySignInAttack(ctx context.Context) {
+	if a.db == nil {
+		return
+	}
+	where := "Sign-in attack signal on: "
+	if privateAdminIngress(ctx) {
+		where = "Sign-in attack signal on the private administrator onion: "
+	}
+	body := where + "many failed passwords or refused sign-ins. If the human check is Only under attack, everyone signing in there must read the image for at least 30 minutes, and people using a screen reader cannot sign in. Security & access says what to do."
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err == nil {
+		defer tx.Rollback()
+		if err = notifyAdminsExcept(ctx, tx, body, ""); err == nil {
+			err = tx.Commit()
+		}
+	}
+	if err != nil {
+		log.Printf("sign-in attack notification: %s", errorCause(err)) // a class, never the driver's text (A-170)
 	}
 }
 

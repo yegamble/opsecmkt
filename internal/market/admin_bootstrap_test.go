@@ -151,6 +151,9 @@ func TestBootstrapAdminRejectsBadPasswordAndHandle(t *testing.T) {
 		{"first_admin", "short-pass1", "", "12–72 bytes"},
 		{"first_admin", strings.Repeat("x", 73), "", "12–72 bytes"},
 		{"first_admin", "", "", "12–72 bytes"},
+		{"first_admin", "password1234", "", "too easy to guess"}, // SEC725-1
+		{"first_admin", "123456789012", "", "too easy to guess"},
+		{"first_admin", "first_admin-long-enough", "", "too easy to guess"},
 		{"ab", bootstrapPassword, "", "3–32 character handle"},
 		{strings.Repeat("a", 33), bootstrapPassword, "", "3–32 character handle"},
 		{"bad-handle", bootstrapPassword, "", "3–32 character handle"},
@@ -169,7 +172,7 @@ func TestBootstrapAdminRejectsBadPasswordAndHandle(t *testing.T) {
 		}
 		notInstalled(t, e, tc.msg)
 		// CheckBootstrapInput refuses the same handle and site-name mistakes before any password is read.
-		if !strings.Contains(tc.msg, "12–72") {
+		if !strings.Contains(tc.msg, "12–72") && !strings.Contains(tc.msg, "too easy") {
 			if err := CheckBootstrapInput(tc.handle, tc.site); err == nil || !strings.Contains(err.Error(), tc.msg) {
 				t.Fatalf("CheckBootstrapInput(%q, %d-byte site) = %v", tc.handle, len(tc.site), err)
 			}

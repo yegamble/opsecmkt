@@ -386,6 +386,7 @@ func TestAdmissionClassSizes(t *testing.T) {
 		{"sessionLookupWork", sessionLookupWork, 16},
 		{"captchaWork", captchaWork, 8},
 		{"passwordWork", passwordWork, 4},
+		{"registerWork", registerWork, 1},
 	} {
 		if cap(c.sem) != c.want {
 			t.Errorf("%s has %d slots, want %d", c.name, cap(c.sem), c.want)

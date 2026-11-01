@@ -25,12 +25,13 @@ test('the other party replies once and the desk names who holds encrypted eviden
   const database = process.env.E2E_DATABASE_URL!;
   const sql = (query: string) => execFileSync('psql', [database, '-v', 'ON_ERROR_STOP=1', '-qtAc', query], { encoding: 'utf8' }).trim();
   const [buyerHandle, vendorHandle, holderHandle, resolverHandle] = ['dsp_buyer', 'dsp_vendor', 'dsp_holder', 'dsp_resolver'].map(uniqueHandle);
-  const pages = await Promise.all([
-    signedIn(browser, baseURL, buyerHandle, 'browser-dispute-buyer-123', true, 320),
-    signedIn(browser, baseURL, vendorHandle, 'browser-dispute-vendor-123', true, 320),
-    signedIn(browser, baseURL, holderHandle, 'browser-dispute-holder-123', true, 320),
-    signedIn(browser, baseURL, resolverHandle, 'browser-dispute-resolver-123', true, 320),
-  ]);
+  // One at a time: registrations hold one password slot (SEC725-2), so a second at the same moment is told to retry.
+  const pages = [
+    await signedIn(browser, baseURL, buyerHandle, 'browser-dispute-buyer-123', true, 320),
+    await signedIn(browser, baseURL, vendorHandle, 'browser-dispute-vendor-123', true, 320),
+    await signedIn(browser, baseURL, holderHandle, 'browser-dispute-holder-123', true, 320),
+    await signedIn(browser, baseURL, resolverHandle, 'browser-dispute-resolver-123', true, 320),
+  ];
   const [buyer, vendor, , resolver] = pages;
   await saveEncryptionKey(buyer, 'browser-dispute-buyer-123');
   const productID = randomBytes(16).toString('hex');

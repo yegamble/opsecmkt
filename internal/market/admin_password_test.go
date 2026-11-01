@@ -37,6 +37,10 @@ func TestResetAdminPassword(t *testing.T) {
 		{"root_admin", "short-pass1", "12–72 bytes"},
 		{"root_admin", strings.Repeat("x", 73), "12–72 bytes"},
 		{"root_admin", "", "12–72 bytes"},
+		// SEC725-1: the host command applies the new-password rule too, before anything changes.
+		{"root_admin", "password1234", "too easy to guess"},
+		{"root_admin", "qwertyuiopas", "too easy to guess"},
+		{"root_admin", "root_admin-long-enough", "too easy to guess"},
 		{"plain_buyer", next, "not an administrator"},
 		{"nobody_here", next, "no account"},
 		{"ROOT_ADMIN", next, "no account"}, // handles are exact and case-sensitive

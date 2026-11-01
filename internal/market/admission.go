@@ -31,7 +31,8 @@ import (
 //     session and take no page slot, so a page of thumbnails, or a flood of image requests, cannot refuse pages;
 //     the authenticated /desk/img/ takes a page slot like any page.
 //   - captchaWork (captcha_actions.go) admits 8 concurrent CAPTCHA image renders and passwordWork
-//     (actions_auth.go) 4 concurrent bcrypt checks, each inside the class slot of its request.
+//     (actions_auth.go) 4 concurrent bcrypt checks, each inside the class slot of its request. At most 1 of those 4 is
+//     a registration (registerWork, SEC725-2), so scripted registrations cannot take every sign-in's slot.
 //
 // A class slot is released when the response starts (admitWriter), so it bounds the database and render work
 // of a request but not the time a slow client takes to read the response.

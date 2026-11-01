@@ -26,8 +26,7 @@ func init() {
 
 var captchaID = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// The values of the captcha_required setting (A-725). The old "true" keeps its meaning, the image on both forms; an
-// earlier release reads "under_attack" as that too, so a rollback fails closed.
+// The values of the captcha_required setting (A-725). The old "true" keeps its meaning, the image on both forms.
 const (
 	captchaModeOff         = "false"        // no check on sign-in or registration
 	captchaModeUnderAttack = "under_attack" // the default: image on sign-in under the attack signal, question on registration

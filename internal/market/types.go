@@ -591,6 +591,7 @@ type SignInAttackView struct {
 	Since, Until                         string
 	Failures, Busy, Trips                int
 	FailureLimit, BusyLimit, HoldMinutes int
+	HoldPosts                            int // simultaneous sign-in posts that trip it: the password slots and BusyLimit
 }
 
 // P2 PGP

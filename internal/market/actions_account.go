@@ -135,6 +135,9 @@ func passwordChangeAction(c *actionCtx) (actionResult, error) {
 	if next == c.Form.Get("password") {
 		return actionResult{}, fail(400, "Choose a new password that differs from your current one.")
 	}
+	if weakPassword(c.User.Handle, next) {
+		return actionResult{}, errWeakPassword // SEC725-1: before the current password, so it spends no confirmation budget
+	}
 	var hash, token string
 	opts := &confirmation{Recovery: true, AfterPassword: func() (err error) { hash, err = hashPasswordFor(c.Ctx(), next); return err },
 		// Pending sign-ins end before the account row is locked, in the order /challenge takes them (A-154).

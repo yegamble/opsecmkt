@@ -109,6 +109,15 @@ func challengePath(next string) string {
 
 var passwordWork = make(chan struct{}, 4)
 
+// registerWork admits at most 1 of passwordWork's 4 slots to the public listener's registrations (SEC725-2): the written
+// question costs a script nothing, so unbounded registrations would take every slot and refuse real sign-ins. At bcrypt
+// cost 12 one slot is about 4 registrations a second. With 2, three people signing in at once were refused under a flood.
+var registerWork = make(chan struct{}, 1)
+
+// errRegisterBusy refuses a registration with no slot. It has its own answer and is no part of the attack signal, which
+// counts refused sign-ins.
+var errRegisterBusy = fail(503, "Registration is busy. Try again shortly.")
+
 // bcryptCost is the work factor for new password hashes. Tests lower it to bcrypt.MinCost (TestMain) so
 // the -race suite stays within the request timeout; production keeps 12.
 var bcryptCost = 12
@@ -473,6 +482,8 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	// never create or increment a limiter entry (and cannot spend a real user's sign-in budget).
 	if !handlePattern.MatchString(handle) || !validPassword(password) {
 		err = errAuthInput
+	} else if path != "/login" && weakPassword(handle, password) {
+		err = errWeakPassword // SEC725-1: never at sign-in; before the human check, so its answer is not spent for nothing
 	} else if path != "/setup" {
 		err = a.checkCaptcha(c) // P1, A-725: the single-use check this form asks for in this mode, if any
 	}
@@ -518,16 +529,35 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	}
 	// A password-check slot is taken only now, so requests refused above never hold one while real
 	// sign-ins wait. The attempt is counted after the slot, so a busy refusal spends no budget.
+	limitRegistration := path == "/register" && !privateAdminIngress(c.Ctx()) // that ingress's own slots are not at stake
+	if limitRegistration {
+		select {
+		case registerWork <- struct{}{}:
+		default:
+			return "", "", "", nil, errRegisterBusy
+		}
+	}
 	sem := workFor(c.Ctx(), passwordWork, adminPasswordWork)
 	select {
 	case sem <- struct{}{}:
 	default:
-		if path == "/login" {
-			a.noteSignInBusy(c.Ctx()) // A-725: refused password checks are half of the attack signal
+		if limitRegistration {
+			<-registerWork
+			return "", "", "", nil, errRegisterBusy
+		}
+		// A-725: refused password checks are half of the attack signal. Not while registrations hold slots (SEC725-2):
+		// the image on sign-in would stop none of them, and it would only keep people out.
+		if path == "/login" && (privateAdminIngress(c.Ctx()) || len(registerWork) == 0) {
+			a.noteSignInBusy(c.Ctx())
 		}
 		return "", "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
-	release = func() { <-sem }
+	release = func() {
+		<-sem
+		if limitRegistration {
+			<-registerWork
+		}
+	}
 	// Reserve atomically before bcrypt, including recovery attempts. The earlier limited check
 	// only avoids taking a work slot for an already-exhausted budget; it cannot admit a race.
 	if !a.allow(key, 10) {

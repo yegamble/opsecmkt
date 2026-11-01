@@ -31,7 +31,7 @@ the setup below.
    Read the token locally from `INSTALL_DIR/secrets/setup-token` and keep it out
    of chat, logs and reports. Create a marketplace name of at most 80 characters,
    a permanent 3–32 character handle using letters, digits or underscores, and
-   a password of 12–72 bytes. Select **Initialize marketplace**. If the host
+   a password of 12–72 bytes that is not a common password or simple pattern and does not contain the handle. Select **Initialize marketplace**. If the host
    bootstrap command already completed setup, sign in instead.
 2. Enroll an authenticator app immediately and store the recovery codes offline.
    Until then every staff action is refused (A-706), and anyone who has the
@@ -112,7 +112,7 @@ Fill in:
 - **Setup token**: from the installer. Lost it? `./scripts/install.sh setup-token`.
 - **Marketplace name**: up to 80 characters. Changeable later in `/admin/site`.
 - **Handle**: 3–32 characters. **Permanent** and visible to others. Don't reuse one from elsewhere.
-- **Password**: 12–72 bytes. No reset email exists, so use a password manager.
+- **Password**: 12–72 bytes, not a common password or simple pattern, and not containing your handle; a passphrase of four or more unrelated words works. No reset email exists, so use a password manager.
 
 Select **Initialize marketplace**. The token then stops working.
 
