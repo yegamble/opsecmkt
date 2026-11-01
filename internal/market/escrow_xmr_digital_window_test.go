@@ -662,6 +662,66 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		}
 	})
 
+	// A-740: a form that stated the price, posted after the deposit vanished, is refused with the form again at the amount
+	// counted now, and nothing changes; that form then succeeds.
+	t.Run("stale form", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, _ := x.paidXMRPhysical(x.physical(x.vendor))
+		vanish(x, order)
+		price := url.Values{"order_id": {order}, "from": {statePaid}, "payout_confirmed": {"confirmed"}, "amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}}
+		x.refused(order, "/orders/cancel", x.vendorSess, price, 409, "The amount changed to 0 XMR")
+		w := x.do("POST", "/orders/cancel", x.vendorSess, price)
+		body := html.UnescapeString(w.Body.String())
+		if w.Code != 409 || !containsAll(body, `<div class="alert error" role="alert">The amount changed to 0 XMR`, `action="/orders/cancel"`, `name="amount_seen" value="0"`, nothing) {
+			t.Fatalf("the re-rendered form: %d\n%s", w.Code, body)
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 || x.state(order) != statePaid {
+			t.Fatalf("a refused cancel changed the order: %s, %d settlements", x.state(order), n)
+		}
+		if code, body := post(x, order, x.vendorSess, ticked); code != 303 {
+			t.Fatalf("the re-rendered form's own post: %d %s", code, body)
+		}
+		wantClosedNothingSent(x, order)
+	})
+
+	// A-740: a staff decision follows the same rule: the form at zero says zero and can succeed by posting it, for either
+	// outcome, and one that stated the price is refused with the dispute left open.
+	t.Run("staff", func(t *testing.T) {
+		for _, outcome := range []string{"refund", "release"} {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			order, sess := x.paidXMRPhysical(x.physical(x.vendor))
+			if code, body := x.xmrDispute(order, sess); code != 303 {
+				t.Fatalf("dispute: %d %s", code, body)
+			}
+			x.dropTransfer(hex64("fund " + order))
+			x.mustPoll()
+			if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations=-1", order); n != 1 || x.state(order) != stateDisputed {
+				t.Fatalf("the vanished deposit of a %s order: %v", x.state(order), x.creditedRows(order))
+			}
+			dispute := agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
+			_, admin := x.user("zero_judge_"+outcome, "admin")
+			if page := x.page("/moderator", admin); !containsAll(page, `action="/resolve"`, `name="amount_seen" value="0"`) {
+				t.Fatalf("the staff form at zero:\n%s", page)
+			}
+			resolve := func(seen string) url.Values {
+				return url.Values{"id": {dispute}, "outcome": {outcome}, "resolution": {"Decided from the evidence both parties sent."},
+					"payout_confirmed": {"confirmed"}, "amount_seen": {seen}, "reply_seen": {"0"}, "password": {testPassword}}
+			}
+			x.refused(order, "/resolve", admin, resolve(strconv.FormatInt(xmrListingPrice, 10)), 409, "The amount changed to 0 XMR")
+			if status := agStr(x.testEnv, "SELECT status FROM disputes WHERE id=$1", dispute); status != "Open" || x.state(order) != stateDisputed {
+				t.Fatalf("a refused decision: dispute %s, order %s", status, x.state(order))
+			}
+			if code, body := x.xmrPost("/resolve", admin, resolve("0")); code != 303 || x.state(order) != stateResolved {
+				t.Fatalf("the form's own post at zero: %d %s %s", code, x.state(order), body)
+			}
+			if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
+				t.Fatalf("%d settlements on a decision of no counted coins", n)
+			}
+		}
+	})
+
 	t.Run("buyer", func(t *testing.T) {
 		x := newXMREscrowEnv(t)
 		x.mustPoll()

@@ -28,6 +28,9 @@ confirmation it did not show. It now shows that confirmation and says nothing is
 is requested; a deposit that returns and confirms after the cancel goes back to the buyer's refund address by the existing stray
 refund, and the buyer and staff are told. The cancelled order's status no longer says nothing was received when a deposit was seen.
 
+A form that stated an amount is now refused when nothing counts any more (A-740): it used to close the order or dispute with nothing
+sent. A cancel gets the order page again at the current amount, a staff decision the refusal page; reload and post the form at zero.
+
 Evidence: database integration tests against a simulated wallet RPC, on test networks; no public network or real outage.
 
 ## An outage gives orders near their deadline 72 hours (A-730, A-732)

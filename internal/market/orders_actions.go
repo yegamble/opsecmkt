@@ -3,6 +3,9 @@ package market
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -267,9 +270,30 @@ func cancelAction(c *actionCtx) (actionResult, error) {
 		ctx = withPayoutSeen(ctx, o.ID, seen)
 	}
 	if _, err = c.A.transition(ctx, c.Tx, o.ID, from, stateCancelled, c.User, note); err != nil {
-		return actionResult{}, err
+		return actionResult{}, staleCancelForm(c, o.ID, err)
 	}
 	return actionResult{Redirect: orderPage(o.ID), Notice: "order-cancelled", Audit: "Cancelled order " + shortID(o.ID) + " (was " + stateLabel(from) + ")"}, nil
+}
+
+// staleCancelForm answers a cancel whose stated amount no longer holds (checkPayoutSeen) with the order page again, after
+// the rollback, so its form states the amount counted now (A-740). Any other error is returned as it is.
+func staleCancelForm(c *actionCtx, orderID string, err error) error {
+	var refused *httpError
+	if !errors.As(err, &refused) || refused.Code != 409 || !strings.HasPrefix(refused.Msg, amountChangedPrefix) {
+		return err
+	}
+	msg := refused.Msg
+	return &httpError{Code: 409, Msg: msg, Render: func(w http.ResponseWriter) {
+		r := c.R.Clone(c.R.Context())
+		r.Method, r.URL.RawQuery = http.MethodGet, url.Values{"id": {orderID}}.Encode()
+		d := c.A.pageData(r, "order", c.Token, c.User)
+		if err := c.A.load(r, &d); err != nil {
+			c.A.refuse(w, c.R, c.User, 409, msg)
+			return
+		}
+		d.Error = msg
+		c.A.renderStatus(w, r, d, 409)
+	}}
 }
 
 func shipAction(c *actionCtx) (actionResult, error) {
