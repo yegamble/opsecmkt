@@ -518,3 +518,207 @@ func TestStaffContactUnreadableOnUpload(t *testing.T) {
 	}
 	mustNotContain(t, body, secret, askOperatorLine, "Contact the market staff")
 }
+
+// A-734 (STAFF102-1): /admin/site and its section alert on the overview name each way the staff contact fails, for as
+// long as it fails; /login makes no message promise for a handle a message cannot reach, without saying why. What a
+// handle needs is what /messages checks: an active moderator or administrator (messageRecipient) with a key that can
+// receive encrypted messages (inspectMessage's 409).
+func TestStaffContactHealthWarnings(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("a734_admin", "admin")
+	_, sender := e.user("a734_sender", "buyer")
+
+	staffKey, staffPub := testPGPKey(t, "a734_keyed")
+	keyedID, _ := e.keylessUser("a734_keyed", "moderator")
+	e.setKey(keyedID, staffPub)
+	unusable := testUnusableKeys(t, "a734_unusable")
+	keyed := func(handle, armored string) {
+		id, _ := e.keylessUser(handle, "moderator")
+		e.setKey(id, armored)
+	}
+	keylessID, _ := e.keylessUser("a734_keyless", "moderator")
+	keyed("a734_expired", unusable["expired key"])
+	keyed("a734_signonly", unusable["signing-only key"])
+	unreadableID, _ := e.keylessUser("a734_unreadable", "moderator")
+	agExec(e, "UPDATE users SET pgp=$1 WHERE id=$2", "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nbm90IGEga2V5\n-----END PGP PUBLIC KEY BLOCK-----", unreadableID)
+	keyed("a734_buyer", staffPub)
+	agExec(e, "UPDATE users SET role='buyer' WHERE handle='a734_buyer'")
+	for _, c := range []struct{ handle, set string }{
+		{"a734_suspended", "suspended_at=now()"},
+		{"a734_banned", "banned_at=now(),ban_reason='A reason long enough.',suspended_at=now()"},
+		{"a734_closed", "closed_at=now()"},
+		{"a734_restricted", "retention_restricted_at=now()"},
+	} {
+		keyed(c.handle, staffPub)
+		agExec(e, "UPDATE users SET "+c.set+" WHERE handle=$1", c.handle)
+	}
+
+	registrations := func(v string) {
+		agExec(e, "INSERT INTO settings(key,value) VALUES('registrations',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", v)
+	}
+	registrations("open")
+	// save goes through the form, as an administrator does; it returns the page the redirect lands on, notice included.
+	save := func(v string) string {
+		t.Helper()
+		w := e.do("POST", "/admin/staff-contact", admin, staffContactForm(v))
+		return html.UnescapeString(userPageNotice(t, e, w, admin, "/admin/site#staff-contact"))
+	}
+	page := func(path, session string) string {
+		t.Helper()
+		return html.UnescapeString(e.body("GET", path, session, nil, 200))
+	}
+	send := func(to string) int {
+		t.Helper()
+		body, err := encryptTo(staffKey, "for the staff contact")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e.do("POST", "/messages", sender, form("recipient", to, "body", body)).Code
+	}
+	const (
+		mark        = "staff-contact-warning"
+		savedOnly   = `role="status">Staff contact saved.</div>`
+		savedBroken = `role="status">Staff contact saved. It still needs attention: see the warning below.</div>`
+		lockedOut   = "Locked out or reporting a stolen account? "
+		closedLine  = "That is a market handle, and new registrations are closed, so only an existing account can message it."
+	)
+	// warned checks the panel and the overview name exactly want, and again after a reload.
+	warned := func(t *testing.T, want ...string) {
+		t.Helper()
+		for range 2 {
+			site, overview := page("/admin/site", admin), page("/admin", admin)
+			if got := strings.Count(site, `class="alert `+mark+`"`); got != len(want) {
+				t.Fatalf("/admin/site shows %d warnings, want %d: %q", got, len(want), want)
+			}
+			for _, name := range want {
+				mustContain(t, site, "<strong>Warning:</strong> "+name)
+				mustContain(t, overview, name)
+			}
+			if len(want) == 0 {
+				mustNotContain(t, overview, staffContactWarnEmpty, staffContactWarnNotStaff, staffContactWarnNoKey, staffContactWarnClosed)
+			}
+		}
+	}
+	save(staffContactValue) // a working address: each case saves away from it, and back to it to clear the warning
+	for _, c := range []struct {
+		name, contact string
+		closed        bool
+		want          string
+	}{
+		{"empty", "", false, staffContactWarnEmpty},
+		{"no account", "a734_ghost", false, staffContactWarnNotStaff},
+		{"buyer", "a734_buyer", false, staffContactWarnNotStaff},
+		{"suspended", "a734_suspended", false, staffContactWarnNotStaff},
+		{"banned", "a734_banned", false, staffContactWarnNotStaff},
+		{"closed account", "a734_closed", false, staffContactWarnNotStaff},
+		{"retention-restricted", "a734_restricted", false, staffContactWarnNotStaff},
+		{"no key", "a734_keyless", false, staffContactWarnNoKey},
+		{"expired key", "a734_expired", false, staffContactWarnNoKey},
+		{"signing-only key", "a734_signonly", false, staffContactWarnNoKey},
+		{"unreadable key", "a734_unreadable", false, staffContactWarnNoKey},
+		{"closed registrations", "a734_keyed", true, staffContactWarnClosed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.closed {
+				registrations("closed")
+				defer registrations("open")
+			}
+			landed := save(c.contact)
+			mustContain(t, landed, savedBroken)
+			mustNotContain(t, landed, savedOnly)
+			warned(t, c.want)
+
+			login := page("/login", randomToken())
+			mustNotContain(t, login, staffNewAccountLine)
+			switch {
+			case c.closed:
+				mustContain(t, login, lockedOut+"Contact the market staff: "+c.contact+". "+closedLine+" "+staffReadyLine)
+			case c.contact == "":
+				mustContain(t, login, lockedOut+askOperatorLine+" "+staffReadyLine)
+			default:
+				// No promise and no reason: the same text whichever way it fails, and the message really is refused.
+				mustContain(t, login, lockedOut+"Contact the market staff: "+c.contact+". "+staffReadyLine)
+				mustNotContain(t, login, "That is a market handle", closedLine, "PGP key that can", "not an active")
+				if code := send(c.contact); code == 303 {
+					t.Fatalf("a message to %s was accepted, so the warning is wrong", c.contact)
+				}
+			}
+			// Fixed: an address that works without an account clears it, in the notice and on the pages.
+			mustContain(t, save(staffContactValue), savedOnly)
+			warned(t)
+		})
+	}
+
+	// A broken handle on a closed market: both are named, and the closed market's line is no promise either.
+	registrations("closed")
+	save("a734_keyless")
+	warned(t, staffContactWarnNoKey, staffContactWarnClosed)
+	mustNotContain(t, page("/login", randomToken()), "That is a market handle", closedLine)
+	registrations("open")
+	warned(t, staffContactWarnNoKey)
+
+	// Fixing the account clears it too: the moderator saves a usable key, and the handle stays the contact.
+	_, keylessPub := testPGPKey(t, "a734_keyless")
+	e.setKey(keylessID, keylessPub)
+	warned(t)
+	mustContain(t, page("/login", randomToken()), lockedOut+"Contact the market staff: a734_keyless. "+staffNewAccountLine+" "+staffReadyLine)
+
+	// The control, end to end: a keyed moderator gets no warning, keeps today's /login text and receives the message.
+	mustContain(t, save("a734_keyed"), savedOnly)
+	warned(t)
+	mustContain(t, page("/login", randomToken()), lockedOut+"Contact the market staff: a734_keyed. "+staffNewAccountLine+" "+staffReadyLine)
+	if code := send("a734_keyed"); code != 303 {
+		t.Fatalf("a message to the keyed staff contact: %d", code)
+	}
+	var delivered int
+	if err := e.DB.QueryRow("SELECT count(*) FROM messages WHERE recipient_id=$1", keyedID).Scan(&delivered); err != nil || delivered != 1 {
+		t.Fatalf("the keyed staff contact has %d messages: %v", delivered, err)
+	}
+	mustContain(t, save("a734_admin"), savedOnly) // an administrator with a usable key works the same
+	warned(t)
+	save("a734_keyed")
+
+	// Sign-in refusals sit on the /login form, so they say the same: the promise only for a contact it holds for.
+	suspendedID, _ := e.user("a734_refused", "buyer")
+	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", suspendedID)
+	refusal := func() string {
+		t.Helper()
+		w := e.do("POST", "/login", randomToken(), form("handle", "a734_refused", "password", testPassword))
+		if w.Code != 403 {
+			t.Fatalf("suspended sign-in: %d", w.Code)
+		}
+		return refusalText(w.Body.String())
+	}
+	if got := refusal(); got != "This account is suspended. Contact the market staff: a734_keyed. "+staffNewAccountLine+" "+staffReadyLine {
+		t.Fatalf("refusal with a working handle: %q", got)
+	}
+	save("a734_ghost")
+	if got := refusal(); got != "This account is suspended. Contact the market staff: a734_ghost. "+staffReadyLine {
+		t.Fatalf("refusal with a broken handle: %q", got)
+	}
+
+	// Under the forced image the handle's fallback is a promise too: a broken one lists no contact instead.
+	agExec(e, "INSERT INTO settings(key,value) VALUES('captcha_required','true') ON CONFLICT(key) DO UPDATE SET value='true'")
+	b := page("/login", randomToken())
+	mustContain(t, b, captchaFallbackNone, "Contact the market staff: a734_ghost.")
+	mustNotContain(t, b, captchaFallbackHandle)
+
+	// With the image shown, the CAPTCHA warning and the contact's own warning stay on their own pages, one each, and
+	// the overview's two alerts agree.
+	site, security, overview := page("/admin/site", admin), page("/admin/security", admin), page("/admin", admin)
+	mustContain(t, site, staffContactWarnNotStaff)
+	mustNotContain(t, site, captchaWarningMark)
+	mustContain(t, security, captchaWarningMark)
+	mustNotContain(t, security, mark)
+	mustContain(t, overview, staffContactWarnNotStaff, "The CAPTCHA is on without a staff contact that works without an account.")
+	save("")
+	mustContain(t, page("/admin/site", admin), staffContactWarnEmpty)
+	mustContain(t, page("/admin/security", admin), captchaWarningUnset)
+	agExec(e, "UPDATE settings SET value='false' WHERE key='captcha_required'")
+
+	// The panel says what a moderator contact cannot do, and a moderator really is refused there.
+	_, mod := e.user("a734_mod", "moderator")
+	e.check(e.do("GET", "/admin/users", mod, nil), 403)
+	e.check(e.do("GET", "/admin/site", mod, nil), 403)
+	mustContain(t, page("/admin/site", admin), "A moderator contact must forward", "on the sign-in page (<code>/login</code>)")
+}

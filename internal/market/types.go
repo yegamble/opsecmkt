@@ -122,11 +122,17 @@ type Notification struct {
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
 // Handle set only when a signed-in reader may be linked to /messages?to=<Handle>.
-// NeedsAccount: the contact is a bare handle, which only a signed-in user can message (A-517).
+// NeedsAccount: the contact is a bare handle, which only a signed-in user can message (A-517). Unreachable: a bare
+// handle no message can reach, so a signed-out reader is not told to message it (A-734).
 type StaffContactView struct {
-	Text, Handle string
-	NeedsAccount bool
+	Text, Handle              string
+	NeedsAccount, Unreachable bool
 }
+
+// StaffContactWarning is one thing wrong with the staff contact (A-734, staffContactHealth): fixed text, for the
+// administrator only.
+type StaffContactWarning struct{ Name, Fix string }
+
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
 	NoResolver                                       bool // open, and no eligible resolver exists (eligibleResolverSQL)
@@ -276,6 +282,8 @@ type PageData struct {
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
 	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
+	// StaffContactWarnings: /admin/site and the overview's alert for it, what is wrong with the contact (A-734).
+	StaffContactWarnings []StaffContactWarning
 	// CaptchaNoContact: admin page, the image is being shown (A-725) but no staff contact works without an account (A-517).
 	CaptchaNoContact bool
 	// CaptchaAdmin: admin page, the human check's mode and attack signal (A-725).

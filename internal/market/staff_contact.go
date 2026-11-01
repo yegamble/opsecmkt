@@ -23,7 +23,8 @@ import (
 // the handle of a moderator or administrator who is not suspended and whose key can receive encrypted messages
 // (canReceiveEncrypted, A-83), a signed-in reader also gets a /messages?to=<handle> link; a signed-out reader could
 // not use it. Unset, each place says "Ask the operator of this market." instead, so no page implies a channel that
-// does not exist.
+// does not exist. A-734: a handle no message can reach is named as text with no promise to message it, and /admin/site
+// and its overview alert say what is wrong (staffContactHealth).
 
 const (
 	settingStaffContact  = "staff_contact"
@@ -31,9 +32,18 @@ const (
 	askOperator          = "Ask the operator of this market."
 )
 
+// A-734: the name of each staff-contact warning; the overview shows it alone, /admin/site with what to do.
+const (
+	staffContactWarnEmpty    = "No staff contact is set."
+	staffContactWarnNotStaff = "The staff contact is a handle that is not an active moderator or administrator."
+	staffContactWarnNoKey    = "The staff contact's account has no PGP key that can receive encrypted messages."
+	staffContactWarnClosed   = "The staff contact is a bare handle while new registrations are closed."
+)
+
 func init() {
 	registerAction("/admin/staff-contact", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: staffContactAction})
 	registerLoader("admin", captchaContactLoader)
+	registerLoader("admin", staffContactHealthLoader)
 	for _, page := range []string{"canary", "challenge", "login", "register", "notifications", "vendor-dashboard", "listing-edit", "account", "order"} {
 		registerLoader(page, staffContactLoader)
 	}
@@ -51,7 +61,8 @@ func staffContactSentence(contact string) string {
 // A-702: a signed-out reader is usually locked out of an account and writing to staff to get back in. When the contact
 // is a bare handle they can still reach it from a new account; and they are told what staff will ask for, and what
 // staff never ask for, so a phishing "staff member" asking for a password or private key is recognisable. A-703: while
-// registrations are closed there is no new account to message it from, so they are told that instead.
+// registrations are closed there is no new account to message it from, so they are told that instead. A-734: neither
+// line is said of a handle no message can reach, and nothing says why: the reader has the public contact and no more.
 const (
 	staffContactNewAccount = "That is a market handle: you can message it from a new account once that account has a PGP key."
 	staffContactNoAccount  = "That is a market handle, and new registrations are closed, so only an existing account can message it."
@@ -60,13 +71,13 @@ const (
 
 // staffContactSignedOut is staffContactSentence for a reader who is not signed in: the sign-in refusals, and /challenge,
 // /login and the closed /register (the "staff-contact" partial followed by PageData.StaffContactSignedOut).
-func staffContactSignedOut(contact string, registrationOpen bool) string {
-	return staffContactSentence(contact) + " " + staffContactSignedOutLines(contact, registrationOpen)
+func staffContactSignedOut(contact string, registrationOpen, unreachable bool) string {
+	return staffContactSentence(contact) + " " + staffContactSignedOutLines(contact, registrationOpen, unreachable)
 }
 
-func staffContactSignedOutLines(contact string, registrationOpen bool) string {
+func staffContactSignedOutLines(contact string, registrationOpen, unreachable bool) string {
 	switch {
-	case !staffContactNeedsAccount(contact):
+	case !staffContactNeedsAccount(contact) || unreachable:
 		return staffContactReady
 	case registrationOpen:
 		return staffContactNewAccount + " " + staffContactReady
@@ -79,9 +90,9 @@ func staffContactSignedOutLines(contact string, registrationOpen bool) string {
 func (d PageData) StaffContactSignedOut() string {
 	open := d.Access == nil || d.Access.RegistrationOpen
 	if d.StaffContact == nil {
-		return staffContactSignedOutLines("", open)
+		return staffContactSignedOutLines("", open, false)
 	}
-	return staffContactSignedOutLines(d.StaffContact.Text, open)
+	return staffContactSignedOutLines(d.StaffContact.Text, open, d.StaffContact.Unreachable)
 }
 
 // staffContactSetting reads the setting through q (the caller's transaction, when one is open); "" while unset.
@@ -113,7 +124,15 @@ func signedOutStaffContactRefusal(ctx context.Context, q rowQuerier) (string, er
 	if err != nil {
 		return "", err
 	}
-	return staffContactSignedOut(contact, open), nil
+	unreachable := false
+	if staffContactNeedsAccount(contact) {
+		_, canReceive, err := staffContactAccount(ctx, q, contact)
+		if err != nil {
+			return "", err
+		}
+		unreachable = !canReceive
+	}
+	return staffContactSignedOut(contact, open, unreachable), nil
 }
 
 // suspendedRefusal refuses sign-in to an account an administrator suspended, or banned (A-546: closed, without the
@@ -145,30 +164,78 @@ func captchaContactLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	return nil
 }
 
+// staffContactAccount finds the staff member a bare-handle contact names, as /messages would reach them: an active
+// moderator or administrator (messageRecipient; a ban always also sets suspended_at) and whether their key can receive
+// encrypted messages (inspectMessage's 409). id is "" when the handle is not active staff.
+func staffContactAccount(ctx context.Context, q rowQuerier, handle string) (id string, canReceive bool, err error) {
+	err = q.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1 AND role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL", handle).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	canReceive, err = userCanReceiveEncrypted(ctx, q, id)
+	return id, canReceive, err
+}
+
+// staffContactHealth is every warning the administrator should see about the contact (A-734). It only checks what a
+// reader would need: a bare handle has to be messageable, and is no way in for someone locked out of a closed market.
+// Other free text is taken to work, as staffContactNeedsAccount does.
+func staffContactHealth(ctx context.Context, q rowQuerier, contact string, registrationOpen bool) ([]StaffContactWarning, error) {
+	if contact == "" {
+		return []StaffContactWarning{{staffContactWarnEmpty, "Every place that names it says “" + askOperator + "”, so someone locked out has no one to write to. Save a handle, onion address or XMPP address below."}}, nil
+	}
+	if !staffContactNeedsAccount(contact) {
+		return nil, nil
+	}
+	var warnings []StaffContactWarning
+	id, canReceive, err := staffContactAccount(ctx, q, contact)
+	switch {
+	case err != nil:
+		return nil, err
+	case id == "":
+		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, "Messages to it do not reach the staff, so the sign-in page does not offer to message it. Save the handle of an active staff account, or another address."})
+	case !canReceive:
+		warnings = append(warnings, StaffContactWarning{staffContactWarnNoKey, "A message to it is refused (no key saved, or the saved one is unreadable, expired or revoked, or has no current encryption subkey), so the sign-in page does not offer to message it. Ask that account to save a key that can, or save another address."})
+	}
+	if !registrationOpen {
+		warnings = append(warnings, StaffContactWarning{staffContactWarnClosed, "Only an existing account can message a handle, so someone locked out of their account has no way to reach it. Save an onion or XMPP address, or open registrations under Security & access."})
+	}
+	return warnings, nil
+}
+
+// staffContactHealthLoader (admin page, A-734) sets d.StaffContactWarnings on the two views that show them: /admin/site
+// and its alert on the overview. The check runs on each view, so a warning stays until the cause is fixed, wherever it
+// was fixed (a moderator's new key, a suspension lifted, registrations opened).
+func staffContactHealthLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) (err error) {
+	if d.AdminSection == "" || d.AdminSection == "site" {
+		d.StaffContactWarnings, err = staffContactHealth(ctx, a.db, d.Settings[settingStaffContact], d.Settings[settingRegistrations] == "open")
+	}
+	return err
+}
+
 // staffContactLoader sets d.StaffContact from the setting (nil while unset; the "staff-contact" partial then says
-// askOperator) and, for a signed-in reader other than that staff member, the handle to link.
+// askOperator), whether a message can reach a bare handle and, for a signed-in reader other than that staff member,
+// the handle to link.
 func staffContactLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	contact := d.Settings[settingStaffContact]
 	if contact == "" {
 		return nil
 	}
 	d.StaffContact = &StaffContactView{Text: contact, NeedsAccount: staffContactNeedsAccount(contact)}
-	if d.User == nil || !handlePattern.MatchString(contact) {
+	if !d.StaffContact.NeedsAccount {
 		return nil
 	}
-	var id string
-	err := a.db.QueryRowContext(ctx, "SELECT id FROM users WHERE handle=$1 AND role IN ('moderator','admin') AND suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL AND id<>$2", contact, d.User.ID).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil
-	}
+	id, canReceive, err := staffContactAccount(ctx, a.db, contact)
 	if err != nil {
 		return err
 	}
-	ok, err := userCanReceiveEncrypted(ctx, a.db, id)
-	if ok {
+	d.StaffContact.Unreachable = !canReceive
+	if canReceive && d.User != nil && d.User.ID != id {
 		d.StaffContact.Handle = contact
 	}
-	return err
+	return nil
 }
 
 // AsksForStaff reports a notification that tells its reader to contact the market staff (the payout-address change
