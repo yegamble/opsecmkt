@@ -276,8 +276,10 @@ type PageData struct {
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
 	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
 	StaffContact *StaffContactView
-	// CaptchaNoContact: admin page, the CAPTCHA is required but no staff contact works without an account (A-517).
+	// CaptchaNoContact: admin page, the image is being shown (A-725) but no staff contact works without an account (A-517).
 	CaptchaNoContact bool
+	// CaptchaAdmin: admin page, the human check's mode and attack signal (A-725).
+	CaptchaAdmin *CaptchaAdminView
 	// StaffAttention: uncapped actionable category totals in the shared navigation and staff desk summaries.
 	StaffAttention *StaffAttention
 	// A-190 (image_takedown.go). RecentImages: /moderator, the newest public photos and avatars (vendors' only for a moderator); AvatarTakedown:
@@ -564,8 +566,32 @@ type AccountSession struct {
 	Current bool
 }
 
-// CaptchaView is set on login/register while the CAPTCHA is required; ID is empty when none could be issued (Error says why).
-type CaptchaView struct{ ID, Error string }
+// CaptchaView is set on login/register while the form asks for a human check; ID is empty when none could be issued
+// (Error says why). Question is a written question (A-725), shown instead of the image. UnderAttack: the image is
+// shown because of the attack signal, not because the operator forced it.
+type CaptchaView struct {
+	ID, Error, Question string
+	UnderAttack         bool
+}
+
+// CaptchaAdminView is /admin/security's human-check state (A-725). Private is the private administrator ingress's own
+// signal, shown when one is configured.
+type CaptchaAdminView struct {
+	Off, UnderAttack, Always bool
+	ImageNow, HasPrivate     bool
+	Public, Private          SignInAttackView
+}
+
+// SignInAttackView is one ingress's attack signal on /admin/security: Failures and Busy are the current windows' counts,
+// Trips how many times it turned on since this process started; Where names the ingress and Effective says the mode
+// lets the signal act. The limits are the constants, for the page's copy.
+type SignInAttackView struct {
+	Where                                string
+	Active, Effective                    bool
+	Since, Until                         string
+	Failures, Busy, Trips                int
+	FailureLimit, BusyLimit, HoldMinutes int
+}
 
 // P2 PGP
 type PGPView struct {

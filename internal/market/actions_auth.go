@@ -447,9 +447,9 @@ func ownerNotice(event string) string {
 // refuse from the form alone: a malformed handle or password, and on /login and /register a CAPTCHA id that is
 // not a live one issued to this session. A flood of junk sign-ins therefore holds no post slot a real sign-in
 // needs (A-178). An id is checked only when one is sent: whether the CAPTCHA is on is a database setting, so a
-// post without one goes on to authGate. A form shown while the CAPTCHA was on and posted after an
-// administrator turned it off carries a live id, which passes; only an id that expired or was never issued
-// to this browser is refused here even though the CAPTCHA is now off.
+// post without one goes on to authGate. A form shown with a check and posted after the check went away (the operator
+// changed the mode, or the attack signal ended) carries a live id, which passes; only an id that expired or was never
+// issued to this browser is refused here even though the form asks for no check now.
 func authPrecheck(a *App, r *http.Request, token string) error {
 	if !handlePattern.MatchString(strings.TrimSpace(r.PostForm.Get("handle"))) || !validPassword(r.PostForm.Get("password")) {
 		return errAuthInput
@@ -474,7 +474,7 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	if !handlePattern.MatchString(handle) || !validPassword(password) {
 		err = errAuthInput
 	} else if path != "/setup" {
-		err = a.checkCaptcha(c) // P1: single-use image CAPTCHA unless an administrator turned it off
+		err = a.checkCaptcha(c) // P1, A-725: the single-use check this form asks for in this mode, if any
 	}
 	if err == nil && path == "/register" {
 		// A taken handle is refused before any bcrypt, slot or budget. Recheck under the creation
@@ -522,6 +522,9 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	select {
 	case sem <- struct{}{}:
 	default:
+		if path == "/login" {
+			a.noteSignInBusy(c.Ctx()) // A-725: refused password checks are half of the attack signal
+		}
 		return "", "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
 	release = func() { <-sem }
@@ -723,6 +726,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 		// logging and spent budget (no refund), so the answer never tells whether the password was right.
 		if err != nil || check != nil || a.publicAdministrator(ctx, &User{Role: account.role}) {
 			a.logSignInRefusals()
+			a.noteSignInFailure(ctx) // A-725: failed passwords are the other half of the attack signal
 			if rescueID != "" {
 				a.logRescueRefusal()
 			}

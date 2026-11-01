@@ -231,9 +231,10 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await pressSubmit(admin, admin.getByRole('button', { name: 'Initialize marketplace' }));
   await expect(admin).toHaveURL(/\/admin\?welcome=1$/);
   seedStaffFactor('xmr_admin'); // A-706: staff actions need a second factor (fixture stand-in for PGP sign-in)
-  await admin.goto('/admin/security'); // A-542: the CAPTCHA switch is on Security & access
+  await admin.goto('/admin/security'); // A-542: the human check is on Security & access
+  await admin.locator('.admin-auth').getByRole('radio', { name: 'Off' }).check();
   await typeInto(admin, admin.locator('.admin-auth').getByLabel('Current password'), password);
-  await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }));
+  await pressSubmit(admin, admin.locator('.admin-auth').getByRole('button', { name: 'Save human check' }));
   const buyer = await context(browser, baseURL);
   const vendor = await context(browser, baseURL);
   await register(buyer, 'xmr_buyer', buyerPassword);

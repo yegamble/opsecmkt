@@ -15,6 +15,24 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## The image CAPTCHA now appears only under attack (migration 155, A-725)
+
+The image has no audio or text alternative, so it kept screen-reader users out. `captcha_required` now has three values,
+chosen under *Admin → Security & access → Sign-in protection*: `under_attack` (*Only under attack*, the new default),
+`true` (*Always the image*, as before) and `false` (*Off*, as before). In the new default `/login` has no image until a
+global attack signal is on, and `/register` asks a written question instead of an image.
+
+**Check this after upgrading.** Migration 155 moves `true` to `under_attack` unless the audit trail has a *Turned on
+CAPTCHA* row, which is the only record of an operator choosing it. So a market whose operator turned the CAPTCHA on after
+turning it off stays on *Always the image*, and `false` stays off. A market that only ever kept the seeded `true`, on
+purpose or not, or whose row has aged out of the audit trail's retention, moves to the new default, **which is weaker
+against bots**: the question stops only simple bots, and sign-in has no image until the signal. If you chose the image
+on purpose, choose *Always the image* again. The trade-offs are in the
+[operator guide](docs/operator-guide.md). Audit rows are read, never changed.
+
+Forms open during the upgrade may be refused once; reload the page. Rolling back to an earlier release fails closed: it
+reads `under_attack` as the image required. The signal is in memory, so a restart or redeploy turns it off.
+
 ## Finished XMPP receipts keep no address (migration 154, A-717)
 
 No configuration change. Migration 154 clears the recipient's XMPP address and key fingerprint from every outbox row

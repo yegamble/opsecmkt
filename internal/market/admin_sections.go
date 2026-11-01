@@ -18,7 +18,7 @@ var adminSections = []AdminSection{
 	{"users", "Users", "The user directory with each account's details, roles, second-factor resets, suspensions, bans and the staff roster."},
 	{"vendors", "Vendors", "Vendor policy, the application queue and the verified-vendor mark."},
 	{"payments", "Payments", "Monero escrow status, release deadline, the market fee (read-only), recovery and new escrow checkouts."},
-	{"security", "Security & access", "Site access, registrations, the sign-in CAPTCHA and paused sign-ins."},
+	{"security", "Security & access", "Site access, registrations, the human check and paused sign-ins."},
 	{"site", "Site & branding", "Market name, logo and staff contact."},
 	{"transparency", "Transparency", "Operator PGP key, warrant canary, public staff list and signed audit export."},
 	{"system", "System & audit", "Service isolation and updates, the application host, image scanner, retention, server errors and the audit trail."},
@@ -98,6 +98,9 @@ func (d PageData) AdminSectionAlert(slug string) string {
 			alerts = append(alerts, "Monero escrow needs attention.")
 		}
 	case "security":
+		if v := d.CaptchaAdmin; v != nil && v.UnderAttack && (v.Public.Active || v.Private.Active) {
+			alerts = append(alerts, "Sign-in is asking everyone for the image: the attack signal is on.")
+		}
 		if d.CaptchaNoContact {
 			alerts = append(alerts, "The CAPTCHA is on without a staff contact that works without an account.")
 		}

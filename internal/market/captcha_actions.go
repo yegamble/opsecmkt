@@ -18,29 +18,74 @@ func init() {
 	registerLoader("register", captchaLoader)
 	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: captchaToggle})
 	registerBackground(captchaSpentSweeper)
-	for _, page := range []string{"login", "register"} {
-		registerPreview(page, func(d *PageData) { d.Captcha = &CaptchaView{ID: "preview"} })
-	}
+	// The preview shows the default mode with no attack signal: /login has no human check.
+	registerPreview("register", func(d *PageData) {
+		d.Captcha = &CaptchaView{ID: "preview", Question: "What is seven plus five?"}
+	})
 }
 
 var captchaID = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// captchaRequired is true unless an administrator turned the CAPTCHA off (fail closed on a missing row).
-func captchaRequired(settings map[string]string) bool { return settings["captcha_required"] != "false" }
+// The values of the captcha_required setting (A-725). The old "true" keeps its meaning, the image on both forms; an
+// earlier release reads "under_attack" as that too, so a rollback fails closed.
+const (
+	captchaModeOff         = "false"        // no check on sign-in or registration
+	captchaModeUnderAttack = "under_attack" // the default: image on sign-in under the attack signal, question on registration
+	captchaModeAlways      = "true"         // the operator forces the image on sign-in and registration
+)
+
+// captchaModeOf reads the setting's value: anything but the two weaker modes, a missing row included, is the strictest.
+func captchaModeOf(value string) string {
+	if value == captchaModeOff || value == captchaModeUnderAttack {
+		return value
+	}
+	return captchaModeAlways
+}
+
+// captchaKind is what a form asks for.
+type captchaKind int
+
+const (
+	captchaKindNone captchaKind = iota
+	captchaKindImage
+	captchaKindText
+)
+
+// captchaKindFor decides the check of /register or /login in mode; ctx selects the ingress whose signal counts.
+func (a *App) captchaKindFor(ctx context.Context, mode string, register bool) captchaKind {
+	switch {
+	case mode == captchaModeOff:
+		return captchaKindNone
+	case mode == captchaModeAlways:
+		return captchaKindImage
+	case register:
+		return captchaKindText
+	case a.signInAttackOn(ctx):
+		return captchaKindImage
+	}
+	return captchaKindNone
+}
 
 // captchaLoader issues a fresh single-use challenge bound to this browser session for every login/register
-// view. Issuing is stateless (captcha.go) and writes nothing, so anonymous page views cannot grow a table or
-// hold a pool connection for it (A-176).
-func captchaLoader(_ context.Context, a *App, r *http.Request, d *PageData) error {
+// view that asks for one. Issuing is stateless (captcha.go) and writes nothing, so anonymous page views cannot
+// grow a table or hold a pool connection for it (A-176).
+func captchaLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error {
 	if d.Page == "register" && d.Access != nil && !d.Access.RegistrationOpen {
 		return nil
 	}
-	if !captchaRequired(d.Settings) {
+	mode := captchaModeOf(d.Settings["captcha_required"])
+	kind := a.captchaKindFor(ctx, mode, d.Page == "register")
+	if kind == captchaKindNone {
 		return nil
 	}
 	d.Captcha = &CaptchaView{ID: a.newCaptchaID(digest(sessionToken(r)), time.Now().Add(captchaTTL))}
 	if d.Captcha.ID == "" {
 		return fail(503, "Service unavailable")
+	}
+	if kind == captchaKindText {
+		d.Captcha.Question = a.captchaTextChallenge(d.Captcha.ID).Question
+	} else {
+		d.Captcha.UnderAttack = mode == captchaModeUnderAttack
 	}
 	return nil
 }
@@ -88,11 +133,19 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 }
 
 // errCaptchaExpired refuses a challenge id that expired, was already used or was not issued to this session.
-var errCaptchaExpired = fail(400, "The CAPTCHA expired or was already used. Go back, reload the page and enter the new image's characters.")
+var errCaptchaExpired = fail(400, "This CAPTCHA or question expired or was already used. Go back, reload the page and answer the new one.")
+
+// Messages of a refused answer, shown over the form with a fresh challenge (captchaRetry).
+const (
+	captchaRetryImage = "CAPTCHA answer incorrect. Enter the characters of the new image below."
+	captchaRetryText  = "That answer is not right. Answer the new question below."
+	captchaRetryNewly = "Because of many failed sign-ins, signing in needs an image for now. Enter its characters below."
+)
 
 // checkCaptcha consumes the submitted challenge (single use, even when the answer is wrong) and compares the
-// answer. It is a no-op while the CAPTCHA is turned off. An id this server did not issue to this session, or
-// one that has expired, is refused before anything is written.
+// answer. It is a no-op while the form asks for no check (captchaKindFor). An id this server did not issue to this
+// session, or one that has expired, is refused before anything is written. In the default mode a post with no id is a
+// form shown before the attack signal or a mode change, so it gets the form again with the check to answer.
 func (a *App) checkCaptcha(c *actionCtx) error {
 	ctx := c.Ctx()
 	var v string
@@ -100,10 +153,22 @@ func (a *App) checkCaptcha(c *actionCtx) error {
 	if err != nil && err != sql.ErrNoRows {
 		return fail(503, "Service unavailable")
 	}
-	if !captchaRequired(map[string]string{"captcha_required": v}) {
+	mode := captchaModeOf(v)
+	kind := a.captchaKindFor(ctx, mode, c.R.URL.Path == "/register")
+	if kind == captchaKindNone {
 		return nil
 	}
+	retry := captchaRetryImage
+	if kind == captchaKindText {
+		retry = captchaRetryText
+	}
 	id := c.Form.Get("captcha_id")
+	if id == "" && mode == captchaModeUnderAttack {
+		if kind == captchaKindImage {
+			retry = captchaRetryNewly
+		}
+		return captchaRetry(c, retry)
+	}
 	expires, ok := a.captchaIDValid(id, time.Now(), digest(c.Token))
 	if !ok {
 		return errCaptchaExpired
@@ -117,22 +182,25 @@ func (a *App) checkCaptcha(c *actionCtx) error {
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return errCaptchaExpired
 	}
-	if !a.captchaMatches(id, c.Form.Get("captcha")) {
-		return captchaRetry(c)
+	right := a.captchaMatches(id, c.Form.Get("captcha"))
+	if kind == captchaKindText {
+		right = a.captchaTextChallenge(id).accepts(c.Form.Get("captcha"))
+	}
+	if !right {
+		return captchaRetry(c, retry)
 	}
 	return nil
 }
 
-// captchaRetry answers a wrong CAPTCHA answer with 400 and the login or register form again, the error in its
+// captchaRetry answers a wrong or missing answer with 400 and the login or register form again, msg in its
 // alert, the typed handle kept (A-514) and a fresh challenge, so a browser without JavaScript needs no reload (QA-3).
 // The used id stays spent. When the page cannot be loaded, the shared refusal page asks for a reload.
-func captchaRetry(c *actionCtx) error {
-	const msg = "CAPTCHA answer incorrect. Enter the characters of the new image below."
+func captchaRetry(c *actionCtx, msg string) error {
 	return &httpError{Code: 400, Msg: msg, Render: func(w http.ResponseWriter) {
 		a := c.A
 		d := a.pageData(c.R, strings.TrimPrefix(c.R.URL.Path, "/"), c.Token, c.User)
 		if err := a.load(c.R, &d); err != nil {
-			a.refuse(w, c.R, c.User, 400, "CAPTCHA answer incorrect. Go back, reload the page and enter the new image's characters.")
+			a.refuse(w, c.R, c.User, 400, "That answer was not accepted. Go back, reload the page and answer the new human check.")
 			return
 		}
 		d.Error, d.FormHandle, d.FormVendor = msg, a.typedHandle(c.R), c.R.PostForm.Get("account_type") == "vendor"
@@ -171,8 +239,8 @@ func (a *App) sweepCaptchaSpent(ctx context.Context) error {
 
 func captchaToggle(c *actionCtx) (actionResult, error) {
 	v := c.Form.Get("captcha_required")
-	if v != "true" && v != "false" {
-		return actionResult{}, fail(400, "Choose whether the CAPTCHA is required")
+	if v != captchaModeAlways && v != captchaModeOff && v != captchaModeUnderAttack {
+		return actionResult{}, fail(400, "Choose only under attack, always the image, or off")
 	}
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		var previous string
@@ -187,8 +255,11 @@ func captchaToggle(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		audit := "Turned on CAPTCHA for sign-in and registration"
-		if v == "false" {
+		switch v {
+		case captchaModeOff:
 			audit = "Turned off CAPTCHA for sign-in and registration"
+		case captchaModeUnderAttack:
+			audit = "Set CAPTCHA to only under attack: the image on sign-in under the attack signal, a written question on registration"
 		}
 		audit += "; required changed from " + previous + " to " + v
 		return actionResult{Redirect: "/admin/security", Notice: "captcha", Audit: audit}, nil
