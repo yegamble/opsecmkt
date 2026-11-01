@@ -75,6 +75,17 @@ test('the keyboard reaches each section from the navigation', async ({ page, bro
   await expect(sectionNav(page).getByRole('link', { name: 'Users', exact: true })).toHaveAttribute('aria-current', 'page');
 });
 
+// A-721: these two tables also overflow a phone; the signature table holds no link.
+test('the scanner and payment-review tables are named keyboard regions', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto('/admin/system');
+  await waitForStyles(page);
+  await expect(page.getByRole('region', { name: 'Scanner signature database' })).toHaveAttribute('tabindex', '0');
+  await page.goto('/moderator');
+  await waitForStyles(page);
+  await expect(page.getByRole('region', { name: 'Payments flagged for review' })).toHaveAttribute('tabindex', '0');
+});
+
 // A-721: the audit table overflows a phone and holds no link, so the keyboard needs its wrapper to scroll it.
 test('the audit table scrolls by keyboard in a wrapper named by its heading', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 640 });
