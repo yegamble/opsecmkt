@@ -26,7 +26,7 @@ import (
 //     is its delivery deadline: step 1's buyer cancel applies from it.
 //  4. After a restore from backup (scripts/restore.sh, or UPGRADING.md section 6, sets escrow_xmr_release_recheck) the
 //     pass moves every deadline of a shipped or delivered order that has passed or ends within 72 hours to now + 72 hours
-//     and tells the buyer (xmrRecheckReleaseDeadlines; A-728: that pass runs before public access returns, so a deadline
+//     and tells the buyer and the vendor (xmrRecheckReleaseDeadlines; A-728: that pass runs before public access returns, so a deadline
 //     just short of passing needs the grace as much as a passed one). No such order then completes for those 72 hours
 //     unless its buyer confirms. recheckReleaseDeadlines is the Bitcoin escrow step, with its own setting. Until the
 //     recheck has succeeded and consumed the setting, step 3 completes nothing, a dispute is not refused as late
@@ -392,16 +392,45 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 	return tx.Commit()
 }
 
+// xmrDeadlineWhat names what release_at is for an order in state: a delivered digital order's dispute window (A-709), or
+// a shipped physical order's release deadline.
+func xmrDeadlineWhat(state string) string {
+	if state == stateDelivered {
+		return "dispute window"
+	}
+	return "release deadline"
+}
+
+// xmrOutageMovedNote opens the order note of a deadline an outage's recheck moved to until (a time as utcUntil writes it).
+// It is the one record of that move per order, since the recheck resets release_recheck and the cause setting is
+// global, so the order page reads it (xmrMovedByOutage).
+func xmrOutageMovedNote(state, until string) string {
+	what := xmrDeadlineWhat(state)
+	return strings.ToUpper(what[:1]) + what[1:] + " moved to " + until + " after an outage (Monero escrow)"
+}
+
+// xmrMovedByOutage reports whether an outage's recheck moved the deadline of orderID to until, where it still is (VEN103-1).
+// Only the system's own note counts (actor_id IS NULL), as a party's order note can say anything, and it must name
+// until, so a later move by a ban or a restore ends the claim.
+func xmrMovedByOutage(ctx context.Context, q rowQuerier, orderID, state, until string) (bool, error) {
+	var moved bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM order_events WHERE order_id=$1 AND actor_id IS NULL AND from_state=$2 AND to_state=$2 AND starts_with(note,$3))`,
+		orderID, state, xmrOutageMovedNote(state, until)).Scan(&moved)
+	return moved, err
+}
+
 // xmrRecheckReleaseDeadlines moves, once after each restore from backup or outage (A-730), every release deadline of a
 // shipped Monero escrow order, and every dispute window of a delivered one (A-709), that has passed or ends within 72
-// hours (A-728), with no dispute, to now + 72 hours, with an order note and a notice to the buyer, in one
+// hours (A-728), with no dispute, to now + 72 hours, with an order note and a notice to the buyer and to the vendor
+// (VEN103-1: the move counts as the reminder, so it is the vendor's only word of the date, and replaces any earlier), in one
 // transaction that consumes the request (step 4 of the file comment; recheckReleaseDeadlines' rules: only the
 // rechecks reset and set release_recheck, so a second restore rechecks as the first did). The same transaction records
 // the end of the vendor's grace (xmrCancelWaitKey, A-720), with no gap between the two a buyer's cancel could use. A row
 // the restored database carries is replaced only by a later end, so a restore never shortens a grace.
 //
 // After an outage the order page must not say a restore moved the deadline: release_recheck is what it reads, so the
-// flag is reset again (the ban's way round migration 079's trigger, xmrBanDeadlines); the order's history says why.
+// flag is reset again (the ban's way round migration 079's trigger, xmrBanDeadlines); the order's history says why, and
+// the page reads that note (xmrOutageMovedNote).
 func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -437,35 +466,40 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 			return err
 		}
 		var at time.Time
-		var buyer string
+		var buyer, vendor string
 		if err = tx.QueryRowContext(ctx, `UPDATE escrows es SET release_at=GREATEST(es.release_at,`+releaseGraceSQL+`),release_recheck=true,reminded_at=COALESCE(es.reminded_at,now())
-			FROM orders o WHERE o.id=es.order_id AND es.order_id=$1 AND es.coin='XMR' RETURNING es.release_at,o.buyer_id`, id).Scan(&at, &buyer); err != nil {
+			FROM orders o JOIN products p ON p.id=o.product_id WHERE o.id=es.order_id AND es.order_id=$1 AND es.coin='XMR' RETURNING es.release_at,o.buyer_id,p.vendor_id`, id).Scan(&at, &buyer, &vendor); err != nil {
 			return err
 		}
-		until, what, check, outcome := utcUntil(at), "release deadline", "if the goods have arrived, or open a dispute before then if they have not", "the market releases the coins in this Monero escrow to the vendor"
+		until, what, check, outcome, vendorOutcome := utcUntil(at), xmrDeadlineWhat(state), "if the goods have arrived, or open a dispute before then if they have not", "the market releases the coins in this Monero escrow to the vendor", "the market releases the coins in this Monero escrow to you"
 		if state == stateDelivered { // A-709: a digital order's dispute window
-			what, check, outcome = "dispute window", "if the delivered content works, or open a dispute before then if it does not", "the vendor can claim the coins in this Monero escrow"
+			check, outcome, vendorOutcome = "if the delivered content works, or open a dispute before then if it does not", "the vendor can claim the coins in this Monero escrow", "you can claim the coins in this Monero escrow from the order page"
 		}
-		closed := ""
+		closed, vendorClosed := "", ""
 		if banned, err := orderVendorBanned(ctx, tx, id); err != nil { // PAY101-6: after the row lock, as a ban locks the order first
 			return err
 		} else if banned {
 			closed, outcome = banDeadlineNote+". ", xmrBanHeldPayment
+			vendorClosed, vendorOutcome = "Your account is closed. ", xmrBanHeldPayment
 		}
 		note, why := strings.ToUpper(what[:1])+what[1:]+" moved to "+until+" after a restore from backup (Monero escrow): the deadline in the restored records has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute.", "this market restored its records from a backup"
 		if outage {
 			if _, err = tx.ExecContext(ctx, "UPDATE escrows SET release_recheck=false WHERE order_id=$1 AND coin='XMR'", id); err != nil {
 				return err
 			}
-			note, why = strings.ToUpper(what[:1])+what[1:]+" moved to "+until+" after an outage (Monero escrow): this market was unavailable, and this deadline has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute.", outageWhy
+			note, why = xmrOutageMovedNote(state, until)+": this market was unavailable, and this deadline has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute.", outageWhy
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, state, note); err != nil {
 			return err
 		}
-		body := "Order " + shortID(id) + ": " + why + ", and the " + what + " of this order has passed or ends within 72 hours, so it was moved to " + until +
-			". " + closed + "Use Confirm receipt on the order page " + check + ". If you do neither, the order completes at that time and " + outcome + "."
-		if _, err = insertNotification(ctx, tx, buyer, body, id); err != nil {
-			return err
+		moved := "Order " + shortID(id) + ": " + why + ", and the " + what + " of this order has passed or ends within 72 hours, so it was moved to " + until + ". "
+		for _, n := range [][2]string{
+			{buyer, moved + closed + "Use Confirm receipt on the order page " + check + ". If you do neither, the order completes at that time and " + outcome + "."},
+			{vendor, moved + vendorClosed + "The buyer has until then to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and " + vendorOutcome + "."},
+		} {
+			if _, err = insertNotification(ctx, tx, n[0], n[1], id); err != nil {
+				return err
+			}
 		}
 	}
 	grace, err := tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,to_char((`+releaseGraceSQL+`) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))

@@ -866,12 +866,13 @@ type EscrowCosignerView struct{ Who, Key string }
 // then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f). Digital: the
 // order is a delivered digital Monero escrow order and At ends its dispute window (A-709). Recheck: it has passed and a
 // recheck is pending, which will move it (A-720); Outage: an outage asked for that recheck, not a restore (A-730).
+// OutageMoved: an outage's recheck moved it to At (VEN103-1), as Rechecked says of a restore's.
 // closed: it has passed and no recheck is pending, so a dispute is refused (lateDispute) and not offered.
 type EscrowDeadlineView struct {
-	At, Left                                               string
-	Due, Rechecked, VendorClosed, Digital, Recheck, Outage bool
-	HoldRefundDays                                         int
-	closed                                                 bool
+	At, Left                                                            string
+	Due, Rechecked, VendorClosed, Digital, Recheck, Outage, OutageMoved bool
+	HoldRefundDays                                                      int
+	closed                                                              bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At

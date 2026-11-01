@@ -13,8 +13,16 @@ import (
 // A-546: a ban is an administrator's permanent closure of an account (owner decision 2026-10-18). DB integration
 // tests against the simulated Monero wallet RPC, not chain evidence.
 
+// bannedSellerMsg is what a banned account that sells reads after a correct password, with the hold of days days.
+func bannedSellerMsg(days int) string {
+	return "This account is closed and cannot sign in. While it is closed, payments to this account not yet sent are held, with no other address paid in their place, and after " +
+		strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. Ask the operator of this market. " + staffReadyLine
+}
+
+var bannedMsg = bannedSellerMsg(defaultBanHoldRefundDays)
+
 const (
-	bannedMsg      = "This account is closed and cannot sign in. Ask the operator of this market. " + staffReadyLine
+	bannedBuyerMsg = "This account is closed and cannot sign in. Ask the operator of this market. " + staffReadyLine
 	testBanReason  = "Took payment for three orders and shipped nothing."
 	testLiftReason = "Appeal upheld: the parcels were lost in the post."
 	// The reasons as audit rows quote them: without the final full stop, since the row goes on after it (SEC-546-6).
@@ -170,6 +178,26 @@ func TestBanAccount(t *testing.T) {
 		t.Fatalf("banned sign-in: %d %q", w.Code, refusalText(w.Body.String()))
 	}
 	mustNotContain(t, w.Body.String(), testBanReason)
+	// A-739: the policy sentence names the period in force, and a wrong password shows nothing new: the same answer as an
+	// unknown handle. A banned buyer reads the plain refusal, even with orders as a buyer; a buyer-role account holding
+	// orders on its own listings reads the sentence.
+	agExec(e, "INSERT INTO settings(key,value) VALUES($1,'45')", banHoldRefundDaysSetting)
+	agExpect(e, "/login", randomToken(), form("handle", "ban_vendor", "password", testPassword), 403, bannedSellerMsg(45))
+	agExec(e, "DELETE FROM settings WHERE key=$1", banHoldRefundDaysSetting)
+	wrong, unknownHandle := e.do("POST", "/login", randomToken(), form("handle", "ban_vendor", "password", "not-the-password-at-all")), e.do("POST", "/login", randomToken(), form("handle", "no_such_handle", "password", "not-the-password-at-all"))
+	if wrong.Code != 401 || wrong.Code != unknownHandle.Code || refusalText(wrong.Body.String()) != refusalText(unknownHandle.Body.String()) {
+		t.Fatalf("a wrong password on a banned seller: %d %q, unknown handle %d %q", wrong.Code, refusalText(wrong.Body.String()), unknownHandle.Code, refusalText(unknownHandle.Body.String()))
+	}
+	mustNotContain(t, wrong.Body.String(), "not yet sent", "cannot sign in")
+	plainID, _ := e.user("ban_plain_buyer", "buyer")
+	sellerID, _ := e.user("ban_buyer_seller", "buyer")
+	e.order(plainID, e.product(sellerID, "physical"), "XMR", stateDraft)
+	for _, c := range []struct{ handle, want string }{{"ban_plain_buyer", bannedBuyerMsg}, {"ban_buyer_seller", bannedMsg}} {
+		agExpect(e, "/admin/ban", admin, banForm("ban", c.handle, testBanReason), 303, "")
+		agExpect(e, "/login", randomToken(), form("handle", c.handle, "password", testPassword), 403, c.want)
+		agExpect(e, "/login", randomToken(), form("handle", c.handle, "password", "not-the-password-at-all"), 401, "Invalid handle or password")
+		agExpect(e, "/admin/ban", admin, banForm("unban", c.handle, testLiftReason), 303, "")
+	}
 	// A pending sign-in that survived (a race with the ban) cannot finish either.
 	key, _ := agEnableTOTP(e, vendorID)
 	agExpect(e, "/challenge", randomToken(), form("method", "totp", "code", agTOTPNow(key)), 403, bannedMsg, agPending(e, vendorID))

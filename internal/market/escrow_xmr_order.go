@@ -24,7 +24,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund, strayState, strayWait string
 	var feeBps, openStrays int64
-	var shipByOpen, tooFew, recheck, outage bool
+	var shipByOpen, tooFew, refundAsked, recheck, outage bool
 	var issued, windowFrom time.Time
 	var firstSeen sql.NullTime
 	var shipBy, destroyed, cancelWait sql.NullTime
@@ -34,11 +34,12 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		(SELECT min(created) FROM payments WHERE order_id=es.order_id AND NOT locked AND NOT after_close),
 		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at,COALESCE(x.state,''),COALESCE(x.send_error,''),
 		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund' AND r.state='failed' AND r.send_error=$2),
+		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund'),
 		(SELECT count(*) FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='stray_refund' AND r.state IN ('requested','built','relayed')),
 		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`
 		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
 		LEFT JOIN LATERAL (SELECT x.state,x.send_error FROM xmr_settlements x WHERE x.order_id=es.order_id AND x.kind='stray_refund' ORDER BY x.id DESC LIMIT 1) x ON true
-		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &openStrays, &recheck, &cancelWait, &outage); err != nil {
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &refundAsked, &openStrays, &recheck, &cancelWait, &outage); err != nil {
 		return err
 	}
 	if destroyed.Valid {
@@ -152,7 +153,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		v.Status, v.NextStep = "Funded and completed", "The escrowed coins are released to the vendor by a transaction the market builds and sends."
 	case o.State == stateDisputed:
 		v.Status, v.NextStep = "Disputed", "An administrator of this market decides the dispute. The decision is paid from this escrow: a refund to the buyer's refund address, or a release to the vendor."
-	case o.State == stateCancelled && received+pending > 0:
+	case o.State == stateCancelled && received+pending > 0 && refundAsked: // BE103V-2: with none, one that returned goes by a stray refund
 		v.Status = "Cancelled; the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends."
 	case o.State == stateCancelled && tooFew && leftOutSeen > 0:
 		// A-437: the refund's coins were too few, so it ended and they were left out for a stray refund (xmrRefundTooFew).
@@ -175,6 +176,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		// Nothing is read while Monero escrow is unavailable, so an empty ledger proves nothing.
 		v.Status = "Cancelled. This escrow cannot be checked right now because Monero escrow is unavailable, so a deposit to it may not be shown here."
 		v.Unread = "Not read while Monero escrow is unavailable"
+	case o.State == stateCancelled && len(v.Deposits) > 0: // BE103-1: seen, but none counted, so not "nothing was received"
+		v.Status = "Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded. A deposit that returns goes back, less the network fee, to the buyer's refund address by a stray refund once it has confirmed."
 	case o.State == stateCancelled:
 		v.Status = "Cancelled; nothing was received in this escrow"
 	default:
@@ -228,6 +231,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
 		case t.To == stateCancelled && counted > 0:
 			t.Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + a.escrowAmount(o, counted) + " in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds and sends the refund transaction. This is final."}
+		case t.To == stateCancelled && o.State == statePaid: // BE103-1: a cancel of a paid order always needs the confirmation (cancelAction)
+			t.Payout = &PayoutPreview{Confirm: "No counted coins are in this escrow, so cancelling refunds nothing unless the deposit returns: the market sends nothing now, and a deposit that returns after the cancel goes back, less the network fee, to the buyer's refund address by a stray refund once it has confirmed. This is final."}
 		}
 		kept = append(kept, t)
 	}
@@ -379,6 +384,11 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 			Digital: o.State == stateDelivered, Recheck: remaining <= 0 && recheckAsked, Outage: outage, closed: remaining <= 0 && !recheckAsked}
 		if v.Deadline.VendorClosed, err = orderVendorBanned(ctx, a.db, o.ID); err != nil {
 			return err
+		}
+		if !rechecked { // VEN103-1: release_recheck says a restore moved it; an outage's recheck resets that
+			if v.Deadline.OutageMoved, err = xmrMovedByOutage(ctx, a.db, o.ID, o.State, v.Deadline.At); err != nil {
+				return err
+			}
 		}
 		if v.Deadline.VendorClosed { // PAY90-3: the buyer may still be refunded once the hold has lasted (A-652f)
 			if v.Deadline.HoldRefundDays, err = holdRefundDaysShown(ctx, a.db); err != nil {

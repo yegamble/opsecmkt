@@ -34,6 +34,39 @@ func (x *xmrEscrowEnv) movedNotes(order string) []string {
 	return agStrings(x.t, x.testEnv, "SELECT note FROM order_events WHERE order_id=$1 AND strpos(note,'moved to')>0 ORDER BY id", order)
 }
 
+// movedNotices lists uid's notices for order that say the recheck moved its deadline.
+func (x *xmrEscrowEnv) movedNotices(uid, order string) []string {
+	x.t.Helper()
+	var moved []string
+	for _, n := range x.noticesOf(uid, order) {
+		if strings.Contains(n, "so it was moved to") {
+			moved = append(moved, n)
+		}
+	}
+	return moved
+}
+
+// wantVendorMoved fails unless the vendor of order has exactly one notice that its deadline moved, naming the date now on
+// the order, the cause and every outcome clause, with nothing of the buyer's in it (VEN103-1).
+func (x *xmrEscrowEnv) wantVendorMoved(order, cause string, says ...string) {
+	x.t.Helper()
+	moved := x.movedNotices(x.partyOf(order, roleVendor), order)
+	if len(moved) != 1 || !containsAll(moved[0], append(says, cause, "so it was moved to "+utcUntil(x.releaseAt(order)))...) {
+		x.t.Fatalf("the vendor's recheck notices for %s, want one with %q and %q: %q", shortID(order), cause, says, moved)
+	}
+	buyer := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", x.partyOf(order, roleBuyer))
+	refund := agStr(x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)
+	if strings.Contains(moved[0], buyer) || strings.Contains(moved[0], refund) {
+		x.t.Fatalf("the vendor's notice names the buyer: %s", moved[0])
+	}
+}
+
+// outageMovedLine is what the panel says of a deadline an outage moved; restoreMovedLine of one a restore moved.
+const (
+	outageMovedLine  = "This deadline was moved because " + outageWhy + "."
+	restoreMovedLine = "This deadline was moved after the market restored its records from a backup."
+)
+
 // A-730 (owner decision): the market being down consumes no buyer's deadline. A gap of over an hour since the last
 // deadline step moves every deadline passed or within 72 hours as a restore's recheck does, before any of them could
 // complete, and says an outage moved it, on the notice, the note and the order page. A later deadline is untouched. A
@@ -47,6 +80,10 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 	far, _, _ := x.shippedXMR(physical)
 	window, windowSess := x.deliveredXMR(x.product)
 	paid, paidSess := x.paidXMRPhysical(physical)
+	remindedOrder, _, _ := x.shippedXMR(physical)
+	x.forceDeadline(remindedOrder, "release_at=now()+interval '10 hours'")
+	remindedWas := x.releaseAt(remindedOrder)
+	x.mustPoll() // the reminder goes out, and the vendor is told this date
 	x.forceDeadline(passed, "release_at=now()-interval '2 days'")
 	x.forceDeadline(near, "release_at=now()+interval '24 hours'")
 	x.forceDeadline(far, "release_at=now()+interval '5 days'")
@@ -69,6 +106,21 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 			t.Fatalf("the notes of %s: %q", shortID(o), notes)
 		}
 	}
+	// VEN103-1: the vendor is told too, once, whether or not a reminder had gone out: a reminded order's vendor holds a date
+	// that no longer applies, and an unreminded one's would hear nothing, as the recheck's move suppresses the reminder.
+	if !anyContains(x.noticesOf(x.vendor, remindedOrder), "the buyer has until "+utcUntil(remindedWas)) {
+		t.Fatalf("the reminder the vendor should have had first: %q", x.noticesOf(x.vendor, remindedOrder))
+	}
+	for _, o := range []string{passed, near, remindedOrder} {
+		x.wantVendorMoved(o, outageWhy, "the order completes at that time and the market releases the coins in this Monero escrow to you")
+	}
+	x.wantVendorMoved(window, outageWhy, "dispute window", "the order completes at that time and you can claim the coins in this Monero escrow from the order page")
+	if n := x.movedNotices(x.vendor, far); len(n) != 0 {
+		t.Fatalf("the vendor of an order not moved was told: %q", n)
+	}
+	if n := x.movedNotices(x.vendor, paid); len(n) != 0 {
+		t.Fatalf("the vendor of a paid order was told: %q", n)
+	}
 	if x.state(passed) != stateShipped || x.state(near) != stateShipped || x.state(window) != stateDelivered {
 		t.Fatalf("the moved orders: %s %s %s", x.state(passed), x.state(near), x.state(window))
 	}
@@ -79,11 +131,20 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 		t.Fatalf("the recheck left its request: %q", x.recheckKey())
 	}
 	// The order page does not say a restore moved it.
-	if p := x.panel(passed, passedSess); strings.Contains(p, "restored") || !strings.Contains(p, utcUntil(x.releaseAt(passed))) {
+	if p := x.panel(passed, passedSess); strings.Contains(p, "restored") || !containsAll(p, utcUntil(x.releaseAt(passed)), outageMovedLine) {
 		t.Fatalf("the panel after an outage's recheck:\n%s", p)
 	}
-	if p := x.panel(window, windowSess); strings.Contains(p, "restored") {
+	if p := x.panel(window, windowSess); strings.Contains(p, "restored") || !strings.Contains(p, outageMovedLine) {
 		t.Fatalf("the digital panel after an outage's recheck:\n%s", p)
+	}
+	// VEN103-1: the vendor's panel names the cause as well; an order not moved says nothing of one.
+	for _, o := range []string{passed, window} {
+		if p := x.panel(o, x.vendorSess); strings.Contains(p, "restored") || !strings.Contains(p, outageMovedLine) {
+			t.Fatalf("the vendor's panel after an outage's recheck:\n%s", p)
+		}
+	}
+	if p := x.panel(far, x.vendorSess); strings.Contains(p, outageMovedLine) || strings.Contains(p, restoreMovedLine) {
+		t.Fatalf("the panel of an order the recheck did not move:\n%s", p)
 	}
 
 	// The vendor's grace: the same transaction moved it, and every line about it names the outage.
@@ -111,6 +172,103 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 	notices := x.noticesOf(x.partyOf(passed, roleBuyer), passed)
 	if countContaining(notices, "an outage") != 1 || anyContains(notices, "Reminder") {
 		t.Fatalf("after another pass: %q", notices)
+	}
+	for _, o := range []string{passed, near, window, remindedOrder} {
+		if n := x.movedNotices(x.vendor, o); len(n) != 1 {
+			t.Fatalf("the vendor's notices for %s after another pass: %q", shortID(o), n)
+		}
+	}
+}
+
+// VEN103-1: the line that names an outage follows the deadline it moved, from the system's own note. A party's note with
+// the same words proves nothing, a later ban that moves the deadline again ends the claim, and a later recheck's cause
+// replaces it, in either order.
+func TestXMROutageCauseFollowsDeadline(t *testing.T) {
+	setup := func(t *testing.T) (*xmrEscrowEnv, string, string) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		o, sess, _ := x.shippedXMR(x.physical(x.vendor))
+		x.forceDeadline(o, "release_at=now()-interval '1 hour'")
+		return x, o, sess
+	}
+	outage := func(x *xmrEscrowEnv) {
+		x.t.Helper()
+		x.setLastDeadlineStep("2 hours")
+		x.mustPoll()
+	}
+	restore := func(x *xmrEscrowEnv) {
+		x.t.Helper()
+		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+		x.mustPoll()
+	}
+	t.Run("a party's note", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		o, sess, _ := x.shippedXMR(x.physical(x.vendor))
+		forged := "Release deadline moved to " + utcUntil(x.releaseAt(o)) + " after an outage (Monero escrow): this market was unavailable."
+		agExec(x.testEnv, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,'shipped','shipped',$2,$3)", o, x.vendor, forged)
+		for _, s := range []string{sess, x.vendorSess} {
+			if p := x.panel(o, s); strings.Contains(p, outageMovedLine) {
+				t.Fatalf("a party's note made the panel claim an outage:\n%s", p)
+			}
+		}
+	})
+	t.Run("a ban moves it later", func(t *testing.T) {
+		x, o, sess := setup(t)
+		outage(x)
+		if p := x.panel(o, sess); !strings.Contains(p, outageMovedLine) {
+			t.Fatalf("after the outage:\n%s", p)
+		}
+		// As if the outage's recheck were an hour old (a date is to the minute): the ban then moves the deadline to a new one.
+		was := utcUntil(x.releaseAt(o))
+		x.forceDeadline(o, "release_at=now()+interval '71 hours'")
+		agExec(x.testEnv, "UPDATE order_events SET note=replace(note,$2,$3) WHERE order_id=$1 AND actor_id IS NULL", o, was, utcUntil(x.releaseAt(o)))
+		if p := x.panel(o, sess); !strings.Contains(p, outageMovedLine) {
+			t.Fatalf("an hour after the outage:\n%s", p)
+		}
+		_, admin := x.user("causeban_admin", "admin")
+		x.banVendor(admin)
+		if d := x.releaseAt(o).Sub(x.dbNow()); d < 71*time.Hour+30*time.Minute {
+			t.Fatalf("the ban left the deadline %s away", d)
+		}
+		if p := x.panel(o, sess); strings.Contains(p, outageMovedLine) || strings.Contains(p, restoreMovedLine) {
+			t.Fatalf("after a ban moved it:\n%s", p)
+		}
+	})
+	t.Run("a restore after an outage", func(t *testing.T) {
+		x, o, sess := setup(t)
+		outage(x)
+		x.forceDeadline(o, "release_at=now()+interval '1 hour'")
+		restore(x)
+		if p := x.panel(o, sess); strings.Contains(p, outageMovedLine) || !strings.Contains(p, restoreMovedLine) {
+			t.Fatalf("after a restore's recheck moved it:\n%s", p)
+		}
+		x.wantLatestMoved(o, "restored its records from a backup")
+	})
+	t.Run("an outage after a restore", func(t *testing.T) {
+		x, o, sess := setup(t)
+		restore(x)
+		if p := x.panel(o, x.vendorSess); !strings.Contains(p, restoreMovedLine) || strings.Contains(p, outageMovedLine) {
+			t.Fatalf("after the restore, the vendor's panel:\n%s", p)
+		}
+		x.forceDeadline(o, "release_at=now()+interval '1 hour'")
+		outage(x)
+		for _, s := range []string{sess, x.vendorSess} {
+			if p := x.panel(o, s); strings.Contains(p, restoreMovedLine) || !strings.Contains(p, outageMovedLine) {
+				t.Fatalf("after an outage moved it:\n%s", p)
+			}
+		}
+		x.wantLatestMoved(o, outageWhy)
+	})
+}
+
+// wantLatestMoved fails unless the vendor has one notice from each of two rechecks of order, one naming cause, and one
+// naming the date now on the order.
+func (x *xmrEscrowEnv) wantLatestMoved(order, cause string) {
+	x.t.Helper()
+	moved := x.movedNotices(x.vendor, order)
+	if len(moved) != 2 || countContaining(moved, cause) != 1 || countContaining(moved, utcUntil(x.releaseAt(order))) == 0 {
+		x.t.Fatalf("the vendor's notices after two rechecks: %q", moved)
 	}
 }
 
@@ -347,6 +505,11 @@ func TestXMRRecheckNoticeBannedVendor(t *testing.T) {
 				if len(moved) != 1 || !containsAll(moved[0], c.says, banDeadlineNote, "the order completes at that time and "+xmrBanHeldPayment) ||
 					strings.Contains(moved[0], "can claim") || strings.Contains(moved[0], "releases the coins") {
 					t.Fatalf("the recheck's notices for %s: %q", shortID(o), moved)
+				}
+				// VEN103-1: its vendor is told the payment is held, and no claim or release is promised.
+				x.wantVendorMoved(o, c.says, "Your account is closed.", "the order completes at that time and "+xmrBanHeldPayment)
+				if n := x.movedNotices(x.vendor, o)[0]; strings.Contains(n, "can claim") || strings.Contains(n, "releases the coins") {
+					t.Fatalf("a banned vendor's notice promises the coins: %s", n)
 				}
 			}
 		})
