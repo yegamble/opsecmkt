@@ -1837,7 +1837,7 @@ again). Before clearing the gate, re-check them on `/admin` against your operato
 cancels made after the backup are not in the restored records either, and a restore cannot move an order's ship-by time
 or delivery deadline: review the escrow orders shipped, delivered or cancelled around the backup point. The restored order
 messages and notices stop at the backup, and the wallet's transfer history shows deposits and claims, not a shipment or
-delivery, so the evidence is the old database, if it survives, or the parties. For 72 hours after the deadline recheck a
+delivery, so the evidence is the old database, if it survives; the parties can only add to it once public access returns, or through a contact you already hold outside the market. [Orders around the backup point](docs/testnet-runbook.md#orders-around-the-backup-point) says what to do in each case, including telling a vendor not to ship when the wallet history shows a refund the records lack. For 72 hours after the deadline recheck a
 buyer's cancel of a paid order whose restored ship-by time or delivery deadline passes before then is refused, and the
 vendor can still ship or deliver it: tell vendors to re-ship or re-deliver in that time, using Mark shipped again for goods
 sent after the backup (A-714, A-720). Afterwards the buyer can cancel it for a refund, even if the vendor shipped or

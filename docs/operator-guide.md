@@ -1706,7 +1706,7 @@ too, reads every wallet that may hold coins, and gives a wallet older than the d
 rescan so that deposits to accounts it does not know are seen. Before clearing the gate, review the escrow orders shipped,
 delivered or cancelled around the backup point: the restored records lack those made after it, with their order messages
 and notices, and the wallet's transfer history shows deposits and claims, not a shipment or delivery, so the evidence is
-the old database, if it survives, or the parties. A restore cannot move a paid order's ship-by time or delivery deadline.
+the old database, if it survives; the parties can only add to it once public access returns, or through a contact you already hold outside the market. [Orders around the backup point](testnet-runbook.md#orders-around-the-backup-point) says what to do in each case, including telling a vendor not to ship when the wallet history shows a refund the records lack. A restore cannot move a paid order's ship-by time or delivery deadline.
 For 72 hours after the recheck a buyer's cancel of a paid order whose restored deadline passes before then is refused
 (A-720), and the vendor can still ship or deliver it: tell vendors to re-ship or re-deliver in that time, using **Mark
 shipped** again for goods sent after the backup (they need no second dispatch). The 72 hours run from the first pass after

@@ -888,7 +888,7 @@ Monero per-order custodial escrow is the only payment path. Checkout claims an a
 
 Digital orders can be claimed by the vendor once completed: after the buyer's confirmation or at the end of the 48-hour dispute window that follows delivery. Physical orders release after buyer confirmation or the recorded release deadline; administrator dispute decisions determine release or refund. Wallet retention, late-deposit handling, guarded retries and restore reconciliation are described in [Monero escrow](escrow.md) and the [operator guide](operator-guide.md#monero-escrow).
 
-Fakechain tests exercise real daemon and wallet behavior. Browser journeys use a simulated wallet with JavaScript disabled; they are not chain evidence. The recorded public stagenet digital claim does not establish public refund, physical-deadline, Tor-delivery or mainnet readiness.
+Fakechain tests exercise real daemon and wallet behavior. Browser journeys use a simulated wallet with JavaScript disabled; they are not chain evidence. The recorded public stagenet digital claim does not establish public refund, physical-deadline, Tor-delivery or mainnet readiness. That record predates A-709: funding then completed the order, and the dispute window and delivered state have no public-network run.
 
 ### P6 Transparency
 
