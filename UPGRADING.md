@@ -15,6 +15,12 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A banned seller's sign-in refusal states the payment policy (A-739)
+
+No migration or configuration. After a correct password, a banned account that sells (vendor role, approved to sell, or an order on its
+listings) also reads one fixed sentence: its payments are held, no other address is paid, and after the held-release refund period in
+force an administrator may refund the buyer. It states no order, count or amount. A banned buyer and a wrong password see no change.
+
 ## A recheck also tells the vendor; a paid order with no counted deposit can be cancelled from its form (A-737)
 
 No migration or configuration. A restore's or an outage's recheck used to notify only the buyer, so a vendor kept the date of an

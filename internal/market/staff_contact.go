@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -136,16 +137,41 @@ func signedOutStaffContactRefusal(ctx context.Context, q rowQuerier) (string, er
 }
 
 // suspendedRefusal refuses sign-in to an account an administrator suspended, or banned (A-546: closed, without the
-// reason). It is only returned once the password is correct, so it reveals nothing to someone who does not know it.
-func suspendedRefusal(ctx context.Context, q rowQuerier, banned bool) error {
+// reason). It is only returned once the password is correct, so it reveals nothing to someone who does not know it, and
+// a banned account that sells is told the policy for its payments (A-739, bannedSellerPolicy).
+func suspendedRefusal(ctx context.Context, q rowQuerier, userID string, banned bool) error {
 	contact, err := signedOutStaffContactRefusal(ctx, q)
 	if err != nil {
 		return err
 	}
 	if banned {
-		return fail(403, "This account is closed and cannot sign in. "+contact)
+		policy, err := bannedSellerPolicy(ctx, q, userID)
+		if err != nil {
+			return err
+		}
+		return fail(403, "This account is closed and cannot sign in. "+policy+contact)
 	}
 	return fail(403, "This account is suspended. "+contact)
+}
+
+// bannedSellerPolicy is the sentence a banned account that sells reads after a correct password (A-739, owner decision),
+// "" for any other: it sells when its role is vendor, it was approved to sell, or an order was placed on one of its listings
+// (a ban makes a moderator a buyer, whose orders stay held). The sentence is the same for every such account, so it
+// states no order, count or amount. The days are the period the held-release refund enforces (holdRefundDaysShown).
+func bannedSellerPolicy(ctx context.Context, q rowQuerier, userID string) (string, error) {
+	var sells bool
+	if err := q.QueryRowContext(ctx, `SELECT u.role='vendor' OR u.vendor_approved OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE p.vendor_id=u.id)
+		FROM users u WHERE u.id=$1`, userID).Scan(&sells); err != nil {
+		return "", err
+	}
+	if !sells {
+		return "", nil
+	}
+	days, err := holdRefundDaysShown(ctx, q)
+	if err != nil {
+		return "", err
+	}
+	return "While it is closed, payments for its orders are held: the market sends nothing to this account, and no other address is ever paid. After " + strconv.Itoa(days) + " days held, an administrator may refund the buyer instead. ", nil
 }
 
 // staffContactNeedsAccount: a contact that is exactly a handle can be messaged only from an account, so it is no
