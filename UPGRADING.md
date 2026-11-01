@@ -56,11 +56,23 @@ or deliver it.
 
 What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
 Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
-releases go ahead. Ask for the recheck yourself as soon as ingress fails, with
-`db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
-which the next pass consumes, and repeat it within every 72 hours until ingress returns, since each request moves only deadlines
+releases go ahead. Ask for the recheck yourself as soon as ingress fails, with the host command:
+
+```sh
+# Compose, with the bundled or an external database
+docker compose run --rm --no-deps app -request-deadline-recheck
+# Native production installation: the URL file for the database the installation uses now
+DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck
+```
+
+On a native installation, name the host-readable URL file of the [production layout](docs/install/production.md) for the database the installation uses now. After a [native rollback](#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request.
+
+The command works with the app running and writes the request and nothing else. It prints whether the recheck is now pending
+or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. The
+next pass consumes the request. Repeat it within every 72 hours until ingress returns, since each request moves only deadlines
 within 72 hours of it. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
-and its buyer is told nothing.
+and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
+order deadlines it moved.
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A dispute on a deadline that passed in the outage is refused as late,
@@ -71,11 +83,14 @@ and a no-ship cancel past its time accepted, only in these cases:
   if another process holds the lock.
 - When the database comes back with the process still up, until the next tick: up to the poll interval, or up to 10 minutes for
   a pass already in flight.
-- For the whole time `ESCROW_XMR=off`: the watcher does not run, a dispute is refused, a cancel is accepted, and marking an order
-  shipped answers 404. The recheck runs on the first pass after it is on again.
+- For the whole time `ESCROW_XMR=off`: the watcher does not run, and marking an order shipped answers 404. While no recheck is
+  pending a dispute is refused. A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has
+  not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
+  period runs none.
 
 Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
-than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved.
+than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved. So that one can be seen,
+each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order.
 
 The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
 reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's
@@ -188,10 +203,13 @@ the acting account has neither an authenticator (TOTP) nor PGP sign-in turned on
 buyers and vendors can also post (support-ticket replies, listings, messages, order steps) are not gated, even for
 staff.
 
-Before or right after upgrading, have each administrator and moderator enrol (`/totp`, or verify a key and turn on
-PGP sign-in on `/pgp`). The staff roster (*Admin → Users*) now has a *Second factor* column, the overview's
+Have each administrator and moderator enrol (`/totp`, or verify a key and turn on PGP sign-in on `/pgp`): right after
+upgrading from `v0.1.0-alpha.1`, because alpha.1 has no second factor to enrol beforehand, and before or right after
+upgrading from a later build. The staff roster (*Admin → Users*) now has a *Second factor* column, the overview's
 *Users* link and checklist say how many staff lack one and whether you do, and `-status` prints the count on
 stderr (`warning: N active staff account(s) have no second factor ...`); its stdout line is unchanged.
+`./scripts/install.sh upgrade` and `status` print the same warning, `upgrade` before it says it is complete. The
+native `deploy status` and `deploy redeploy` do not: read the count on the overview.
 
 The change adds no lockout: enrolment, `/account`, the password change, sign-out and every page stay available
 without a factor, and so do the host commands (`-set-role`, `-bootstrap-admin`, `-reset-admin-password`,
@@ -1198,6 +1216,10 @@ last step.
 The upgraded database is left untouched on the server in case you roll forward again: run `deploy endpoint set` with
 its URL file and `deploy redeploy --app-image` with the newer digest.
 
+Until you roll forward, `/srv/opsecmkt-inputs/database-rollback.url` is the file for the database the installation uses now, so
+host commands such as `-request-deadline-recheck` name it. `/srv/opsecmkt-inputs/database.url` still names the upgraded database:
+a command given that file succeeds against a database this market no longer reads. It applies again once you have rolled forward.
+
 ## Native production encryption prerequisite
 
 The native production controller now verifies guest-managed LUKS2 storage before
@@ -1442,8 +1464,9 @@ a recovery procedure for a compromised host.
   that records a migration it does not include ([section 5](#5-rolling-back)).
 - **The optional local Monero node** is pruned ([section 7](#7-local-nodes-are-now-pruned)), pinned to a release tag
   ([section 8](#8-node-images-are-pinned-to-release-tags)) and runs stagenet unless `.env` selects mainnet.
-- Also new: signed audit exports, listing photos and avatars (uploads stay off until a ClamAV scanner is set up), the
-  native `opsecmkt` binary and the other changes described above this heading.
+- Also new: signed audit exports, listing photos and avatars (uploads stay off until a ClamAV scanner is set up) and the
+  native `opsecmkt` binary. The sections above this heading describe the other changes; "After you upgrade" below
+  names the ones that need you to act.
 
 **Migrations:** `001_foundation` to the last file in `internal/market/migrations` at the tag. The server applies them
 once, in order, at startup. They are one-way: there are no down-migrations. Migrations that created the historical
@@ -1459,9 +1482,31 @@ Bitcoin escrow tables still run, as every migration does; those tables stay unus
 3. With a local node from alpha.1, its volumes hold mainnet data: section 3 says what to do with them.
 4. With an external PostgreSQL, check that `SHOW server_encoding` says `UTF8` (section 42).
 5. With a hand-written `.env`, replace a placeholder `SETUP_TOKEN` (section 2).
+6. With an external database behind PgBouncer or another pooler, allow the session settings the app now sends, or
+   startup stops before any migration ([the pooler steps](#staff-pages-no-longer-wait-for-postgresqls-jit-compiler-mod72-8),
+   [section 4](#4-deploy)).
 
 A database holding pooled payment history is refused by migration 108; keep the release it runs on (section 59).
 An alpha.1 database holds none. Then follow [Upgrade with the installer](#upgrade-with-the-installer).
+
+**After you upgrade**
+
+1. **Enrol staff in a second factor, first.** alpha.1 has neither an authenticator nor PGP sign-in, so every upgraded
+   moderator and administrator starts with no factor, and staff-only forms answer 403 until they enrol. From alpha.1,
+   enrol after upgrading, not before. `./scripts/install.sh upgrade` and `status` print how many accounts are left. An
+   account with no factor and no PGP key stays in a password-only window until it enrols: whoever has its password can
+   enrol their own authenticator and hold its staff powers. See
+   [Staff need a second factor](#staff-need-a-second-factor-before-staff-actions-a-706), which also says what to do
+   if a password may be known.
+2. **Check the CAPTCHA setting.** A market that kept the seeded image CAPTCHA moves to a default that is weaker against
+   bots; choose the image again if you want it
+   ([The image CAPTCHA](#the-image-captcha-now-appears-only-under-attack-migration-155-a-725)).
+3. **Tell vendors of digital listings** that payment now follows a dispute window, and buyers how long they have to
+   check a delivery ([Digital escrow orders](#digital-escrow-orders-get-a-delivery-deadline-and-a-dispute-window-migration-153-a-709)).
+4. **Tell users about PGP.** Buying and messaging need a key and a decryption proof in the current session, and a
+   keyless vendor adds a key before trading ([Required PGP access](#required-pgp-access-and-vendor-privacy)).
+5. **Review the new administrator pages:** [site access and registration](#site-access-and-registration),
+   [vendor applications](#vendor-onboarding) and [the market's name and logo](#market-branding).
 
 **Rollback rule:** rolling back is not an image swap. Stop the app, restore the pre-upgrade backup into a new
 database and rebuild the previous tag against it; everything written after the upgrade is lost from the rolled-back
@@ -1546,7 +1591,7 @@ below explain each change and how to make it by hand.
 
 Migrations are **one-way**. There are no down-migrations, and the alpha.1 code must not run against a
 migrated database (for example, migration 001 replaces `orders.status` with `orders.state` and drops the old
-unique constraint). `compose.yaml` builds the app from the checkout (`build: .`), so there is no saved image
+unique constraint). `compose.yaml` builds the app from the checkout (`build:` with `context: .`), so there is no saved image
 to switch back to: rolling back means restoring this backup and rebuilding the old revision.
 `./scripts/install.sh upgrade` takes the backup and the copy of `.env` for you. By hand, before upgrading, from
 the directory you deploy from:

@@ -3,7 +3,10 @@ package market
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -39,14 +42,19 @@ import (
 //     An outage takes the same path (A-730, owner decision): each step records the database's time, and one that finds
 //     more than xmrOutageGap since the last asks for the recheck, with its notices naming the outage, so downtime
 //     consumes neither a buyer's deadline nor a vendor's time. The check also runs first in a pass (xmrNoteDeadlineStepEarly).
-//     It sees only that this step did not run: public access
-//     down while the watcher runs is not visible here, and the operator handles that case by hand.
+//     It sees only that this step did not run: public access down while the watcher runs is not visible here, and the
+//     operator asks for the recheck with the host command -request-deadline-recheck (RequestDeadlineRecheck). Each recheck
+//     records itself in its own transaction: when, its cause and how many deadlines moved (xmrLastRecheckKey, shown on
+//     Admin → Payments), and one audit row with the cause and the count, and after it commits logs one fixed line, since it
+//     moves deadlines market-wide and a clock jump can ask for it falsely.
 //  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped or delivered orders with
 //     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
 //     banned, steps 2 and 3 and the buyer's confirmation say the release is then held (xmrReleaseHeld, A-652c).
 //
 // No step makes an RPC, and none runs while the restore gate is set: the recheck then runs in the first pass after the
 // gate is cleared, before the release. Step 5 runs with the ban whatever the gate: it only moves deadlines later.
+
+func init() { registerLoader("admin", xmrDeadlineRecheckLoader) }
 
 // digitalWindowNote opens the order history note of a digital order's completion at the end of its dispute window.
 const digitalWindowNote = "dispute window ended"
@@ -58,6 +66,10 @@ const xmrReleaseRecheckKey = "escrow_xmr_release_recheck"
 // xmrRecheckOutage is xmrReleaseRecheckKey's value when an outage asked for the recheck, and xmrCancelWaitCauseKey's when
 // one recorded the grace. Any other value of the request is a restore's.
 const xmrRecheckOutage = "outage"
+
+// xmrLastRecheckKey is the setting each recheck writes in the transaction that consumes xmrReleaseRecheckKey: when it ran,
+// its cause and how many deadlines it moved, as JSON (xmrLastRecheck), with no order data. A later recheck replaces it.
+const xmrLastRecheckKey = "escrow_xmr_last_recheck"
 
 // xmrLastDeadlineStepKey is the setting that holds the database's time of the last deadline step (A-730), an RFC 3339
 // time in UTC. It is absent before the first step after the upgrade.
@@ -93,7 +105,7 @@ const xmrOutageCauseSQL = `(es.coin='XMR' AND COALESCE((SELECT value='` + xmrRec
 
 // outageWhy is why an outage moved a deadline or made a cancel wait, as a clause (A-730). It names no part of the market
 // and no length, since it must be true of the market, its database or Monero escrow being down, and of the operator's
-// request by hand when public access failed while the watcher ran (PAY101-10).
+// request when public access failed while the watcher ran (PAY101-10, RequestDeadlineRecheck).
 const outageWhy = "an outage made this market unavailable"
 
 // xmrNoRecheckSQL: no restore recheck of Monero deadlines is pending (step 4). The release (step 3) waits while one is,
@@ -446,6 +458,11 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		return err
 	}
 	outage := requested == xmrRecheckOutage
+	cause := "restore"
+	if outage {
+		cause = xmrRecheckOutage
+	}
+	count := 0
 	ids, err := orderIDs(ctx, tx, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND `+xmrOpenSQL+` AND `+releaseBeforeGraceSQL+` ORDER BY o.id`)
 	if err != nil {
 		return err
@@ -501,6 +518,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 				return err
 			}
 		}
+		count++
 	}
 	grace, err := tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,to_char((`+releaseGraceSQL+`) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
 		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value WHERE settings.value::timestamptz<EXCLUDED.value::timestamptz`, xmrCancelWaitKey)
@@ -522,7 +540,94 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrReleaseRecheckKey); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,json_build_object('at',now(),'cause',$2::text,'moved',$3::int)::text)
+		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, xmrLastRecheckKey, cause, count); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES(NULL,$1)",
+		"Monero escrow deadline recheck (cause: "+cause+"): moved "+strconv.Itoa(count)+" order deadline(s)"); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("monero escrow deadline recheck: cause=%s moved=%d", cause, count)
+	return nil
+}
+
+// xmrLastRecheck is what xmrLastRecheckKey holds.
+type xmrLastRecheck struct {
+	At    time.Time `json:"at"`
+	Cause string    `json:"cause"`
+	Moved int       `json:"moved"`
+}
+
+// RequestDeadlineRecheck is the host command -request-deadline-recheck: public access failed while the watcher runs, which
+// the watcher cannot see, so the operator asks for the outage's recheck (step 4 of the file comment). It may run while the
+// application serves the database, and writes one setting, xmrReleaseRecheckKey, with the value xmrRecheckOutage, and only
+// if no request is there and the restore gate is not set: the statement checks both, so a restore's request is never
+// replaced and a restore's first pass still says a restore. A pending request is reported as it stands, and the gate is
+// refused, each changing nothing. It returns what the operator is told.
+func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
+	r, err := db.ExecContext(ctx, "INSERT INTO settings(key,value) SELECT $1,$2 WHERE NOT "+restoreGateSQL+" ON CONFLICT (key) DO NOTHING", xmrReleaseRecheckKey, xmrRecheckOutage)
+	if err != nil {
+		return "", recheckRequestFailed(err)
+	}
+	const next = " The Monero escrow watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. "
+	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns. Confirm on Admin > Payments that it shows pending or has just run: this command writes only to the database its URL names."
+	if n, err := r.RowsAffected(); err != nil {
+		return "", recheckRequestFailed(err)
+	} else if n > 0 {
+		return "Deadline recheck now pending (outage)." + next + limits, nil
+	}
+	var gate bool
+	var value sql.NullString
+	if err = db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",(SELECT value FROM settings WHERE key=$1)", xmrReleaseRecheckKey).Scan(&gate, &value); err != nil {
+		return "", recheckRequestFailed(err)
+	}
+	switch {
+	case gate:
+		return "", errors.New("the restore gate is set: no watcher pass completes an order or runs a recheck until it is cleared, and the first pass after that runs the restore's recheck. Follow docs/testnet-runbook.md; nothing was changed")
+	case !value.Valid: // a pass consumed the request between the two statements
+		return "", errors.New("a recheck ran just now; run this again if public access is still down; nothing was changed")
+	case value.String == xmrRecheckOutage:
+		return "Deadline recheck already pending (outage); nothing was changed." + next + limits, nil
+	}
+	return "A restore's deadline recheck is already pending; nothing was changed. Its notices say a restore, as they must." + next + limits, nil
+}
+
+// recheckRequestFailed is RequestDeadlineRecheck's failed statement, by class only: pgconn's own text names the URL's user,
+// database and host. It does not say nothing changed, since a connection lost at the commit cannot tell; a repeat is safe.
+func recheckRequestFailed(err error) error {
+	return errors.New("database statement failed (" + errorCause(err) + "); check DATABASE_URL and service health, then run this again")
+}
+
+// XMRDeadlineRecheckView is Admin → Payments' read-only line on the recheck (step 4 of the file comment): whether one is
+// pending and who asked, and the last one's record. It names no order.
+type XMRDeadlineRecheckView struct {
+	On, Pending, PendingOutage bool
+	Ran, RanOutage             bool
+	RanAt                      string
+	Moved                      int
+}
+
+// xmrDeadlineRecheckLoader fills XMRDeadlineRecheckView. A record that cannot be read, which only a hand could have
+// written, shows as none. With Monero escrow off the section still shows: a request then stays pending.
+func xmrDeadlineRecheckLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
+	if d.User == nil || d.User.Role != "admin" {
+		return nil
+	}
+	var pending, last sql.NullString
+	if err := a.db.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2)", xmrReleaseRecheckKey, xmrLastRecheckKey).Scan(&pending, &last); err != nil {
+		return err
+	}
+	v := &XMRDeadlineRecheckView{On: a.escrowXMR != nil, Pending: pending.Valid, PendingOutage: pending.String == xmrRecheckOutage}
+	var rec xmrLastRecheck
+	if last.Valid && json.Unmarshal([]byte(last.String), &rec) == nil && !rec.At.IsZero() {
+		v.Ran, v.RanOutage, v.RanAt, v.Moved = true, rec.Cause == xmrRecheckOutage, utcUntil(rec.At), rec.Moved
+	}
+	d.XMRDeadlineRecheck = v
+	return nil
 }
 
 // xmrBanDeadlines is step 5 of the file comment (A-652d; owner decision 2026-10-25 "refund + hold": shipped orders get at

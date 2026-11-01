@@ -253,6 +253,8 @@ xmr_state="SELECT (SELECT string_agg(state || ':' || (send_error LIKE 'Restored 
  (SELECT string_agg(account_index || ':' || state, ',' ORDER BY account_index) FROM xmr_escrow_slots) || ' ' || (SELECT string_agg(name || ':' || state, ',') FROM xmr_escrow_wallets) || ' ' ||
  (SELECT string_agg(name || ':' || state, ',') FROM xmr_bond_wallets)"
 xmr_restored='built:true 1:claimed,2:retired escrow-202610-01:closing bond-01:closed'
+# An outage's recheck request in the backup is overwritten: the restored database's recheck says a restore (A-730).
+pg "$app_source_db" -q -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage')"
 app_backup="$work/app.dump.age"
 # The backup is taken in one time zone and restored in another (PR #27 SHOULD-3): the restore line must still show
 # when it was taken, in UTC. A custom-format dump keeps the wall-clock time of the zone pg_dump ran in, and
@@ -279,7 +281,9 @@ assert match.group(2) == 'UTC' and started - 1 <= taken <= finished + 1, \
 PY
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='payments_recovery_required'") == 0 ]]
-# The escrow release deadline recheck is asked for (escrow_xmr_deadline.go moves what has passed or ends within 72 hours on its next pass).
+# The escrow release deadline recheck is asked for (escrow_xmr_deadline.go moves what has passed or ends within 72 hours on its next pass),
+# replacing the outage's request the backup held.
+[[ $(pg "$app_source_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == outage ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == true ]]
 grep -q 'has passed or ends within 72 hours moves to 72 hours' "$work/app-restore.log"
 # P3-R10: the restored Monero escrow is held, its free account retired, its wallet closing, and the sweep asked for.

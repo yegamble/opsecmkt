@@ -76,6 +76,16 @@ def anchors(text):
 
 
 EMPTY = {'', "''", '""'}
+AFTER_UPGRADE_ANCHORS = (
+    'staff-need-a-second-factor-before-staff-actions-a-706',
+    'the-image-captcha-now-appears-only-under-attack-migration-155-a-725',
+    'digital-escrow-orders-get-a-delivery-deadline-and-a-dispute-window-migration-153-a-709',
+    'required-pgp-access-and-vendor-privacy',
+    'site-access-and-registration',
+    'vendor-onboarding',
+    'market-branding',
+)
+POOLER_ANCHOR = 'staff-pages-no-longer-wait-for-postgresqls-jit-compiler-mod72-8'
 
 
 class UpgradingAlpha2Test(unittest.TestCase):
@@ -125,6 +135,32 @@ class UpgradingAlpha2Test(unittest.TestCase):
         self.assertNotIn('Bitcoin uses 2-of-3', flat)
         self.assertIn('historical', flat)
 
+    def test_summary_names_what_to_do_after_upgrading(self):
+        # A-742 (OPS104-2, DA104-6): a reader told to read "this summary and the sections it names" must be sent to
+        # each action a section requires, and alpha.1 has no second factor to enrol before upgrading.
+        summary = alpha2_section()[:alpha2_section().index('## Migrations and changes in detail')]
+        self.assertIn('**After you upgrade**', summary)
+        after = summary[summary.index('**After you upgrade**'):summary.index('**Rollback rule:**')]
+        targets = anchors(UPGRADING)
+        for anchor in AFTER_UPGRADE_ANCHORS:
+            self.assertIn('](#%s)' % anchor, after)
+            self.assertIn(anchor, targets)
+        flat = ' '.join(after.split())
+        self.assertIn('From alpha.1, enrol after upgrading, not before', flat)
+        self.assertIn('password-only window', flat)
+        self.assertNotIn('described above this heading', summary)
+        # A pooler stops the upgraded server at startup, so its section is named before the upgrade.
+        before = summary[summary.index('**Before you upgrade**'):summary.index('**After you upgrade**')]
+        self.assertIn('](#%s)' % POOLER_ANCHOR, before)
+        self.assertIn(POOLER_ANCHOR, targets)
+
+    def test_staff_factor_section_does_not_ask_alpha1_to_enrol_first(self):
+        start = UPGRADING.index('## Staff need a second factor before staff actions (A-706)')
+        section = ' '.join(UPGRADING[start:UPGRADING.index('\n## ', start + 1)].split())
+        self.assertNotIn('Before or right after upgrading', section)
+        self.assertIn('alpha.1 has no second factor', section)
+        self.assertIn('`./scripts/install.sh upgrade` and `status` print the same warning', section)
+
     def test_cited_section_numbers_still_exist(self):
         # Cited by internal/market (sections 6, 14, 18, 42, 59), scripts/ and cmd/server (section 6, "Rolling back").
         for number in (1, 2, 3, 4, 5, 6, 14, 18, 42, 59):
@@ -141,6 +177,46 @@ class UpgradingAlpha2Test(unittest.TestCase):
                 if anchor not in targets:
                     broken.append('%s: #%s' % (path.relative_to(REPOSITORY), anchor))
         self.assertEqual(broken, [], 'links to UPGRADING.md headings that do not exist')
+
+    def test_outage_recheck_has_a_command_and_one_story(self):
+        # OPS104-1, DA104-3: db_sql is bundled-database only and a mistyped value reads as a restore's, so no guide tells
+        # an operator to write the recheck's request by hand; each gives the host command for Compose and for a native
+        # executable, and all three tell the same story of the time Monero escrow is off.
+        main = (REPOSITORY / 'cmd' / 'server' / 'main.go').read_text()
+        self.assertIn('flag.Bool("request-deadline-recheck"', main)
+        for path in [REPOSITORY / 'README.md', REPOSITORY / 'UPGRADING.md', *sorted((REPOSITORY / 'docs').rglob('*.md'))]:
+            if 'evidence' in path.parts:
+                continue
+            self.assertNotRegex(path.read_text(), r"INSERT INTO settings\(key,value\) VALUES \('escrow_xmr_release_recheck'",
+                                path.relative_to(REPOSITORY))
+        for name in ('UPGRADING.md', 'docs/operator-guide.md', 'docs/testnet-runbook.md'):
+            flat = ' '.join((REPOSITORY / name).read_text().split())
+            for want in ('docker compose run --rm --no-deps app -request-deadline-recheck',
+                         'DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck',
+                         'for the database the installation uses now',
+                         '/srv/opsecmkt-inputs/database-rollback.url',
+                         'Do not use `DIR/secrets/database-url`',
+                         'A native development installation',
+                         'this command is not available there',
+                         'confirm on **Admin → Payments**',
+                         'Repeat it within every 72 hours until ingress returns',
+                         'It cannot undo a completion',
+                         "A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended"
+                         if name != 'docs/testnet-runbook.md' else
+                         "a cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended",
+                         'marking an order shipped answers 404',
+                         'if it was off for longer than the threshold, the recheck runs on the first pass after it is on again'
+                         if name == 'docs/testnet-runbook.md' else
+                         'If it was off for longer than the threshold, the recheck runs on the first pass after it is on again'):
+                self.assertIn(want, flat, name)
+            self.assertNotIn('The recheck runs on the first pass after it is on again', flat, name)
+            self.assertNotIn('./private/database.url ./opsecmkt -request-deadline-recheck', flat, name)
+        # OPS105-1: after a native rollback database.url still names the upgraded database.
+        rollback = ' '.join(UPGRADING[UPGRADING.index('### Rolling back a native installation'):
+                                      UPGRADING.index('## Native production encryption prerequisite')].split())
+        self.assertIn('Until you roll forward, `/srv/opsecmkt-inputs/database-rollback.url` is the file for the database the installation uses now', rollback)
+        self.assertIn('-request-deadline-recheck', rollback)
+        self.assertIn('-request-deadline-recheck', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
 
 
 if __name__ == '__main__':

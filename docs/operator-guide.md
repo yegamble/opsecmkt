@@ -1723,11 +1723,23 @@ no-ship cancel. A restored database stays a restore.
 
 What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
 Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
-releases go ahead. Ask for the recheck yourself as soon as ingress fails, with
-`db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
-which the next pass consumes, and repeat it within every 72 hours until ingress returns, since each request moves only deadlines
+releases go ahead. Ask for the recheck yourself as soon as ingress fails, with the host command:
+
+```sh
+# Compose, with the bundled or an external database
+docker compose run --rm --no-deps app -request-deadline-recheck
+# Native production installation: the URL file for the database the installation uses now
+DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck
+```
+
+On a native installation, name the host-readable URL file of the [production layout](install/production.md) for the database the installation uses now. After a [native rollback](../UPGRADING.md#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request.
+
+The command works with the app running and writes the request and nothing else. It prints whether the recheck is now pending
+or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. The
+next pass consumes the request. Repeat it within every 72 hours until ingress returns, since each request moves only deadlines
 within 72 hours of it. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
-and its buyer is told nothing.
+and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
+order deadlines it moved.
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A dispute on a deadline that passed in the outage is refused as late,
@@ -1738,11 +1750,14 @@ and a no-ship cancel past its time accepted, only in these cases:
   if another process holds the lock.
 - When the database comes back with the process still up, until the next tick: up to the poll interval, or up to 10 minutes for
   a pass already in flight.
-- For the whole time `ESCROW_XMR=off`: the watcher does not run, a dispute is refused, a cancel is accepted, and marking an order
-  shipped answers 404. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again.
+- For the whole time `ESCROW_XMR=off`: the watcher does not run, and marking an order shipped answers 404. While no recheck is
+  pending a dispute is refused. A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has
+  not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
+  period runs none.
 
 Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
-than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved.
+than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved. So that one can be seen,
+each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order.
 
 Tested against a database and a simulated wallet RPC, with no public network and no real outage.
 

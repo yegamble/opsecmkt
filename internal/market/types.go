@@ -484,6 +484,8 @@ type PageData struct {
 	BanHoldRefundDays *BanHoldRefundDaysView
 	// XMRFee: /admin, the Monero escrow market fee set on the server, read-only (escrow_xmr_fee.go, A-550)
 	XMRFee *XMRFeeView
+	// XMRDeadlineRecheck: /admin, the Monero deadline recheck pending and the last one's record, read-only (escrow_xmr_deadline.go)
+	XMRDeadlineRecheck *XMRDeadlineRecheckView
 	// EscrowRecovery: /admin, the Bitcoin escrow restore gate, held settlements and orphan addresses (escrow_recovery.go)
 	EscrowRecovery *EscrowRecoveryView
 	// XMREscrowRecovery: /admin, Monero escrow settlements held by a restore and destroyed wallets' files

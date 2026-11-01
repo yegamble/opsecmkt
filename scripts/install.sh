@@ -480,9 +480,12 @@ status_line_ok() {
 
 # app_status: the app's `-status` line, from the running app (so keyroot is the key root it runs with) or, when
 # it is not running, a one-off container with this .env (the database must be up). Status 1 when unreadable.
+# Only the line goes to stdout. The running app's `warning: ` lines (A-706's count of staff without a second factor)
+# go to stderr, and the rest of that stderr, Compose's "not running" included, stays dropped.
 app_status() {
   local out
-  out=$(docker compose exec -T app /app/server -status 2>/dev/null) || out=$(docker compose run --rm -T --no-deps app -status) || return 1
+  out=$({ docker compose exec -T app /app/server -status 2>&1 >&3 | sed -n '/^warning: /p' >&2; exit "${PIPESTATUS[0]}"; } 3>&1) ||
+    out=$(docker compose run --rm -T --no-deps app -status) || return 1
   status_line_ok "$out" || return 1
   printf '%s' "$out"
 }
