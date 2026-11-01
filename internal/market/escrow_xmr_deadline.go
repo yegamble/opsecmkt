@@ -38,7 +38,8 @@ import (
 //     affected: its ship_by is at least 72 hours from payment.
 //     An outage takes the same path (A-730, owner decision): each step records the database's time, and one that finds
 //     more than xmrOutageThreshold since the last asks for the recheck, with its notices naming the outage, so downtime
-//     consumes neither a buyer's deadline nor a vendor's time. It sees only that this step did not run: public access
+//     consumes neither a buyer's deadline nor a vendor's time. The check also runs first in a pass (xmrNoteDeadlineStepEarly).
+//     It sees only that this step did not run: public access
 //     down while the watcher runs is not visible here, and the operator handles that case by hand.
 //  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped or delivered orders with
 //     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
@@ -204,6 +205,19 @@ func (a *App) xmrDeadlines(pass context.Context) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// xmrNoteDeadlineStepEarly is xmrNoteDeadlineStep at the start of a pass, before any node or wallet call (A-730): the
+// deadline step runs last, and a first pass after an outage can spend minutes on its wallets, in which a dispute would be
+// refused as late and a no-ship cancel accepted. The server accepts requests from just after the watcher starts
+// (cmd/server's app.Start, then serveAll), so this one transaction is the window left. A failure does not touch the pass:
+// the check in xmrDeadlines runs anyway and reports it. Under the restore gate it writes nothing, as there.
+func (a *App) xmrNoteDeadlineStepEarly(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, xmrDeadlineBudget)
+	defer cancel()
+	if gate, err := restoreGateSet(ctx, a.db); err == nil && !gate {
+		_ = a.xmrNoteDeadlineStep(ctx)
+	}
 }
 
 // xmrNoteDeadlineStep records the database's time of this deadline step and, when the last was more than

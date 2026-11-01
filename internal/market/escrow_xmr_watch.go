@@ -136,6 +136,9 @@ func xmrEscrowWatcher(ctx context.Context, a *App) {
 			return
 		case <-t.C:
 		}
+		if !a.escrowXMR.ready.Load() {
+			a.xmrNoteDeadlineStepEarly(ctx) // the retry's node calls can take watcherPassTimeout
+		}
 		a.retryEscrowXMR(ctx, retry)
 		pass, cancel := context.WithTimeout(withXMRShutdown(ctx), xmrEscrowPassTimeout)
 		err := a.xmrEscrowPollOnce(pass)
@@ -226,6 +229,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
+	a.xmrNoteDeadlineStepEarly(ctx) // before any node or wallet call (A-730)
 	providerSynced, providerUnread := false, false
 	defer func() {
 		cause := a.xmrPassCause(providerSynced, providerUnread, outcome) // "" exactly when the provider is good

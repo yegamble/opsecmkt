@@ -34,9 +34,10 @@ What the watcher cannot see: it knows only that its own step did not run. Public
 Tor gateway or proxy, a network failure) leaves no gap, and nothing moves. Handle that case by hand after public access
 returns, by asking for the recheck yourself (`scripts/restore.sh` is not involved):
 `db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`.
-It runs on the next pass. The step runs last in a pass, so until the first pass after a restart reaches it, which a slow wallet
-can make minutes, a dispute on a deadline that passed in the outage is still refused as late, and a no-ship cancel past its
-time is still accepted. Keep public access stopped until the first pass has finished if that matters to you.
+It runs on the next pass. The check runs at the very start of each pass, before any daemon or wallet call, and the watcher
+starts just before the server begins accepting requests. So the window after a restart in which a dispute on a deadline that
+passed in the outage is refused as late, and a no-ship cancel past its time accepted, is that one database transaction: normally
+milliseconds, at most 30 seconds. If that transaction fails, the window lasts until the check at the end of the same pass.
 
 The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
 reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's

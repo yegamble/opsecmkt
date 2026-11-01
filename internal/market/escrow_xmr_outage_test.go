@@ -4,6 +4,7 @@ import (
 	"context"
 	"html"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -365,5 +366,146 @@ func TestXMRRecheckNoticeBannedVendor(t *testing.T) {
 	}
 	if n := x.noticesOf(x.partyOf(delivered, roleBuyer), delivered); !anyContains(n, "the vendor can claim the coins in this Monero escrow") || anyContains(n, "held") {
 		t.Fatalf("the delivered order's notices: %q", n)
+	}
+}
+
+// A-730: the first pass after an outage can spend minutes on its wallets before its deadline step, so the check runs
+// first: before the first node or wallet call the request is set, and while that call hangs a dispute on a deadline that
+// passed in the outage is accepted and a no-ship cancel past its time refused. The hang's end still reaches the recheck.
+func TestXMROutageCheckedBeforeWalletCalls(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	physical := x.physical(x.vendor)
+	disputed, disputedSess, _ := x.shippedXMR(physical)
+	undisputed, _, _ := x.shippedXMR(physical)
+	paid, paidSess := x.paidXMRPhysical(physical)
+	for _, o := range []string{disputed, undisputed} {
+		x.forceDeadline(o, "release_at=now()-interval '1 hour'")
+	}
+	x.forceDeadline(paid, "ship_by=now()-interval '1 hour'")
+	x.setLastDeadlineStep("2 hours")
+
+	// seen records the request at the first call of each method, from the fake's goroutine.
+	var mu sync.Mutex
+	seen := map[string]string{}
+	record := func(method string) {
+		var request string
+		x.DB.QueryRow("SELECT COALESCE((SELECT value FROM settings WHERE key=$1),'none')", xmrReleaseRecheckKey).Scan(&request)
+		mu.Lock()
+		defer mu.Unlock()
+		if _, ok := seen[method]; !ok {
+			seen[method] = request
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hanging := make(chan struct{})
+	var once sync.Once
+	x.fake.hook("get_info", func() { record("get_info") })
+	x.fake.hook("open_wallet", func() {
+		record("open_wallet")
+		once.Do(func() { close(hanging) })
+		<-ctx.Done()
+	})
+	done := make(chan error, 1)
+	go func() { done <- x.A.xmrEscrowPollOnce(ctx) }()
+	select {
+	case <-hanging:
+	case err := <-done:
+		t.Fatalf("the pass ended before its wallet call: %v", err)
+	}
+	if code, body := x.xmrDispute(disputed, disputedSess); code != 303 {
+		t.Fatalf("a dispute on a deadline that passed in the outage, during the hang: %d %s", code, body)
+	}
+	if code, body := x.xmrBuyerCancel(paid, paidSess); code != 409 || !containsAll(body, "cannot be cancelled yet", "an outage") {
+		t.Fatalf("a no-ship cancel during the hang: %d %s", code, body)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("the hang ended before the dispute and the cancel were tried")
+	}
+	if err := <-done; err == nil || ctx.Err() == nil {
+		t.Fatalf("the pass did not outlast its budget: ctx %v, pass %v", ctx.Err(), err)
+	}
+	x.fake.hook("get_info", nil)
+	x.fake.hook("open_wallet", nil)
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["get_info"] != xmrRecheckOutage || seen["open_wallet"] != xmrRecheckOutage {
+		t.Fatalf("the request at the first calls: %v", seen)
+	}
+	if x.state(disputed) != stateDisputed || x.state(paid) != statePaid || x.state(undisputed) != stateShipped || x.recheckKey() != "" ||
+		countContaining(x.noticesOf(x.partyOf(undisputed, roleBuyer), undisputed), "an outage") != 1 || x.releaseAt(undisputed).Before(x.dbNow().Add(71*time.Hour)) {
+		t.Fatalf("after the pass: %s %s %s, request %q, deadline %s", x.state(disputed), x.state(paid), x.state(undisputed), x.recheckKey(), x.releaseAt(undisputed))
+	}
+}
+
+// A-730: a watcher not ready retries its startup checks, up to watcherPassTimeout of node calls, before its pass, so the
+// check comes before them too.
+func TestXMROutageCheckedBeforeStartupRetry(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	x.setLastDeadlineStep("2 hours")
+	x.A.escrowXMR.ready.Store(false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calling := make(chan string, 1)
+	var once sync.Once
+	x.fake.hook("get_info", func() {
+		once.Do(func() {
+			var request string
+			x.DB.QueryRow("SELECT COALESCE((SELECT value FROM settings WHERE key=$1),'none')", xmrReleaseRecheckKey).Scan(&request)
+			calling <- request
+		})
+		<-ctx.Done()
+	})
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); xmrEscrowWatcher(ctx, x.A) }()
+	select {
+	case request := <-calling:
+		if request != xmrRecheckOutage {
+			t.Errorf("the request at the retry's first node call: %q", request)
+		}
+	case <-time.After(30 * time.Second):
+		t.Error("the startup retry made no node call")
+	}
+	cancel()
+	<-stopped
+	x.fake.hook("get_info", nil)
+}
+
+// A-730: a check that fails at the pass's start neither fails nor skips the pass: the wallets are still read, the later
+// check reports the failure, and the gap stays for the next pass. Under the restore gate the early check writes nothing
+// (TestXMROutageNotUnderRestoreGate).
+func TestXMROutageEarlyCheckFailureKeepsPass(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.shippedXMR(x.physical(x.vendor))
+	x.forceDeadline(order, "release_at=now()-interval '1 hour'")
+	x.setLastDeadlineStep("2 hours")
+	stale := x.lastDeadlineStep()
+	agExec(x.testEnv, `CREATE FUNCTION a730_fail_early() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected write failure'; END $$`)
+	agExec(x.testEnv, "CREATE TRIGGER a730_fail_early BEFORE INSERT OR UPDATE ON settings FOR EACH ROW WHEN (NEW.key='"+xmrLastDeadlineStepKey+"') EXECUTE FUNCTION a730_fail_early()")
+	opened := make(chan struct{}, 64)
+	x.fake.hook("open_wallet", func() {
+		select {
+		case opened <- struct{}{}:
+		default:
+		}
+	})
+	err := x.A.xmrEscrowPollOnce(context.Background())
+	x.fake.hook("open_wallet", nil)
+	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
+		t.Fatalf("the pass with a failing check: %v", err)
+	}
+	if len(opened) == 0 {
+		t.Fatal("a failing check skipped the wallet work")
+	}
+	if x.recheckKey() != "" || x.lastDeadlineStep() != stale || x.state(order) != stateShipped {
+		t.Fatalf("after the failed check: request %q, time %q, order %s", x.recheckKey(), x.lastDeadlineStep(), x.state(order))
+	}
+	agExec(x.testEnv, "DROP TRIGGER a730_fail_early ON settings")
+	x.mustPoll()
+	if x.state(order) != stateShipped || x.releaseAt(order).Before(x.dbNow().Add(71*time.Hour)) {
+		t.Fatalf("the next pass: order %s, deadline %s", x.state(order), x.releaseAt(order))
 	}
 }

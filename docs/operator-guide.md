@@ -1722,9 +1722,10 @@ deadline get 72 hours, each buyer gets a notice naming the outage, and the same 
 no-ship cancel. A restored database stays a restore. The watcher sees only that its own step did not run. It cannot see public
 ingress down while the process runs (a stopped Tor gateway or proxy, a network failure): handle that by hand once ingress is
 back, with `db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
-which the next pass consumes. The step runs last in a pass, so a first pass slowed by its wallets can leave minutes before the
-recheck in which a dispute on a deadline that passed in the outage is refused as late and a no-ship cancel past its time is
-accepted; keep public access stopped until the first pass has finished if you can. Tested against a database and a simulated
+which the next pass consumes. The check runs at the very start of each pass, before any daemon or wallet call, and the watcher
+starts just before the server begins accepting requests. The window after a restart in which a dispute on a deadline that passed
+in the outage is refused as late and a no-ship cancel past its time accepted is that one database transaction: normally
+milliseconds, at most 30 seconds, or until the check at the end of the same pass if that transaction fails. Tested against a database and a simulated
 wallet RPC, with no public network and no real outage.
 
 **What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
