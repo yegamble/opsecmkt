@@ -1585,7 +1585,7 @@ below explain each change and how to make it by hand.
 
 Migrations are **one-way**. There are no down-migrations, and the alpha.1 code must not run against a
 migrated database (for example, migration 001 replaces `orders.status` with `orders.state` and drops the old
-unique constraint). `compose.yaml` builds the app from the checkout (`build: .`), so there is no saved image
+unique constraint). `compose.yaml` builds the app from the checkout (`build:` with `context: .`), so there is no saved image
 to switch back to: rolling back means restoring this backup and rebuilding the old revision.
 `./scripts/install.sh upgrade` takes the backup and the copy of `.env` for you. By hand, before upgrading, from
 the directory you deploy from:
