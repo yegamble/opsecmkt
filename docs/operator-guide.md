@@ -1284,7 +1284,7 @@ completes the order when the window ends, and only then can the vendor claim the
 the release-deadline setting), stated on the product, checkout and order pages, and kept by the watcher while the
 escrow wallet-rpc is down; a restore from backup and a vendor's ban move a passed or sooner window as they move a
 release deadline. Once a release deadline or dispute window has passed, no dispute is offered or accepted, except while
-a restore's deadline recheck is pending: until then a passed deadline is not yet due, so the form is offered again.
+a deadline recheck is pending, after a restore or an outage (A-730): until then a passed deadline is not yet due, so the form is offered again.
 
 Every disputable order is a Monero escrow order, and only an administrator decides a dispute on one (the decision moves coins from the escrow); moderators can read it on the moderation desk but not resolve it. Opening a dispute therefore notifies every administrator who is not the order's buyer or vendor and is not suspended. An administrator who is a party cannot resolve it, and a suspended account cannot sign in, so keep at least one administrator who does not trade: if every unsuspended administrator is a party (for example the only administrator is the vendor), the dispute is still accepted even when an independent moderator exists, the order history records that no independent resolver was available, every administrator is notified that it needs an administrator who is not a party, added on the host with the role command (`-set-role HANDLE admin`, [Administrators](#administrators)), independent moderators receive review notices but cannot resolve Monero escrow, and the moderation desk marks it "No eligible resolver" for administrators until such an administrator exists. A concession that closes the dispute is reported to the same administrators. Historical orders without escrow (read-only) keep the earlier rule, under which an independent moderator also counts as a resolver. On an escrow order the parties' order page says an administrator decides: its "Contact dispute staff" panel advises sending evidence to an independent administrator first and labels moderators as able to pass evidence on to an administrator; a historical order keeps the moderator wording.
 
@@ -1715,6 +1715,17 @@ refund, even if the vendor shipped or delivered the order after the backup and d
 watcher never runs: the recheck stays pending, that cancel is refused with "try again later" for as long as it stays off,
 and the 72 hours start on the first pass after Monero escrow is back on; do not delete the setting by hand.
 Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
+
+**After an outage** (A-730). A Monero escrow watcher pass that finds over an hour since the last pass's deadline step, because
+the market or its database was down or `ESCROW_XMR` was off, takes the recheck above without a restore: orders near their
+deadline get 72 hours, each buyer gets a notice naming the outage, and the same 72-hour vendor grace applies to a buyer's
+no-ship cancel. A restored database stays a restore. The watcher sees only that its own step did not run. It cannot see public
+ingress down while the process runs (a stopped Tor gateway or proxy, a network failure): handle that by hand once ingress is
+back, with `db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
+which the next pass consumes. The step runs last in a pass, so a first pass slowed by its wallets can leave minutes before the
+recheck in which a dispute on a deadline that passed in the outage is refused as late and a no-ship cancel past its time is
+accepted; keep public access stopped until the first pass has finished if you can. Tested against a database and a simulated
+wallet RPC, with no public network and no real outage.
 
 **What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
 `ESCROW_XMR` is on (with it off a restore pauses nothing here and none of this shows), the staff

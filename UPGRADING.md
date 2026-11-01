@@ -15,6 +15,35 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## An outage over an hour gives orders near their deadline 72 hours (A-730, A-732)
+
+No migration or configuration; two new `settings` rows, `escrow_xmr_last_deadline_step` and
+`escrow_xmr_cancel_wait_cause`. Downtime used to consume the 48-hour dispute window and the release deadline with no grace
+or notice. Each Monero escrow watcher pass now records the database's time at its deadline step. A pass that finds more than
+an hour since the last asks for the same recheck a restore does: every deadline of a shipped or delivered order with no
+dispute that has passed or ends within 72 hours moves to 72 hours later, with one order note and one notice to the buyer
+that name an outage, before any of them can complete. Later deadlines stay as they are. The first pass after this upgrade has
+no stored time and moves nothing. The same applies after Monero escrow was switched off for over an hour. A restored
+database stays a restore: its request is already set, and its old time does not change the wording.
+
+The recheck also records the vendor's grace, since vendors lost the time too: for 72 hours a buyer's no-ship cancel of a paid
+order whose ship-by time or delivery deadline passes before then is refused, naming the outage, and the vendor can still ship
+or deliver it.
+
+What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
+Tor gateway or proxy, a network failure) leaves no gap, and nothing moves. Handle that case by hand after public access
+returns, by asking for the recheck yourself (`scripts/restore.sh` is not involved):
+`db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`.
+It runs on the next pass. The step runs last in a pass, so until the first pass after a restart reaches it, which a slow wallet
+can make minutes, a dispute on a deadline that passed in the outage is still refused as late, and a no-ship cancel past its
+time is still accepted. Keep public access stopped until the first pass has finished if that matters to you.
+
+The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
+reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's
+order now says the payment is held, where it said the coins go to the vendor (PAY101-6).
+
+Evidence: database integration tests against a simulated wallet RPC, on test networks; no public network or real outage.
+
 ## A restore's recheck also moves deadlines about to pass; a hung wallet-rpc no longer stops completions (A-728)
 
 No migration or configuration. The Monero escrow watcher's restore recheck moved only deadlines that had already passed,

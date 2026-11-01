@@ -137,7 +137,7 @@ func xmrEscrowWatcher(ctx context.Context, a *App) {
 		case <-t.C:
 		}
 		a.retryEscrowXMR(ctx, retry)
-		pass, cancel := context.WithTimeout(ctx, xmrEscrowPassTimeout)
+		pass, cancel := context.WithTimeout(withXMRShutdown(ctx), xmrEscrowPassTimeout)
 		err := a.xmrEscrowPollOnce(pass)
 		cancel()
 		if err != nil && ctx.Err() == nil {

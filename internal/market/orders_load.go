@@ -812,12 +812,12 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 		ids = append(ids, o.ID)
 	}
 	type shipBy struct {
-		at              string
-		passed, recheck bool
-		wait            sql.NullTime
+		at                      string
+		passed, recheck, outage bool
+		wait                    sql.NullTime
 	}
 	due := map[string]shipBy{}
-	rows, err = a.db.QueryContext(ctx, `SELECT es.order_id,to_char(es.ship_by,'YYYY-MM-DD HH24:MI "UTC"'),es.ship_by<=now(),es.coin='XMR' AND EXISTS(SELECT 1 FROM settings WHERE key=$2),`+xmrCancelWaitSQL+`
+	rows, err = a.db.QueryContext(ctx, `SELECT es.order_id,to_char(es.ship_by,'YYYY-MM-DD HH24:MI "UTC"'),es.ship_by<=now(),es.coin='XMR' AND EXISTS(SELECT 1 FROM settings WHERE key=$2),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`
 		FROM escrows es WHERE es.order_id=ANY($1) AND es.ship_by IS NOT NULL`, ids, xmrReleaseRecheckKey)
 	if err != nil {
 		return err
@@ -825,7 +825,7 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 	for rows.Next() {
 		var id string
 		var s shipBy
-		if err = rows.Scan(&id, &s.at, &s.passed, &s.recheck, &s.wait); err != nil {
+		if err = rows.Scan(&id, &s.at, &s.passed, &s.recheck, &s.wait, &s.outage); err != nil {
 			rows.Close()
 			return err
 		}
@@ -840,7 +840,7 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 		if o.State == statePaid {
 			s := due[o.ID]
 			w.ShipBy, w.ShipByPassed = s.at, s.passed
-			w.CancelRecheck = s.recheck && (s.passed || s.wait.Valid)
+			w.CancelRecheck, w.CancelOutage = s.recheck && (s.passed || s.wait.Valid), s.outage
 			if s.wait.Valid && !s.recheck {
 				w.CancelFrom = utcFrom(s.wait.Time)
 			}
