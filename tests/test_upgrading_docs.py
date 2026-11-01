@@ -76,6 +76,16 @@ def anchors(text):
 
 
 EMPTY = {'', "''", '""'}
+AFTER_UPGRADE_ANCHORS = (
+    'staff-need-a-second-factor-before-staff-actions-a-706',
+    'the-image-captcha-now-appears-only-under-attack-migration-155-a-725',
+    'digital-escrow-orders-get-a-delivery-deadline-and-a-dispute-window-migration-153-a-709',
+    'required-pgp-access-and-vendor-privacy',
+    'site-access-and-registration',
+    'vendor-onboarding',
+    'market-branding',
+)
+POOLER_ANCHOR = 'staff-pages-no-longer-wait-for-postgresqls-jit-compiler-mod72-8'
 
 
 class UpgradingAlpha2Test(unittest.TestCase):
@@ -124,6 +134,32 @@ class UpgradingAlpha2Test(unittest.TestCase):
         self.assertIn('Bitcoin is removed', flat)
         self.assertNotIn('Bitcoin uses 2-of-3', flat)
         self.assertIn('historical', flat)
+
+    def test_summary_names_what_to_do_after_upgrading(self):
+        # A-742 (OPS104-2, DA104-6): a reader told to read "this summary and the sections it names" must be sent to
+        # each action a section requires, and alpha.1 has no second factor to enrol before upgrading.
+        summary = alpha2_section()[:alpha2_section().index('## Migrations and changes in detail')]
+        self.assertIn('**After you upgrade**', summary)
+        after = summary[summary.index('**After you upgrade**'):summary.index('**Rollback rule:**')]
+        targets = anchors(UPGRADING)
+        for anchor in AFTER_UPGRADE_ANCHORS:
+            self.assertIn('](#%s)' % anchor, after)
+            self.assertIn(anchor, targets)
+        flat = ' '.join(after.split())
+        self.assertIn('From alpha.1, enrol after upgrading, not before', flat)
+        self.assertIn('password-only window', flat)
+        self.assertNotIn('described above this heading', summary)
+        # A pooler stops the upgraded server at startup, so its section is named before the upgrade.
+        before = summary[summary.index('**Before you upgrade**'):summary.index('**After you upgrade**')]
+        self.assertIn('](#%s)' % POOLER_ANCHOR, before)
+        self.assertIn(POOLER_ANCHOR, targets)
+
+    def test_staff_factor_section_does_not_ask_alpha1_to_enrol_first(self):
+        start = UPGRADING.index('## Staff need a second factor before staff actions (A-706)')
+        section = ' '.join(UPGRADING[start:UPGRADING.index('\n## ', start + 1)].split())
+        self.assertNotIn('Before or right after upgrading', section)
+        self.assertIn('alpha.1 has no second factor', section)
+        self.assertIn('`./scripts/install.sh upgrade` and `status` print the same warning', section)
 
     def test_cited_section_numbers_still_exist(self):
         # Cited by internal/market (sections 6, 14, 18, 42, 59), scripts/ and cmd/server (section 6, "Rolling back").

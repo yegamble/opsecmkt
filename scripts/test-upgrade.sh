@@ -107,6 +107,26 @@ check_startup() {
   ) > "$work/$name.log" 2>&1
 }
 
+# status_report NAME BINARY DIRECTORY: runs BINARY -status in launch_server's clean environment, with stdout in
+# $work/NAME.out and stderr in $work/NAME.err; returns its exit status.
+status_report() {
+  local name=$1 binary=$2 directory=$3
+  local database_url_file="$work/$name.database-url" setup_token_file="$work/$name.setup-token"
+  printf '%s\n' "$database_url" > "$database_url_file"
+  printf '%s\n' "$setup_token" > "$setup_token_file"
+  chmod 600 "$database_url_file" "$setup_token_file"
+  (
+    cd "$directory"
+    # shellcheck disable=SC2016
+    exec env -i PATH="$PATH" bash -c '
+      IFS= read -r DATABASE_URL < "$1"
+      IFS= read -r SETUP_TOKEN < "$2"
+      export DATABASE_URL SETUP_TOKEN
+      exec "$3" -status
+    ' status-report "$database_url_file" "$setup_token_file" "$binary"
+  ) > "$work/$name.out" 2> "$work/$name.err"
+}
+
 # start_server NAME BINARY DIRECTORY [DATABASE_URL]: launch and wait for /healthz.
 start_server() {
   local name=$1 binary=$2 directory=$3 target_database_url=${4:-$database_url}
@@ -226,6 +246,20 @@ recorded=$(sql -c "SELECT string_agg(version || ':' || name, ',' ORDER BY versio
 [[ $(sql -c "SELECT recipient_match || ':' || (encrypted IS NULL) FROM messages") == 'unknown:true' ]]
 [[ $(sql -c 'SELECT count(*) FROM users') == 4 ]]
 [[ $(sql -c "SELECT value FROM settings WHERE key='site_name'") == 'Alpha Upgrade Market' ]]
+
+# A-742: alpha.1 has no second factor, so its administrator is counted, and stderr alone carries the count with no
+# handle or secret. Migration 155 moved the seeded CAPTCHA to the new default. UPGRADING.md's summary names both.
+status_report status-after-alpha1 "$work/new-server" "$root"
+[[ $(cat "$work/status-after-alpha1.out") =~ ^installed=true\ schema=[0-9]+\ keyroot=setup_token$ ]] ||
+  { echo "-status stdout is not its one line: $(cat "$work/status-after-alpha1.out")" >&2; exit 1; }
+grep -q '^warning: 1 active staff account(s) have no second factor' "$work/status-after-alpha1.err" ||
+  { echo '-status did not warn about the upgraded administrator' >&2; exit 1; }
+if grep -qF -e alpha_admin -e upgrade-test-only -e "$setup_token" "$work/status-after-alpha1.err"; then
+  echo '-status printed a handle, the database password or the setup token' >&2
+  exit 1
+fi
+[[ $(sql -c "SELECT value FROM settings WHERE key='captcha_required'") == under_attack ]] ||
+  { echo 'migration 155 did not move the seeded CAPTCHA to under_attack' >&2; exit 1; }
 
 # One draft per (buyer, product, currency): a second draft is refused by the database...
 if sql -c "INSERT INTO orders(id,buyer_id,product_id,currency,amount) SELECT 'duplicate-draft',buyer_id,product_id,currency,amount FROM orders WHERE currency='XMR' AND buyer_id=(SELECT id FROM users WHERE handle='alpha_buyer')" > "$work/duplicate.out" 2>&1; then
