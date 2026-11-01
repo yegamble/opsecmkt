@@ -17,7 +17,7 @@
 <p>{{.Counts.Infected}} refused as infected · {{.Counts.Failed}} refused because the scanner failed. Counted by the gateway in memory since it last started; the report carries no signature names and is never linked to accounts.</p>
 {{end}}{{else}}<h3>Last 24 hours</h3>
 <p>{{.Counts.Stored}} stored · {{.Counts.Infected}} refused as infected · {{.Counts.Failed}} refused because the scanner failed. Counted in memory since the app last started, and never linked to accounts.</p>
-{{if .Counts.Signatures}}<div class="table-wrap">
+{{if .Counts.Signatures}}<div class="table-wrap" tabindex="0" role="region" aria-label="Scanner signature database">
 <table>
 <thead>
 <tr>

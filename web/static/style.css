@@ -64,7 +64,7 @@ button:disabled {
   opacity:.6;
   cursor:not-allowed
 }
-a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,pre[tabindex]:focus-visible {
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,pre[tabindex]:focus-visible,.table-wrap[tabindex]:focus-visible {
   outline:3px solid var(--amber);
   outline-offset:2px
 }
@@ -218,6 +218,25 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 }
 .admin-section-list li {
   margin:6px 0
+}
+/* A-723: the moderation queue's items read as separate boxes at any width; capacity and budget open from their heading. */
+.moderation-item {
+  min-width:0;
+  margin:18px 0;
+  padding:14px;
+  border:1px solid var(--line)
+}
+.moderation-item h3 {
+  margin-top:0;
+  overflow-wrap:anywhere
+}
+.moderation-panel > summary {
+  min-height:44px;
+  cursor:pointer
+}
+.moderation-panel > summary h2 {
+  display:inline;
+  margin:0
 }
 /* A-545: the user directory's search and filters, one column on a phone and side by side when there is room. */
 .user-directory-search {
@@ -865,6 +884,23 @@ tr:last-child td {
 td a {
   color:var(--amber);
   text-decoration:underline
+}
+/* A-721: an order's 64-hex id wraps here instead of pushing its status and next step off a phone; the id stays one
+   word, so a double click still selects it whole. What still overflows, as at 200% text, scrolls in a named wrapper. */
+.fit-table {
+  white-space:normal
+}
+.fit-table td:first-child {
+  min-width:7.5rem;
+  overflow-wrap:anywhere
+}
+.long-id {
+  overflow-wrap:anywhere
+}
+@media(max-width:640px) {
+  .fit-table th,.fit-table td {
+    padding:10px 8px
+  }
 }
 .empty {
   padding:54px 25px;

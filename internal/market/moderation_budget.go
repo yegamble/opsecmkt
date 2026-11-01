@@ -59,7 +59,7 @@ func moderationBudgetAction(c *actionCtx) (actionResult, error) {
 		return actionResult{}, err
 	}
 	invalid := fail(400, "Enter the maximum lifetime allocations (1 to 1000000) and the maximum reserved bytes in whole MiB (1 to 1048576). Nothing was changed.")
-	allowed := []string{"csrf", formNonceField, "password", "code", "max_records", "max_reserved_mib"}
+	allowed := []string{"csrf", formNonceField, "password", "code", "max_records", "max_reserved_mib", "state", "kind", "disposition", "page"}
 	for key, values := range c.Form {
 		if !slices.Contains(allowed, key) || len(values) != 1 {
 			return actionResult{}, invalid
@@ -69,6 +69,10 @@ func moderationBudgetAction(c *actionCtx) (actionResult, error) {
 	mib, okBytes := moderationBudgetNumber(c.Form.Get("max_reserved_mib"), moderationBudgetMaxMiB)
 	if !okRecords || !okBytes {
 		return actionResult{}, invalid
+	}
+	back, err := moderationQueueReturn(c.Form)
+	if err != nil {
+		return actionResult{}, fail(400, "Reload the moderation panel and try again. Nothing was changed.")
 	}
 	res, err := confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		// The capacity row first, the only row taken after the administrator's own account row (migration 148): a
@@ -96,7 +100,7 @@ func moderationBudgetAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: "/admin/moderation", Audit: "Moderation budget raised from " + strconv.FormatInt(cur.MaxRecords, 10) +
+		return actionResult{Redirect: back, Notice: "moderation-budget", Audit: "Moderation budget raised from " + strconv.FormatInt(cur.MaxRecords, 10) +
 			" allocations / " + moderationMiB(cur.MaxBytes) + " MiB to " + strconv.FormatInt(next.MaxRecords, 10) + " / " +
 			moderationMiB(next.MaxBytes) + " MiB by administrator " + c.User.Handle}, nil
 	})

@@ -195,6 +195,7 @@ if [[ ${xmr_held:-0} != 0 ]]; then
 fi
 if [[ ${xmr:-f} == t ]]; then
   echo 'Monero escrow: release deadlines that passed in the restored records move to 72 hours after the Monero escrow watcher next runs, and each buyer is told.'
+  echo 'Monero escrow: review the orders shipped, delivered or cancelled around the backup point: these records lack those made after it. From 72 hours after that recheck a buyer can cancel a paid order whose restored ship-by time or delivery deadline has passed, so tell vendors to re-ship or re-deliver what the restore lost before then (docs/testnet-runbook.md, step 7).'
   printf 'Monero escrow (if used): retired %s free escrow account(s) and moved %s escrow wallet(s) to closing, so no restored wallet takes an order again; Monero escrow checkout waits until the Monero escrow watcher has found the escrow wallets created after the backup and checked every wallet.\n' "$xmr_retired" "$xmr_closed"
 fi
 if [[ ${bond_closed:-0} != 0 ]]; then

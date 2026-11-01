@@ -24,6 +24,18 @@ force is unchanged and delivers as before. Receipts keep their outcome and times
 hold the cleared values, including addresses since changed or removed, until those backups are removed; a backup restored
 from before this upgrade is cleared again when the migration runs on it.
 
+## A vendor's grace after a restore's recheck, before a buyer can cancel (A-720)
+
+No migration or configuration. The transaction of the Monero escrow watcher's restore recheck now also records
+`escrow_xmr_cancel_wait_until`, 72 hours on. Until then a buyer's cancel of a paid escrow order whose ship-by time or
+delivery deadline passes before that time is refused (409, naming the time), the order page and the vendor desk say so,
+and the vendor can still ship or deliver it. Afterwards the cancel works as before; an order paid after the recheck keeps
+its own deadline, and the expired setting does nothing. On the documented restore order the recheck runs before public
+access returns, which left A-714's refusal below protecting nobody. The 72 hours run from that pass, so reopen public
+access promptly after clearing the gate, and tell vendors to re-ship or re-deliver in that time (section 6). A later
+restore's recheck moves the time later and never earlier. While a recheck is pending, the page of a shipped or delivered
+order past its deadline now says the deadline moves to 72 hours after the recheck and that a dispute can still be opened.
+
 ## A pending restore recheck holds releases and the buyer's no-ship cancel (A-714)
 
 No migration or setting. After a restore from backup the Monero escrow watcher's first pass after the gate is cleared
@@ -33,8 +45,8 @@ recheck that fails, say on a database error, is retried on each pass and the ord
 pass could complete them and make the release buildable or claimable. While it is pending, a buyer's cancel of a paid
 escrow order past its ship-by time or delivery deadline is also refused (409, "records are being reconciled"), and the
 order page says why: a restore cannot move a ship-by time, and the vendor may have shipped or delivered the order after
-the backup was taken. A vendor's cancel and staff actions are unchanged. Once the recheck has run, the buyer can cancel
-as before, so review such orders before clearing the gate (section 6).
+the backup was taken. A vendor's cancel and staff actions are unchanged. From 72 hours after the recheck (A-720, above)
+the buyer can cancel as before, so review such orders before clearing the gate (section 6).
 
 ## Digital escrow orders get a delivery deadline and a dispute window (migration 153, A-709)
 
@@ -1734,7 +1746,10 @@ against the database. It runs in one transaction and does the following:
 - `escrow_xmr_release_recheck` asks the Monero escrow watcher, on its first pass after the gate is cleared, to move every
   release deadline of a shipped Monero escrow order, and every dispute window of a delivered digital one, that has passed
   in the restored records to 72 hours later, telling each buyer. Until that recheck has succeeded, no such order is
-  completed on its deadline and a buyer's no-ship cancel of a paid order is refused (A-714).
+  completed on its deadline and a buyer's no-ship cancel of a paid order is refused (A-714); it then records
+  `escrow_xmr_cancel_wait_until`, and that cancel stays refused for a further 72 hours (A-720). With `ESCROW_XMR=off` the
+  watcher never runs, so the recheck stays pending and the refusal says "try again later" for as long as it stays off; do
+  not delete the setting by hand.
 - `xmr_escrow_sweep_required` makes Monero escrow checkout wait until the Monero escrow watcher has found the escrow
   wallets created after the backup (each is sealed to the seed key and kept, never offered to a new order) and checked
   every escrow wallet. After restoring only the escrow wallet volume from an older backup, set that setting alone with
@@ -1781,10 +1796,13 @@ unbans, and held releases refunded to buyers after that point (a refund of a hel
 the restored records: check the order pages of banned vendors' orders against your operator record before refunding
 again). Before clearing the gate, re-check them on `/admin` against your operator record. Shipments, deliveries and
 cancels made after the backup are not in the restored records either, and a restore cannot move an order's ship-by time
-or delivery deadline: review the escrow orders shipped, delivered or cancelled around the backup point (the parties'
-order messages and notices, the wallet's transfer history). Once the gate is cleared and the deadline recheck has run, the
-buyer of a paid order whose restored ship-by time or delivery deadline has passed can cancel it for a refund at once,
-even if the vendor shipped or delivered it after the backup (A-714). The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
+or delivery deadline: review the escrow orders shipped, delivered or cancelled around the backup point. The restored order
+messages and notices stop at the backup, and the wallet's transfer history shows deposits and claims, not a shipment or
+delivery, so the evidence is the old database, if it survives, or the parties. For 72 hours after the deadline recheck a
+buyer's cancel of a paid order whose restored ship-by time or delivery deadline passes before then is refused, and the
+vendor can still ship or deliver it: tell vendors to re-ship or re-deliver in that time, using Mark shipped again for goods
+sent after the backup (A-714, A-720). Afterwards the buyer can cancel it for a refund, even if the vendor shipped or
+delivered it after the backup and did not repeat it. The market fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, not
 database rows, so a database restore does not roll them back; confirm the host values are the ones you intend. The restore can
 roll back the record of the last fee seen, so the next start may announce the current fee to administrators once more.
 

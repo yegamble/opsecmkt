@@ -1,4 +1,4 @@
-{{/* P3 Orders owns. vendor-orders:stat tile; vendor-orders: orders placed on the viewer's own listings */}}
+{{/* P3 Orders owns. vendor-orders:stat tile; vendor-orders:waiting: what the vendor does next, first on the desk (A-721); vendor-orders: orders placed on the viewer's own listings */}}
 {{define "vendor-orders:stat"}}<div class="stat">
 <div class="eyebrow">To fulfil</div>
 <strong>{{.NeedsAction}}</strong>
@@ -9,10 +9,10 @@
 <strong>{{.VendorOpenDisputes}}</strong>
 <span>Disputes on your orders awaiting an administrator's decision</span>
 </div>{{end}}
-{{define "vendor-orders"}}<section class="vendor-waiting" aria-labelledby="vendor-waiting">
+{{define "vendor-orders:waiting"}}<section class="vendor-waiting" aria-labelledby="vendor-waiting">
 <h2 class="section-title" id="vendor-waiting">Waiting for you</h2>{{if .VendorWaiting}}<p class="help">Every order that needs you next, however old: a buyer's dispute to reply to, a paid order to fulfil, and a payment to claim on the order page with a fresh address from your own wallet.</p>
-<div class="table-wrap">
-<table>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Orders waiting for you">
+<table class="fit-table">
 <thead>
 <tr>
 <th scope="col">Order / listing</th>
@@ -24,30 +24,30 @@
 <td>
 <a href="/order?id={{.Order.ID}}">{{.Order.Title}}</a>
 <br>
-<small class="muted mono">{{.Order.ID}}</small>
+<small class="muted mono long-id">{{.Order.ID}}</small>
 </td>
-<td>{{.Order.Buyer}}</td>
+<td class="long-id">{{.Order.Buyer}}</td>
 <td>
 <a class="text-link" href="/order?id={{.Order.ID}}{{with .Anchor}}#{{.}}{{end}}" aria-label="{{.Action}}: {{.Order.Title}}">{{.Action}}</a>{{if .ShipBy}}
-<br><small{{if .ShipByPassed}} class="accent"{{end}}>{{if eq .Order.Kind "digital"}}Deliver{{else}}Ship{{end}} by {{.ShipBy}}{{if .ShipByPassed}}: passed, so the buyer may cancel{{end}}</small>{{end}}
+<br><small{{if .ShipByPassed}} class="accent"{{end}}>{{if eq .Order.Kind "digital"}}Deliver{{else}}Ship{{end}} by {{.ShipBy}}{{if .CancelRecheck}}: the buyer's cancel waits for this market's restore recheck, then 72 hours more{{else if .CancelFrom}}: the buyer can cancel from {{.CancelFrom}}, after this market's restore from backup{{else if .ShipByPassed}}: passed, so the buyer may cancel{{end}}</small>{{end}}
 </td>
 </tr>{{end}}</tbody>
 </table>
 </div>{{else}}<p class="muted">Nothing is waiting for you: no dispute to reply to, no paid order to fulfil and no payment to claim.</p>{{end}}
-</section>
-<h2 class="section-title" id="vendor-orders">Incoming orders</h2>{{if or .XMREscrowOn .XMREscrowOrders .PayoutFilter}}<nav class="pagination inventory-filters" aria-label="Filter incoming orders">
+</section>{{end}}
+{{define "vendor-orders"}}<h2 class="section-title" id="vendor-orders">Incoming orders</h2>{{if or .XMREscrowOn .XMREscrowOrders .PayoutFilter}}<nav class="pagination inventory-filters" aria-label="Filter incoming orders">
 <a href="/vendor-dashboard#vendor-orders"{{if not .PayoutFilter}} aria-current="page"{{end}}>All orders</a>
 <a href="/vendor-dashboard?payouts=unconfirmed#vendor-orders"{{if .PayoutFilter}} aria-current="page"{{end}}>Payouts not yet confirmed</a>
 </nav>{{end}}{{if .IncomingOrders}}<p class="help">{{if .PayoutFilter}}Every Monero escrow order on your listings that may still hold coins: its payment to you, or its refund to the buyer, is not yet confirmed and followed past the depth of a chain reorganisation.{{else}}All current work is listed by most recent change.{{if .HistoryLimit}} Showing the {{.HistoryLimit}} most recent completed, resolved or funded-cancelled orders as history.{{end}}{{end}} The payout column is the state of the release to you; the order page explains it in full.</p>
-<div class="table-wrap">
-<table>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="vendor-orders">
+<table class="fit-table">
 <thead>
 <tr>
 <th scope="col">Order / listing</th>
-<th scope="col">Buyer</th>
-<th scope="col">Amount</th>
 <th scope="col">Status</th>
 <th scope="col">Payout</th>
+<th scope="col">Buyer</th>
+<th scope="col">Amount</th>
 <th scope="col">Last change</th>
 </tr>
 </thead>
@@ -55,17 +55,17 @@
 <td>
 <a href="/order?id={{.ID}}">{{.Title}}</a>
 <br>
-<small class="muted mono">{{.ID}}</small>
+<small class="muted mono long-id">{{.ID}}</small>
 <br><small>{{.Units}} {{if eq .Units 1}}unit{{else}}units{{end}}</small>
 <br>{{/* A-265: the vendor opens their own listing through the order even once it is archived (A-164) */}}
 <a class="text-link" href="/product?id={{.ProductID}}">Listing<span class="sr-only">: {{.Title}}</span></a>
 </td>
-<td>{{.Buyer}}</td>
-<td class="mono">{{.Amount}} {{.Currency}}</td>
 <td>
 <span class="badge {{template "order-badge-class" .State}}">{{.Status}}</span>
 </td>
 <td>{{with index $.DeskPayouts .ID}}{{.}}{{else}}—{{end}}</td>
+<td class="long-id">{{.Buyer}}</td>
+<td class="mono">{{.Amount}} {{.Currency}}</td>
 <td>{{.Updated}}</td>
 </tr>{{end}}</tbody>
 </table>

@@ -95,10 +95,11 @@ type Order struct {
 
 // VendorWaiting is one order in the vendor desk's "Waiting for you" section (A-710): what the vendor does next
 // (Action, on the order page at the fragment Anchor) and a paid order's ship-by or delivery deadline (ShipBy; ShipByPassed once it passed).
+// CancelRecheck: the buyer's cancel waits for a restore's recheck (A-714); CancelFrom: for the vendor's grace after it (A-720).
 type VendorWaiting struct {
-	Order                  Order
-	Action, Anchor, ShipBy string
-	ShipByPassed           bool
+	Order                              Order
+	Action, Anchor, ShipBy, CancelFrom string
+	ShipByPassed, CancelRecheck        bool
 }
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
@@ -191,6 +192,7 @@ type PageData struct {
 	Moderation              *ModerationAdminView  // Private administrator moderation proposals and bounded status.
 	PrivateModerationAccess bool                  // Navigation only; authority still comes from the private listener and current role.
 	ModerationBudget        *ModerationBudgetView // Overview alert while moderation capture needs the operator (A-648).
+	ModerationQueue         *ModerationQueueView  // Overview counts of the private queue, private ingress only (A-723).
 	ModerationWorkerStale   string                // Overview warning, private ingress only, while capture is on and no recent worker pass (A-683).
 
 	ServerStarted string
@@ -254,6 +256,8 @@ type PageData struct {
 	FormHandle string
 	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
 	FormVendor bool
+	// FormPGP: /register re-rendered after a refused post, the PGP public key that was pasted (A-722).
+	FormPGP string
 	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;
 	// VendorAccount: /account selling approval and applications; VendorAdmin: the admin vendors panel.
 	VendorPolicy  *VendorPolicyView
@@ -444,8 +448,11 @@ type PageData struct {
 	// "mainnet" (App.xmrEscrowNetwork, A-449, A-460), so the notices name it. XMREscrowNetKnown: that network was verified (escrowXMR.formNet
 	// is not ""), so /admin's Payment providers text never names a network no daemon was verified on (QA4W4B-1).
 	XMREscrowOn, XMREscrowAvailable, XMREscrowNetKnown bool
-	XMRCustody, XMREscrowNet                           string
-	XMREscrowOrders                                    int
+	// XMRIntakePaused: Monero escrow is on, but the administrator has paused new checkouts (payment_intake_XMR; every
+	// page, A-722): the site-wide notices say so. False when the settings could not be read, as on a busy refusal page.
+	XMRIntakePaused          bool
+	XMRCustody, XMREscrowNet string
+	XMREscrowOrders          int
 	// EscrowKey: /escrow-key and the /account status row, the viewer's Bitcoin escrow key; nil while ESCROW_BTC is off
 	// (escrow_account.go, WR-escrow Phase 1).
 	EscrowKey *EscrowKeyView
@@ -818,13 +825,14 @@ type EscrowCosignerView struct{ Who, Key string }
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
 // VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d), and
 // then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f). Digital: the
-// order is a delivered digital Monero escrow order and At ends its dispute window (A-709). closed: it has passed and no
-// restore recheck is pending, so a dispute is refused (lateDispute) and not offered.
+// order is a delivered digital Monero escrow order and At ends its dispute window (A-709). Recheck: it has passed and a
+// restore recheck is pending, which will move it (A-720). closed: it has passed and no restore recheck is pending, so a
+// dispute is refused (lateDispute) and not offered.
 type EscrowDeadlineView struct {
-	At, Left                              string
-	Due, Rechecked, VendorClosed, Digital bool
-	HoldRefundDays                        int
-	closed                                bool
+	At, Left                                       string
+	Due, Rechecked, VendorClosed, Digital, Recheck bool
+	HoldRefundDays                                 int
+	closed                                         bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"opsecmkt/internal/market"
+	"os"
 	"strings"
 	"testing"
 )
@@ -113,6 +114,19 @@ func TestRestoreGateCLI(t *testing.T) {
 		return out.String(), prompt.String(), err
 	}
 	all := strings.Repeat("yes\n", len(reconciliationSteps))
+	// A-720: the operator is asked about, and scripts/restore.sh names, the orders around the backup point and the
+	// vendors' grace.
+	restoreScript, err := os.ReadFile("scripts/restore.sh") // cliSchema runs from the repository root
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"the reconciliation steps": strings.Join(reconciliationSteps, "\n"), "scripts/restore.sh": string(restoreScript)} {
+		for _, want := range []string{"shipped, delivered or cancelled around the backup point", "72 hours", "re-ship or re-deliver"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s do not say %q", name, want)
+			}
+		}
+	}
 
 	// While an application serves the database (market.New holds the serving lock until Close), both commands refuse
 	// and change nothing; the clear is refused before any question is asked. (Once the gate is set, the application

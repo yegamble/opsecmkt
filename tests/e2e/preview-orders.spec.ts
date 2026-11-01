@@ -1,5 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { PREVIEW_DRAFT_ID } from './preview-routes';
+import { waitForStyles } from './styles';
 
 // P3 order views in the read-only preview (sample data, JavaScript disabled).
 test('order page shows history, unavailable payment and the buyer actions', async ({ page }) => {
@@ -81,3 +82,63 @@ test('paid order keeps private correspondence and shipping links on the order pa
   await expect(page.locator('script')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
 });
+
+// A-721: the 64-hex id, not the status, used to fill a phone's width. Unscrolled, the next step and the status show;
+// what still overflows (always at 200% text) scrolls by keyboard in a named wrapper, and the page never widens.
+const insideWrapper = async (wrapper: Locator, item: Locator, label: string) => {
+  const box = (await wrapper.boundingBox())!;
+  const at = (await item.boundingBox())!;
+  expect(at.x, label).toBeGreaterThanOrEqual(box.x);
+  expect(at.x + at.width, label).toBeLessThanOrEqual(box.x + box.width);
+};
+
+for (const width of [320, 390, 768]) {
+  test(`vendor desk at ${width}px: Waiting for you above the listings, its next step inside the wrapper`, async ({ page, browserName }) => {
+    await page.setViewportSize({ width, height: 640 });
+    await page.goto('/vendor-dashboard');
+    await waitForStyles(page);
+    const heading = page.getByRole('heading', { name: 'Waiting for you' });
+    const y = (await heading.boundingBox())!.y;
+    expect(y).toBeLessThanOrEqual(1280);
+    expect(y).toBeLessThan((await page.locator('.stats').boundingBox())!.y);
+    const wrapper = page.getByRole('region', { name: 'Orders waiting for you' });
+    await expect(wrapper).toHaveAttribute('tabindex', '0');
+    expect(await wrapper.evaluate(el => el.scrollLeft)).toBe(0);
+    const row = wrapper.locator('tbody tr').first();
+    await insideWrapper(wrapper, row.getByRole('link', { name: /^Mark shipped/ }), 'next-step link');
+    await insideWrapper(wrapper, row.locator('td').nth(2).locator('small'), 'ship-by text');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+
+    const id = row.locator('small.long-id');
+    await expect(id).toHaveText(/^[0-9a-f]{64}$/);
+    if (browserName === 'chromium') {
+      await id.dblclick();
+      expect(await page.evaluate(() => getSelection()!.toString().trim())).toBe(await id.textContent());
+    }
+
+    const incoming = page.getByRole('region', { name: 'Incoming orders' });
+    await expect(incoming).toHaveAttribute('tabindex', '0');
+    const status = incoming.locator('tbody tr').first().locator('td').nth(1);
+    await expect(status.locator('.badge')).toHaveText('Paid');
+    await insideWrapper(incoming, status, 'desk status');
+    if (width === 320) await insideWrapper(incoming, incoming.locator('tbody tr').first().locator('td').nth(2), 'desk payout');
+
+    await page.locator('html').evaluate(element => { element.style.fontSize = '200%'; });
+    await waitForStyles(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), '200% text').toBeLessThanOrEqual(width);
+  });
+
+  test(`orders at ${width}px: status is visible unscrolled and the wrapper is a named Tab stop`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 640 });
+    await page.goto('/orders');
+    await waitForStyles(page);
+    const wrapper = page.getByRole('region', { name: 'Your orders' });
+    await expect(wrapper).toHaveAttribute('tabindex', '0');
+    expect(await wrapper.evaluate(el => el.scrollLeft)).toBe(0);
+    await expect(wrapper.locator('thead th').nth(1)).toHaveText('Status');
+    for (const status of await wrapper.locator('tbody tr td:nth-child(2) .badge').all()) await insideWrapper(wrapper, status, 'order status');
+    await page.locator('html').evaluate(element => { element.style.fontSize = '200%'; });
+    await waitForStyles(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), '200% text').toBeLessThanOrEqual(width);
+  });
+}

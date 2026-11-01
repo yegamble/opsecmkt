@@ -16,6 +16,13 @@ type RefusalView struct {
 	EnrolFactor     bool        // a staff action refused for a missing second factor (A-706): links to /totp and /pgp
 }
 
+// maxPGPKeyText is the most of a pasted PGP key a refused form keeps: the key fields' maxlength.
+const maxPGPKeyText = 16384
+
+// privateKeyHeader marks a pasted PGP private key, which the key forms refuse: it is a secret, so no refusal shows it
+// back, whatever field it arrived in.
+const privateKeyHeader = "-----BEGIN PGP PRIVATE KEY BLOCK-----"
+
 // EchoField is one long text field of a refused post, as it was sent (bounded by its form's limit).
 type EchoField struct{ Label, Text string }
 
@@ -36,7 +43,12 @@ var refusalEchoFields = []struct {
 	{"resolution", "Decision", 5000},
 	{"note", "Note", 1000},
 	{"psbt", "Signed PSBT", hardwareMaxBase64},
-	{"pgp", "PGP public key", 16384},
+	{"pgp", "PGP public key", maxPGPKeyText},
+	{"replacement_pgp", "Replacement PGP public key", maxPGPKeyText},
+	{"recovery_note", "Verification note", 500},
+	{"staff_contact", "Staff contact", 200},
+	{"vendor_bond_instructions", "Bond payment instructions", 2000},
+	{"release_condition", "Release condition", 2000},
 	{"operator_key", "Operator key", maxCanaryBytes},
 	{"canary", "Canary statement", maxCanaryBytes},
 	{"address", "Address", 110},
@@ -50,7 +62,7 @@ func refusalEcho(form url.Values) []EchoField {
 	var echo []EchoField
 	for _, f := range refusalEchoFields {
 		v := form.Get(f.name)
-		if strings.TrimSpace(v) == "" {
+		if strings.TrimSpace(v) == "" || strings.Contains(v, privateKeyHeader) {
 			continue
 		}
 		echo = append(echo, EchoField{Label: f.label, Text: typedText(v, f.max)})
@@ -79,7 +91,9 @@ func (a *App) typedHandle(r *http.Request) string {
 
 // refusalBack is the page to link back to from a refusal: the registered page a registered action's path names
 // (/messages, /disputes/reply → /disputes), else, or when it is the same page with an id or recipient, the same-origin
-// Referer when it is a registered page (rebuilt by signInNext, never copied), else /.
+// Referer when it is a registered page (rebuilt by signInNext, never copied), else /. A form on one order's page links
+// back to that order whatever action it posts to; an administrator's form on one account's page links back to that
+// account, named by the post's from=user and handle (an echoable post only: mayEcho) or by the Referer's handle.
 func (a *App) refusalBack(r *http.Request) string {
 	page := ""
 	// Only an action that exists and is on names a page, so an action switched off answers exactly as an unknown
@@ -94,13 +108,26 @@ func (a *App) refusalBack(r *http.Request) string {
 			}
 		}
 	}
-	ref := ""
+	ref, refAccount := "", ""
 	if u, err := url.Parse(r.Referer()); err == nil && u.Host == r.Host && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil {
 		ref = a.signInNext(u.RequestURI())
+		if h := u.Query()["handle"]; len(h) == 1 && handlePattern.MatchString(h[0]) {
+			refAccount = h[0]
+		}
 	}
-	refPage, _, _ := strings.Cut(strings.TrimPrefix(ref, "/"), "?")
+	refPage, refQuery, _ := strings.Cut(strings.TrimPrefix(ref, "/"), "?")
+	if page == "admin" && a.pageOn("admin/users") {
+		if a.mayEcho(r) && r.PostForm.Get("from") == "user" && handlePattern.MatchString(r.PostForm.Get("handle")) {
+			return adminUserURL(r.PostForm.Get("handle"))
+		}
+		if ref == "/admin/users" && refAccount != "" {
+			return adminUserURL(refAccount)
+		}
+	}
 	switch {
 	case refPage == "ticket" && strings.HasPrefix(r.URL.Path, "/tickets/"):
+		return ref
+	case refPage == "order" && strings.HasPrefix(refQuery, "id="):
 		return ref
 	// An admin action's form is on an administration section (A-542): /admin/suspend refused from /admin/users
 	// links back to that section.
@@ -112,11 +139,23 @@ func (a *App) refusalBack(r *http.Request) string {
 	return "/"
 }
 
-// refusalTitle is the refusal page's title and heading.
-func refusalTitle(code int, post bool) string {
+const (
+	passwordIncorrectText = "Password incorrect" // confirmPasswordHash: only ever a signed-in account's own confirmation
+	signInRequiredTitle   = "Sign in required"
+	passwordRefusedTitle  = "Password not accepted"
+	confirmRefusedTitle   = "Confirmation not accepted"
+)
+
+// refusalTitle is the refusal page's title and heading. A 401 asks for a sign-in only when one would help: a live
+// session's wrong password or code is a refused confirmation (A-722), unless msg itself says to sign in again.
+func refusalTitle(code int, post, signedIn bool, msg string) string {
 	switch {
+	case code == http.StatusUnauthorized && msg == passwordIncorrectText:
+		return passwordRefusedTitle
+	case code == http.StatusUnauthorized && signedIn && !strings.Contains(msg, "Sign in"):
+		return confirmRefusedTitle
 	case code == http.StatusUnauthorized:
-		return "Sign in required"
+		return signInRequiredTitle
 	case code == http.StatusTooManyRequests:
 		return "Too many requests"
 	case code == http.StatusServiceUnavailable:
@@ -143,13 +182,13 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 	if post && (r.URL.Path == "/login" || r.URL.Path == "/register") {
 		d := a.pageData(r, strings.TrimPrefix(r.URL.Path, "/"), sessionToken(r), user)
 		if a.loadRefusalPage(r, &d) {
-			d.Error, d.FormHandle, d.FormVendor = msg, a.typedHandle(r), r.PostForm.Get("account_type") == "vendor"
+			d.Error, d.FormHandle, d.FormVendor = msg, a.typedHandle(r), a.mayEcho(r) && r.PostForm.Get("account_type") == "vendor"
 			a.renderRefusal(w, r, d, code, msg)
 			return
 		}
 	}
 	d := a.pageData(r, "refusal", sessionToken(r), user)
-	d.Title, d.Preview = refusalTitle(code, post), a.preview
+	d.Preview = a.preview
 	d.Query, d.Category, d.Region = "", "", "" // the header's search box never carries a refused query
 	v := &RefusalView{Back: a.refusalBack(r)}
 	v.BackLabel = "Back to the market"
@@ -162,11 +201,16 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 	v.EnrolFactor = msg == staffFactorRequiredMessage && user != nil
 	d.Refusal = v
 	a.loadRefusalPage(r, &d)
-	d.Error = msg
+	// The title waits for the session lookup above: it depends on whether this browser is signed in.
+	d.Title, d.Error = refusalTitle(code, post, d.User != nil, msg), msg
+	if d.Title == passwordRefusedTitle || d.Title == confirmRefusedTitle {
+		// A confirmation is checked before its action changes anything, or the action's transaction rolls back.
+		d.Error = strings.TrimSuffix(msg, ".") + ". Nothing was changed."
+	}
 	// A browser that is not signed in is offered a sign-in on a 401, and on an expired form, which is how a post
 	// arrives once the session cookie has gone (after 12 hours or a sign-out elsewhere); not on the sign-in pages.
 	first, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	v.SignIn = d.User == nil && (code == http.StatusUnauthorized || msg == formExpired) &&
+	v.SignIn = d.User == nil && (d.Title == signInRequiredTitle || msg == formExpired) &&
 		first != "login" && first != "register" && first != "setup" && first != "challenge"
 	if d.User == nil {
 		d.Next = a.signInNext(v.Back) // the header's sign-in link returns here too

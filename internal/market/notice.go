@@ -148,6 +148,9 @@ var notices = map[string]struct{ text, section, pages string }{
 	"vendor-verify":    {"Verified vendor mark saved. The vendor was notified.", "vendors", "admin/vendors admin/user"},
 	// The user directory's account page (admin_users.go, A-545): an application opened on the account's behalf.
 	"vendor-opened": {"Vendor application opened for this account. The account was notified.", "vendors", "admin/user"},
+	// The private moderation panel (moderation_admin.go, A-723).
+	"moderation-review": {"Review recorded; marketplace state unchanged.", "moderation-queue", "admin/moderation"},
+	"moderation-budget": {"Moderation budget raised. It applies at once: targets waiting for capture are captured on the worker's next pass.", "moderation-budget-panel", "admin/moderation"},
 }
 
 // noticeErrors are the codes shown as the page's error alert rather than a status notice.

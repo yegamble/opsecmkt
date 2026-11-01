@@ -56,7 +56,7 @@ func TestAccountActivityPagesAreBoundedPrivateAndStable(t *testing.T) {
 	}
 	orderIDs := func(body string) []string {
 		t.Helper()
-		matches := regexp.MustCompile(`<small class="muted mono">([a-f0-9]+)</small>`).FindAllStringSubmatch(body, -1)
+		matches := regexp.MustCompile(`<small class="muted mono long-id">([a-f0-9]+)</small>`).FindAllStringSubmatch(body, -1)
 		ids := make([]string, len(matches))
 		for i, m := range matches {
 			ids[i] = m[1]

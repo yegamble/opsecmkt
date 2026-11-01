@@ -261,7 +261,7 @@ func TestXMREscrowDeliverCancelRaceOneOutcome(t *testing.T) {
 // deadline or ship-by time may have passed although the vendor delivered or shipped it after the backup was taken.
 // While the restore's recheck is pending (lateDispute's exception), the buyer's no-ship cancel is refused 409 with the
 // reason, the buyer's page offers no cancel form and says why, and the panel does not say the buyer may cancel now. The
-// Bitcoin recheck's setting is not the Monero one; the vendor's cancel is unaffected; once the recheck has run the
+// Bitcoin recheck's setting is not the Monero one; the vendor's cancel is unaffected; once the vendor's grace after the recheck has ended (A-720) the
 // buyer cancels as before.
 func TestXMREscrowCancelWaitsForRecheck(t *testing.T) {
 	x := newXMREscrowEnv(t)
@@ -295,16 +295,158 @@ func TestXMREscrowCancelWaitsForRecheck(t *testing.T) {
 		"amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}}); code != 303 || x.state(byVendor) != stateCancelled {
 		t.Fatalf("the vendor's cancel while the recheck is pending: %d %s %s", code, x.state(byVendor), body)
 	}
-	// The recheck runs on the next pass and consumes the request: the buyer cancels for the refund as before.
+	// The recheck runs on the next pass and consumes the request: the buyer's cancel still waits, for the vendor's grace
+	// (A-720, TestXMREscrowCancelGraceAfterRecheck), and then works as before.
 	x.mustPoll()
 	if agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReleaseRecheckKey) != 0 {
 		t.Fatal("the recheck left its request")
 	}
+	if code, body := x.xmrBuyerCancel(digital, digitalSess); code != 409 || x.state(digital) != statePaid || !strings.Contains(body, "You can cancel this order from") {
+		t.Fatalf("the buyer's cancel right after the recheck: %d %s %s", code, x.state(digital), body)
+	}
+	x.expireCancelWait()
 	if page := x.page("/order?id="+digital, digitalSess); !strings.Contains(page, `action="/orders/cancel"`) {
-		t.Fatal("no cancel form once the recheck has run")
+		t.Fatal("no cancel form once the vendor's grace has ended")
 	}
 	if code, body := x.xmrBuyerCancel(digital, digitalSess); code != 303 || x.state(digital) != stateCancelled {
-		t.Fatalf("the buyer's cancel once the recheck has run: %d %s %s", code, x.state(digital), body)
+		t.Fatalf("the buyer's cancel once the vendor's grace has ended: %d %s %s", code, x.state(digital), body)
+	}
+}
+
+// expireCancelWait makes the recorded grace after a restore's recheck (A-720) end a minute ago.
+func (x *xmrEscrowEnv) expireCancelWait() {
+	x.t.Helper()
+	agExec(x.testEnv, "UPDATE settings SET value=to_char((now()-interval '1 minute') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE key=$1", xmrCancelWaitKey)
+}
+
+// cancelWaitUntil is the recorded end of the grace after a restore's recheck (A-720).
+func (x *xmrEscrowEnv) cancelWaitUntil() time.Time {
+	x.t.Helper()
+	var at time.Time
+	if err := x.DB.QueryRow("SELECT value::timestamptz FROM settings WHERE key=$1", xmrCancelWaitKey).Scan(&at); err != nil {
+		x.t.Fatal(err)
+	}
+	return at
+}
+
+// A-720 (PAY-3, PAY-4): on the documented restore order the first pass after the gate clears consumes the recheck before
+// public access returns, so A-714's refusal alone protects nobody. That transaction records a grace of 72 hours: a
+// buyer's cancel of an order whose ship-by time or delivery deadline passes before its end is refused 409 and not
+// offered, on the buyer's page and the vendor's desk; the vendor's shipment or delivery in that time succeeds; after it
+// the cancel works as before; an order paid after the recheck keeps its own deadline. A later restore's recheck extends
+// the grace and never shortens it, whatever the restored row holds.
+func TestXMREscrowCancelGraceAfterRecheck(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	manual := x.manualDigital(x.vendor)
+	physicalProduct := x.physical(x.vendor)
+	digital, digitalSess := x.fundedXMR(manual)
+	physical, physicalSess := x.paidXMRPhysical(physicalProduct)
+	delivered, deliveredSess := x.fundedXMR(manual)
+	shipped, _ := x.paidXMRPhysical(physicalProduct)
+	soon, soonSess := x.paidXMRPhysical(physicalProduct) // its restored ship-by time passes during the grace
+	late, lateSess := x.paidXMRPhysical(physicalProduct) // its restored ship-by time is after the grace
+	for _, o := range []string{digital, physical, delivered, shipped} {
+		x.forceDeadline(o, "ship_by=now()-interval '1 minute'")
+	}
+	x.forceDeadline(soon, "ship_by=now()+interval '1 hour'")
+	x.forceDeadline(late, "ship_by=now()+interval '100 hours'")
+
+	// A restored row of an older restore is replaced: its end has passed.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'2020-01-01T00:00:00.000000Z')", xmrCancelWaitKey)
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
+	before := x.dbNow()
+	x.mustPoll()
+	if agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReleaseRecheckKey) != 0 {
+		t.Fatal("the recheck left its request")
+	}
+	until := x.cancelWaitUntil()
+	if until.Before(before.Add(72*time.Hour)) || until.After(x.dbNow().Add(72*time.Hour)) {
+		t.Fatalf("the grace ends %s, want 72 hours after the recheck, near %s", until, before)
+	}
+	from := utcFrom(until)
+	for _, c := range []struct{ order, sess, word string }{{digital, digitalSess, "delivered"}, {physical, physicalSess, "shipped"}, {soon, soonSess, "shipped"}} {
+		if code, body := x.xmrBuyerCancel(c.order, c.sess); code != 409 || !containsAll(body, "You can cancel this order from "+from, "restored its records from a backup", "Nothing was changed") {
+			t.Fatalf("a buyer's cancel of %s in the grace: %d %s", c.order, code, body)
+		}
+		if x.state(c.order) != statePaid || len(x.xmrSettlements(c.order)) != 0 {
+			t.Fatal("the refused cancel changed the order")
+		}
+		page := html.UnescapeString(x.page("/order?id="+c.order, c.sess))
+		if strings.Contains(page, `action="/orders/cancel"`) || !containsAll(page, "You can cancel from "+from, "has not "+c.word) ||
+			strings.Contains(page, "the buyer may now cancel it") {
+			t.Fatalf("the buyer's page in the grace:\n%s", page)
+		}
+		if vendorPage := html.UnescapeString(x.page("/order?id="+c.order, x.vendorSess)); !containsAll(vendorPage, "waits until "+from, "after that backup was taken") {
+			t.Fatalf("the vendor's page in the grace:\n%s", vendorPage)
+		}
+	}
+	// The vendor's desk says the cancel waits, not that the buyer may cancel.
+	desk := html.UnescapeString(x.page("/vendor-dashboard", x.vendorSess))
+	if !strings.Contains(desk, "the buyer can cancel from "+from) || strings.Contains(desk, "passed, so the buyer may cancel") {
+		t.Fatalf("the vendor's desk in the grace:\n%s", desk)
+	}
+	// The vendor's shipment and delivery in the grace succeed, past the restored deadlines.
+	if code, body := x.xmrShip(shipped, x.vendorSess, testXMRAddr("claim "+shipped, true), testPassword); code != 303 || x.state(shipped) != stateShipped {
+		t.Fatalf("the vendor's shipment in the grace: %d %s %s", code, x.state(shipped), body)
+	}
+	if code, body := x.xmrPost("/orders/deliver", x.vendorSess, url.Values{"order_id": {delivered}, "content": {"licence key GRACE"}}); code != 303 || x.state(delivered) != stateDelivered {
+		t.Fatalf("the vendor's delivery in the grace: %d %s %s", code, x.state(delivered), body)
+	}
+	if code, body := x.xmrBuyerCancel(delivered, deliveredSess); code != 409 || !strings.Contains(body, "was delivered at") {
+		t.Fatalf("a buyer's cancel after the delivery in the grace: %d %s", code, body)
+	}
+	// A restored ship-by time after the grace keeps its own refusal; so does an order paid after the recheck.
+	paidAfter, paidAfterSess := x.paidXMRPhysical(physicalProduct)
+	digitalAfter, digitalAfterSess := x.fundedXMR(manual)
+	for _, c := range []struct{ order, sess string }{{late, lateSess}, {paidAfter, paidAfterSess}, {digitalAfter, digitalAfterSess}} {
+		var at time.Time
+		if err := x.DB.QueryRow("SELECT ship_by FROM escrows WHERE order_id=$1", c.order).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		if !at.After(until) {
+			t.Fatalf("the deadline of order %s, %s, is not after the grace's end %s", c.order, at, until)
+		}
+		if code, body := x.xmrBuyerCancel(c.order, c.sess); code != 409 || !strings.Contains(body, "You can cancel this order from "+utcFrom(at)) || strings.Contains(body, "backup") {
+			t.Fatalf("a buyer's cancel of an order with a deadline after the grace: %d %s", code, body)
+		}
+		if page := html.UnescapeString(x.page("/order?id="+c.order, c.sess)); !strings.Contains(page, "You can cancel from "+utcFrom(at)) || strings.Contains(page, "restored its records") {
+			t.Fatalf("the buyer's page of an order with a deadline after the grace:\n%s", page)
+		}
+	}
+
+	// A second restore while the grace runs: while its recheck is pending the cancel says so; a restored row that ends
+	// later is not shortened, and one that ends sooner is extended.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	if code, body := x.xmrBuyerCancel(soon, soonSess); code != 409 || !strings.Contains(body, "records are being reconciled") {
+		t.Fatalf("a buyer's cancel of an order in the grace with another recheck pending: %d %s", code, body)
+	}
+	agExec(x.testEnv, "UPDATE settings SET value='2099-01-01T00:00:00.000000Z' WHERE key=$1", xmrCancelWaitKey)
+	x.mustPoll()
+	if at := x.cancelWaitUntil(); !at.Equal(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("a recheck shortened the grace to %s", at)
+	}
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	agExec(x.testEnv, "UPDATE settings SET value=to_char((now()+interval '1 hour') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE key=$1", xmrCancelWaitKey)
+	before = x.dbNow()
+	x.mustPoll()
+	if at := x.cancelWaitUntil(); at.Before(before.Add(72 * time.Hour)) {
+		t.Fatalf("a later recheck left the grace ending %s, want 72 hours after %s", at, before)
+	}
+
+	// After the grace the buyer cancels as before, and the row left behind changes nothing.
+	x.expireCancelWait()
+	x.forceDeadline(soon, "ship_by=now()-interval '1 minute'")
+	for _, c := range []struct{ order, sess string }{{physical, physicalSess}, {soon, soonSess}, {digital, digitalSess}} {
+		if page := x.page("/order?id="+c.order, c.sess); !strings.Contains(page, `action="/orders/cancel"`) {
+			t.Fatalf("no cancel form once the grace has ended:\n%s", page)
+		}
+		if code, body := x.xmrBuyerCancel(c.order, c.sess); code != 303 || x.state(c.order) != stateCancelled || len(x.xmrSettlements(c.order)) != 1 {
+			t.Fatalf("the buyer's cancel once the grace has ended: %d %s %s", code, x.state(c.order), body)
+		}
+	}
+	if page := html.UnescapeString(x.page("/order?id="+late, x.vendorSess)); strings.Contains(page, "waits until") {
+		t.Fatalf("the vendor's page says a cancel waits after the grace:\n%s", page)
 	}
 }
 
@@ -544,5 +686,13 @@ func TestXMRDisputeFormHiddenAfterDeadline(t *testing.T) {
 	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
 	if page := x.page("/order?id="+digital, digitalSess); !strings.Contains(page, `action="/disputes"`) {
 		t.Fatalf("no dispute form while the restore recheck is pending:\n%s", page)
+	}
+	// A-720 (PAY-5): the panel says what happens to the deadline, not that the release is due or the order completes next.
+	for _, c := range []struct{ order, sess string }{{digital, digitalSess}, {shipped, shippedSess}, {shipped, x.vendorSess}} {
+		panel := x.panel(c.order, c.sess)
+		if !containsAll(panel, "moves to 72 hours after", "a dispute can still be opened") ||
+			strings.Contains(panel, "next pass") || strings.Contains(panel, "the release is due") || strings.Contains(panel, "can no longer be opened") {
+			t.Fatalf("the panel of a %s order with the recheck pending:\n%s", x.state(c.order), panel)
+		}
 	}
 }

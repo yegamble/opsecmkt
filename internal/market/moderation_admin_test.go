@@ -420,7 +420,7 @@ func TestModerationAdminQueueFiltersAndOrder(t *testing.T) {
 	if ids := moderationQueueIDs(t, past); !slices.Equal(ids, []string{expired}) {
 		t.Fatalf("?state=expired lists %v", ids)
 	}
-	mustContain(t, past, "Deadline passed", "HOLD (deadline passed; proposed QUEUE_HUMAN)")
+	mustContain(t, past, "Deadline passed", "Human review; deadline passed, on hold")
 	if ids := moderationQueueIDs(t, get("/admin/moderation?state=expired&kind=dispute")); len(ids) != 0 {
 		t.Fatalf("expired disputes %v", ids)
 	}
@@ -441,7 +441,7 @@ func TestModerationAdminHoldLabel(t *testing.T) {
 	page := privateHostRequest(e, "GET", "/admin/moderation", admin, nil, true)
 	e.check(page, 200)
 	body := page.Body.String()
-	mustContain(t, body, `<select name="action" required><option value="">Choose a review action</option>`,
+	mustContain(t, body, `required aria-label="Review action for Listing proposal `+shortID(id)+`"><option value="">Choose a review action</option>`,
 		`<option value="hold">Hold: keep marketplace state, close this proposal</option>`)
 	mustNotContain(t, body, "Hold for further review", " selected>")
 	// Submitting the placeholder records nothing.
@@ -498,7 +498,7 @@ func TestModerationAdminUploadTargetLinks(t *testing.T) {
 			mustNotContain(t, item, "Open current source evidence")
 			continue
 		}
-		mustContain(t, item, `<a class="text-link" `+link+`>Open current source evidence</a>`)
+		mustContain(t, item, `<a class="text-link" `+link+` aria-label="Open current source evidence for Image upload proposal `)
 	}
 	if got := moderationQueueIDs(t, body); len(got) != 4 {
 		t.Fatalf("?kind=upload lists %d proposals, want 4", len(got))
@@ -540,7 +540,7 @@ func TestModerationAdminReviewTargetLink(t *testing.T) {
 	item := body[start:]
 	item = item[:strings.Index(item, "</article>")]
 	link := "/product?id=" + product + "#reviews-title"
-	mustContain(t, item, `<a class="text-link" href="`+link+`">Open current source evidence</a>`)
+	mustContain(t, item, `<a class="text-link" href="`+link+`" aria-label="Open current source evidence for Buyer review proposal `)
 	mustNotContain(t, item, "/order?id=")
 	// The link is followed on the private administrator ingress the queue is served on; a browser never sends the fragment.
 	followed := privateHostRequest(e, "GET", strings.TrimSuffix(link, "#reviews-title"), admin, nil, true)
@@ -661,7 +661,7 @@ func TestModerationBudgetRaiseConfirmedAudited(t *testing.T) {
 	form := moderationBudgetForm("8192", "512")
 	first := privateHostRequest(e, "POST", "/admin/moderation/budget", admin, form, true)
 	e.check(first, 303)
-	if loc := first.Header().Get("Location"); loc != "/admin/moderation" {
+	if loc := first.Header().Get("Location"); loc != "/admin/moderation?page=1#moderation-budget-panel" {
 		t.Fatalf("redirect %q", loc)
 	}
 	if got := moderationBudgetLimits(e); got != [3]int{256, 8192, 512 << 20} {

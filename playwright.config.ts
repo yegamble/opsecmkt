@@ -7,6 +7,21 @@ if (process.env.CI && !databaseURL) {
   throw new Error('CI requires E2E_DATABASE_URL pointing to a fresh, dedicated test database');
 }
 
+// The database app processes' shared environment (the mode and listener differ).
+const serverEnv = {
+  DATABASE_URL: databaseURL ?? '',
+  COOKIE_SECURE: 'false',
+  RETENTION_ENABLED: process.env.E2E_RETENTION_STATE_DIR ? 'on' : 'off',
+  RETENTION_STATE_DIR: process.env.E2E_RETENTION_STATE_DIR ?? '',
+  SETUP_TOKEN: 'e2e-local-only-setup-token-at-least-32-characters',
+  // Never connect disposable browser fixtures to wallets inherited from the developer's shell.
+  BITCOIN_RPC_URL: '', BITCOIN_WALLET: '', MONERO_RPC_URL: '', MONERO_WALLET_RPC_URL: '',
+  ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '', ESCROW_BTC_WATCH_WALLET: '',
+  ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '', ESCROW_BTC_FEE_RATE: '',
+  ESCROW_XMR: '', ESCROW_XMR_DAEMON_URL: '', ESCROW_XMR_WALLET_RPC_URL: '',
+  CLAMD_ADDRESS: '127.0.0.1:18086', SCANNER_MAX_SIGNATURE_AGE_DAYS: '30',
+};
+
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
@@ -86,22 +101,20 @@ export default defineConfig({
       reuseExistingServer: false,
     }, {
       command: 'go run ./cmd/server',
-      env: {
-        ADDR: '127.0.0.1:18081', DATABASE_URL: databaseURL,
-        COOKIE_SECURE: 'false', APP_MODE: 'clearnet',
-        RETENTION_ENABLED: process.env.E2E_RETENTION_STATE_DIR ? 'on' : 'off',
-        RETENTION_STATE_DIR: process.env.E2E_RETENTION_STATE_DIR ?? '',
-        SETUP_TOKEN: 'e2e-local-only-setup-token-at-least-32-characters',
-        // Never connect disposable browser fixtures to wallets inherited from the developer's shell.
-        BITCOIN_RPC_URL: '', BITCOIN_WALLET: '', MONERO_RPC_URL: '', MONERO_WALLET_RPC_URL: '',
-        ESCROW_BTC: '', ESCROW_BTC_RPC_URL: '', ESCROW_BTC_ARBITER_WALLET: '', ESCROW_BTC_WATCH_WALLET: '',
-        ESCROW_BTC_FEE_BPS: '', ESCROW_BTC_FEE_ADDRESS: '', ESCROW_BTC_FEE_RATE: '',
-        ESCROW_XMR: '', ESCROW_XMR_DAEMON_URL: '', ESCROW_XMR_WALLET_RPC_URL: '',
-        CLAMD_ADDRESS: '127.0.0.1:18086', SCANNER_MAX_SIGNATURE_AGE_DAYS: '30',
-      },
+      env: { ...serverEnv, ADDR: '127.0.0.1:18081', APP_MODE: 'clearnet' },
       url: 'http://127.0.0.1:18081/healthz',
       reuseExistingServer: false,
       timeout: 120_000,
-    }] : []),
+    },
+    // A-723: the private administrator pages exist only on a real ADMIN_SOCKET, which also turns /admin off on that
+    // process's public listener, so db-moderation.spec.ts has its own app process on the same database. The retention
+    // run selects only its own spec and owns the retention state directory, so it starts none.
+    ...(process.env.E2E_RETENTION_STATE_DIR ? [] : [{
+      command: 'python3 tests/e2e/fixtures/private-admin-server.py',
+      env: { ...serverEnv, PRIVATE_ADMIN_BRIDGE_PORT: '18087', PRIVATE_ADMIN_PUBLIC_ADDR: '127.0.0.1:18088' },
+      url: 'http://127.0.0.1:18087/healthz',
+      reuseExistingServer: false,
+      timeout: 120_000,
+    }])] : []),
   ],
 });
