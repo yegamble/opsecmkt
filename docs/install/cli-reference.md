@@ -689,7 +689,7 @@ DATABASE_URL_FILE=./private/database.url ./opsecmkt -bootstrap-admin ADMIN_HANDL
 | `-healthcheck` | Probe the configured listener's `/healthz`, same port as `ADDR`, default `8080`; success requires HTTP `200` and body `ok`, with no success output. Uses verified HTTPS when `TLS_CERT` is set, and `OPSECMKT_APP_HOST` for its TLS name. Starts no server. |
 | `-preview` | Foreground read-only sample UI. No DB needed; `PREVIEW_ADDR` defaults to `127.0.0.1:8080` and must name a loopback IP. |
 
-Bootstrap/password-reset passwords must be 12–72 bytes, valid UTF8, and contain no NUL. A pipe/file supplies one line; extra nonempty lines are refused. Prefer the hidden terminal prompt. If automation supplies a private stdin file, pass it by input redirection rather than putting its contents in a command argument.
+Bootstrap/password-reset passwords must be 12–72 bytes, valid UTF8, contain no NUL, and not be a listed common password, a common word with digits or symbols added or a simple pattern, or contain the handle. A pipe/file supplies one line; extra nonempty lines are refused. Prefer the hidden terminal prompt. If automation supplies a private stdin file, pass it by input redirection rather than putting its contents in a command argument.
 
 Examples below use existing private files and an existing export directory:
 

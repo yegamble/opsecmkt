@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
@@ -20,15 +21,41 @@ func TestRegisterRefusesCasefoldCollisionAndConcurrentVariants(t *testing.T) {
 	if agInt(e, "SELECT count(*) FROM users WHERE lower(handle)='legacybuyer'") != 1 {
 		t.Fatal("casefold refusal created another account")
 	}
+	// Both variants overlap in the creation transaction, every run: this test holds the creation lock until both are
+	// waiting for it, past the precheck, so only the recheck under the lock can stop the second. That takes two slots: the
+	// shipped single registerWork slot is per process and would keep them apart, and the private ingress serves no /register.
+	defer func(orig chan struct{}) { registerWork = orig }(registerWork)
+	registerWork = make(chan struct{}, 2)
+	holder, err := e.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err = holder.Exec("SELECT pg_advisory_xact_lock(782493)"); err != nil {
+		t.Fatal(err)
+	}
 	const handle = "RaceBuyer"
-	results := agRace(2, func(i int) (int, string) {
-		variant := handle
-		if i == 1 {
-			variant = strings.ToLower(handle)
+	done := make(chan agResult, 2)
+	for _, variant := range []string{handle, strings.ToLower(handle)} {
+		go func() {
+			w := e.do("POST", "/register", randomToken(), url.Values{"handle": {variant}, "password": {testPassword}})
+			done <- agResult{code: w.Code, body: w.Body.String()}
+		}()
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		waiting := agInt(e, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted AND objid=782493
+			AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`)
+		if waiting == 2 {
+			break
 		}
-		w := e.do("POST", "/register", randomToken(), url.Values{"handle": {variant}, "password": {testPassword}})
-		return w.Code, w.Body.String()
-	})
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of 2 registrations reached the creation lock", waiting)
+		}
+	}
+	if err = holder.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	results := []agResult{<-done, <-done}
 	if got := agTally(t, results, 303, 400); got[303] != 1 || got[400] != 1 {
 		t.Fatalf("concurrent registrations: %+v", got)
 	}

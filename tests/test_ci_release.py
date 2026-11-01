@@ -33,7 +33,7 @@ REPRODUCIBILITY = (
     'the OCI archive is for inspection and registry import',
     'scripts/install.sh builds the application from source on your host and is not bit-reproducible',
 )
-CAPTCHA_LINE = 'The default image CAPTCHA has no audio or text alternative.'
+CAPTCHA_LINE = 'The image CAPTCHA has no audio or text alternative; by default it appears only on sign-in under the attack signal.'
 BUILD_LINE = "go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o verify-audit-OS-ARCH ./cmd/verify-audit"
 
 

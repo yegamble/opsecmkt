@@ -18,7 +18,8 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await expect(page.locator('main')).toContainText('Required before any staff action:');
   await page.goto('/admin/security');
   await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
-  await page.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
+  await page.locator('.admin-auth').getByRole('radio', { name: 'Off' }).check();
+  await page.locator('.admin-auth').getByRole('button', { name: 'Save human check' }).click();
   await expect(page.getByRole('alert')).toContainText('Staff actions need a second factor on your account.');
   await expect(page.getByRole('link', { name: 'Set up an authenticator' })).toHaveAttribute('href', '/totp');
   // The shared administrator's factor is a fixture stand-in for PGP sign-in (seedStaffFactor); db-admin.spec.ts
@@ -43,17 +44,44 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   await page.goto('/vendor-dashboard');
   await expect(page.locator('.listings-grid')).toContainText(FIXTURE_LISTING);
 
-  // P1: a fresh install requires the image CAPTCHA; a wrong answer creates no account.
+  // A-725: a fresh install has no image on sign-in, and a written question on registration; a wrong answer creates no
+  // account and asks a new question, with no reload needed without JavaScript.
   const visitor = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const anon = await visitor.newPage();
+  await anon.goto('/login');
+  await expect(anon.locator('img.captcha-image')).toHaveCount(0);
+  await expect(anon.locator('.captcha')).toHaveCount(0);
+  await anon.goto('/register');
+  await expect(anon.locator('img.captcha-image')).toHaveCount(0);
+  const asked = await anon.locator('.captcha label').innerText();
+  await anon.getByLabel('Handle', { exact: true }).fill('captcha_rejected');
+  await anon.getByLabel('Password', { exact: true }).fill('browser-captcha-password-123');
+  await anon.getByRole('textbox', { name: asked.trim() }).fill('not an answer');
+  const firstID = await anon.locator('input[name="captcha_id"]').getAttribute('value');
+  await anon.getByRole('button', { name: 'Create account' }).click();
+  await expect(anon.getByRole('alert')).toContainText('That answer is not right. Answer the new question below.');
+  await expect(anon.getByLabel('Handle', { exact: true })).toHaveValue('captcha_rejected');
+  expect(await anon.locator('input[name="captcha_id"]').getAttribute('value')).not.toBe(firstID);
+  await expect(anon.locator('img.captcha-image')).toHaveCount(0);
+
+  // The operator can force the image; a wrong answer creates no account.
+  await page.goto('/admin/security');
+  await page.locator('.admin-auth').getByRole('radio', { name: 'Always the image' }).check();
+  await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
+  await page.locator('.admin-auth').getByRole('button', { name: 'Save human check' }).click();
+  await expect(page.locator('.admin-auth .key-values')).toContainText('Always the image');
+  // A-517: the image is forced and there is no staff contact, so the administrator is warned.
+  await expect(page.locator('.admin-auth .captcha-contact-warning')).toContainText('the CAPTCHA is on, but no staff contact is set.');
   await anon.goto('/register');
   const image = anon.locator('img.captcha-image');
   const src = await image.getAttribute('src');
   const png = await visitor.request.get(src!);
   expect(png.status()).toBe(200);
   expect(png.headers()['content-type']).toBe('image/png');
+  expect(png.headers()['cache-control']).toBe('no-store');
   await anon.getByLabel('Handle', { exact: true }).fill('captcha_rejected');
   await anon.getByLabel('Password', { exact: true }).fill('browser-captcha-password-123');
+  await expect(anon.locator('.captcha')).toContainText('There is no audio or text alternative.');
   await anon.getByLabel('Characters in the image').fill('WRONG1');
   await anon.getByRole('button', { name: 'Create account' }).click();
   await expect(anon.locator('body')).toContainText('CAPTCHA answer incorrect');
@@ -64,13 +92,12 @@ test('initialize the market and publish the fixture listing', async ({ page, bro
   // A-517: no staff contact is set yet, so the form says there is no way in without the image.
   await expect(anon.locator('.captcha .captcha-fallback')).toContainText('This market lists no contact that works without an account');
   await visitor.close();
-  // Turn it off so the other db-*.spec.ts files can register and sign in without solving images.
+  // Turn it off so the other db-*.spec.ts files can register and sign in without a human check.
   await page.goto('/admin/security');
-  // A-517: the CAPTCHA is on and there is no staff contact, so the administrator is warned.
-  await expect(page.locator('.admin-auth .captcha-contact-warning')).toContainText('the CAPTCHA is on, but no staff contact is set.');
+  await page.locator('.admin-auth').getByRole('radio', { name: 'Off' }).check();
   await page.locator('.admin-auth').getByLabel('Current password').fill(ADMIN.password);
-  await page.locator('.admin-auth').getByRole('button', { name: 'Turn CAPTCHA off' }).click();
-  await expect(page.locator('.admin-auth')).toContainText('Off');
+  await page.locator('.admin-auth').getByRole('button', { name: 'Save human check' }).click();
+  await expect(page.locator('.admin-auth .key-values')).toContainText('Off');
   await expect(page.locator('.admin-auth .captcha-contact-warning')).toHaveCount(0);
   await page.goto('/register');
   await expect(page.locator('img.captcha-image')).toHaveCount(0);

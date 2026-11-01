@@ -67,11 +67,13 @@ type App struct {
 	writeLimits      map[string]bucket // independent per-account write budgets (A-75)
 	inFlight         map[string]int    // OneAtATime actions in progress, by path and account (enterOneAtATime)
 	signInLogAt      time.Time         // last "sign-in limiter refusing" log line (guarded by mu)
-	rescueRefused    int               // paused sign-in rescue refusals not yet logged (guarded by mu)
-	rescueLogAt      time.Time         // last "paused sign-in rescue refused" log line (guarded by mu)
-	live             bool              // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
-	escrowConfigured bool              // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
-	escrowCfg        escrowConfig      // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
+	// The global attack signal behind the sign-in image (A-725; guarded by mu), one per ingress as its budgets are.
+	signInAttackPublic, signInAttackPrivate signInAttack
+	rescueRefused                           int          // paused sign-in rescue refusals not yet logged (guarded by mu)
+	rescueLogAt                             time.Time    // last "paused sign-in rescue refused" log line (guarded by mu)
+	live                                    bool         // a mainnet market: BITCOIN_CHAIN=main or MONERO_NETWORK=mainnet (marketLiveFromEnv, A-460)
+	escrowConfigured                        bool         // ESCROW_BTC=on (escrow_rpc.go); escrow may still be disabled
+	escrowCfg                               escrowConfig // the ESCROW_BTC settings read at startup, for the escrow watcher's retries
 
 	escrow               atomic.Pointer[escrowBTC] // the Bitcoin escrow adapter once ESCROW_BTC=on passed its checks, at startup or on a watcher retry (A-316); nil = no escrow; never cleared once set
 	escrowXMR            *escrowXMR                // Monero escrow while ESCROW_XMR=on (escrow_xmr_config.go), ready or not; nil = off; set once in New

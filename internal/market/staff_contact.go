@@ -134,12 +134,14 @@ func suspendedRefusal(ctx context.Context, q rowQuerier, banned bool) error {
 // taken to work without one; the setting is free text and the application cannot tell more than that.
 func staffContactNeedsAccount(contact string) bool { return handlePattern.MatchString(contact) }
 
-// captchaContactLoader (admin page, A-517) sets d.CaptchaNoContact while the CAPTCHA is required and the staff
-// contact is unset or a bare handle: a person who cannot read the image (it has no audio or text alternative) then
-// has no way to ask anyone for help without first getting past it.
-func captchaContactLoader(_ context.Context, _ *App, _ *http.Request, d *PageData) error {
+// captchaContactLoader (admin page, A-517) sets d.CaptchaNoContact while the image is being shown on the public sign-in
+// (A-725: forced, or in the default mode under the attack signal) and the staff contact is unset or a bare handle: a
+// person who cannot read the image (it has no audio or text alternative) then has no way to ask anyone for help
+// without first getting past it.
+func captchaContactLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
 	contact := d.Settings[settingStaffContact]
-	d.CaptchaNoContact = captchaRequired(d.Settings) && (contact == "" || staffContactNeedsAccount(contact))
+	shown := a.captchaKindFor(context.Background(), captchaModeOf(d.Settings["captcha_required"]), false) == captchaKindImage
+	d.CaptchaNoContact = shown && (contact == "" || staffContactNeedsAccount(contact))
 	return nil
 }
 

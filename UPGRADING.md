@@ -15,6 +15,32 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## The image CAPTCHA now appears only under attack (migration 155, A-725)
+
+The image has no audio or text alternative, so it kept screen-reader users out. `captcha_required` now has three values,
+chosen under *Admin → Security & access → Sign-in protection*: `under_attack` (*Only under attack*, the new default),
+`true` (*Always the image*, as before) and `false` (*Off*, as before). In the new default `/login` has no image until a
+global attack signal is on, and `/register` asks a written question instead of an image.
+
+**Check this after upgrading.** Migration 155 moves `true` to `under_attack` unless the audit trail has a *Turned on
+CAPTCHA* row, which is the only record of an operator choosing it. So a market whose operator turned the CAPTCHA on after
+turning it off stays on *Always the image*, and `false` stays off. A market that only ever kept the seeded `true`, on
+purpose or not, or whose row has aged out of the audit trail's retention, moves to the new default, **which is weaker
+against bots**: the question stops only simple bots, and sign-in has no image until the signal. If you chose the image
+on purpose, choose *Always the image* again. The trade-offs are in the
+[operator guide](docs/operator-guide.md). Audit rows are read, never changed.
+
+Forms open during the upgrade may be refused once; reload the page. An earlier binary refuses to start on this schema
+("upgraded by a newer release"); to go back, follow [Rolling back](#5-rolling-back), which restores the pre-upgrade
+backup, where the setting is what it was. The signal is in memory, so a restart or redeploy turns it off.
+
+New passwords are checked too (SEC725-1), with no configuration: a listed common password, a common word with digits or symbols
+added, a simple pattern or a password containing the handle is refused on `/setup`, `/register`, `/account/password`, `-bootstrap-admin` and
+`-reset-admin-password`. Accounts that already have such a password still sign in, and nothing asks them to change it.
+`install.sh init --admin` checks only the length before it starts, so a weak password there is refused after the market
+is running, with the commands to finish. Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused
+one answers 503 "Registration is busy".
+
 ## Finished XMPP receipts keep no address (migration 154, A-717)
 
 No configuration change. Migration 154 clears the recipient's XMPP address and key fingerprint from every outbox row

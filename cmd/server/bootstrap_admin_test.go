@@ -181,6 +181,43 @@ func TestBootstrapAdminCLIFromPipe(t *testing.T) {
 	}
 }
 
+// SEC725-1: the host commands refuse a password that is too easy to guess, change nothing and do not repeat it.
+func TestHostCommandsRefuseCommonPasswords(t *testing.T) {
+	dsn := cliSchema(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var out, prompt bytes.Buffer
+	for _, weak := range []string{"password1234", "aaaaaaaaaaaa", "123456789012", "qwertyuiopas", "first_admin-long-enough"} {
+		err = bootstrapAdmin(context.Background(), "first_admin", "", given("bootstrap-admin"), nil, pipe(t, weak+"\n"), &out, &prompt)
+		if err == nil || !strings.Contains(err.Error(), "too easy to guess") || strings.Contains(err.Error(), weak) || out.Len() != 0 {
+			t.Fatalf("bootstrap with %q: %v %q", weak, err, out.String())
+		}
+	}
+	if users, installed, _, _ := installation(t, db); len(users) != 0 || installed {
+		t.Fatal("refused bootstrap installed the market")
+	}
+	if err = bootstrapAdmin(context.Background(), "first_admin", "", given("bootstrap-admin"), nil, pipe(t, bootstrapTestPassword+"\n"), &out, &prompt); err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	if err = db.QueryRow("SELECT password_hash FROM users WHERE handle='first_admin'").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATABASE_URL", dsn)
+	out.Reset()
+	err = resetAdminPassword(context.Background(), "first_admin", false, nil, pipe(t, "password1234\n"), &out, &prompt)
+	if err == nil || !strings.Contains(err.Error(), "too easy to guess") || strings.Contains(err.Error(), "password1234") || out.Len() != 0 {
+		t.Fatalf("reset with a common password: %v %q", err, out.String())
+	}
+	var after string
+	if err = db.QueryRow("SELECT password_hash FROM users WHERE handle='first_admin'").Scan(&after); err != nil || after != before {
+		t.Fatalf("refused reset changed the hash (%v)", err)
+	}
+}
+
 // On a terminal the password is asked twice with echo off, exactly as -reset-admin-password asks.
 func TestBootstrapAdminCLIFromTerminal(t *testing.T) {
 	dsn := cliSchema(t)

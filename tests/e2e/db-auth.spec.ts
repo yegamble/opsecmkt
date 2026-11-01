@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURE_LISTING, uniqueHandle } from './db-fixtures';
@@ -104,11 +105,77 @@ test('enroll TOTP, sign in through the challenge and spend a recovery code once'
   await expect(page.locator('body')).toContainText('Recovery code incorrect or already used');
 });
 
+// A-725: the default mode, as a screen-reader user meets it: fields found only by their accessible names, the written
+// question answered from its own text, every image blocked and JavaScript off. The rest of this suite runs in the Off
+// mode (db-setup.spec.ts), serially, so the mode is set here and put back. Go covers the attack signal.
+function answerQuestion(question: string): string {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const numbers = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+  const day = /^What is the day after (\w+)\?$/.exec(question);
+  if (day) return days[(days.indexOf(day[1]) + 1) % 7];
+  const sum = /^What is (\w+) (plus|minus) (\w+)\?$/.exec(question);
+  if (sum) {
+    const [x, y] = [numbers.indexOf(sum[1]), numbers.indexOf(sum[3])];
+    return String(sum[2] === 'plus' ? x + y : x - y);
+  }
+  const kinds: Record<string, string[]> = {
+    'a colour': ['red', 'green', 'blue', 'yellow', 'white', 'purple', 'brown', 'black'],
+    'an animal': ['horse', 'cow', 'sheep', 'fish', 'lion', 'mouse', 'rabbit', 'duck'],
+    'a fruit': ['apple', 'banana', 'pear', 'mango', 'grape', 'melon', 'pineapple', 'coconut'],
+    'a tool': ['hammer', 'saw', 'spade', 'drill', 'wrench', 'chisel', 'rake', 'pliers'],
+  };
+  const word = /^Which of these words is (a colour|an animal|a fruit|a tool): (.+)\?$/.exec(question);
+  if (word) return word[2].split(', ').find(w => kinds[word[1]].includes(w))!;
+  throw new Error(`unknown question: ${question}`);
+}
+
+test('with images blocked, a person registers by the written question and signs in with no image step', async ({ browser, baseURL }) => {
+  const databaseURL = process.env.E2E_DATABASE_URL!;
+  const mode = (value: string) => execFileSync('psql', [databaseURL, '-v', 'ON_ERROR_STOP=1', '-qtAc',
+    `UPDATE settings SET value='${value}' WHERE key='captcha_required'`]);
+  const handle = uniqueHandle('blocked');
+  const password = 'lantern-orbit-velvet-quarry';
+  const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const images: string[] = [];
+  await context.route('**/*', route => {
+    if (route.request().resourceType() === 'image' || route.request().url().includes('/captcha')) {
+      images.push(route.request().url());
+      return route.abort();
+    }
+    return route.continue();
+  });
+  const page = await context.newPage();
+  mode('under_attack');
+  try {
+    await page.goto('/register');
+    await expect(page.locator('main').getByRole('img')).toHaveCount(0);
+    const group = page.getByRole('group', { name: 'Human check' });
+    const question = (await group.locator('label').innerText()).trim();
+    await page.getByRole('textbox', { name: 'Handle' }).fill(handle);
+    await page.getByRole('textbox', { name: 'Password' }).fill(password);
+    await group.getByRole('textbox', { name: question }).fill(answerQuestion(question));
+    await page.getByRole('button', { name: 'Create account' }).click();
+    await expect(page.locator('.account-name')).toHaveText(handle);
+    await context.clearCookies();
+
+    await page.goto('/login');
+    await expect(page.getByRole('group', { name: 'Human check' })).toHaveCount(0);
+    await page.getByRole('textbox', { name: 'Handle' }).fill(handle);
+    await page.getByRole('textbox', { name: 'Password' }).fill(password);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    await expect(page.locator('.account-name')).toHaveText(handle);
+    expect(images.filter(url => url.includes('/captcha'))).toEqual([]);
+  } finally {
+    mode('false');
+    await context.close();
+  }
+});
+
 // A-126: an anonymous buyer's "Review order draft" leads to sign-in and back to that checkout, through registration
 // and through the TOTP challenge, with JavaScript disabled.
 test('a refused registration keeps the pasted PGP key and the handle, never the password', async ({ browser, baseURL }) => {
   const taken = uniqueHandle('taken');
-  const password = `${taken}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const key = '-----BEGIN PGP PUBLIC KEY BLOCK-----\nnot really a key <b>\n-----END PGP PUBLIC KEY BLOCK-----';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const page = await context.newPage();
@@ -133,7 +200,7 @@ test('a refused registration keeps the pasted PGP key and the handle, never the 
 
 test('anonymous checkout returns to the checkout after registering and after the TOTP challenge', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('next');
-  const passphrase = `${handle}-long-enough`;
+  const passphrase = 'lantern-orbit-velvet-quarry';
   const anonymous = async () => {
     const context = await browser.newContext({ baseURL, javaScriptEnabled: false, viewport: { width: 390, height: 900 } });
     return context.newPage();
@@ -190,7 +257,7 @@ test('anonymous checkout returns to the checkout after registering and after the
 // next; a wrong code moves the sign-in on to /challenge, which says the code was not accepted. No JavaScript.
 test('sign in with the authenticator code on the sign-in page in one step', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('onestep');
-  const password = `${handle}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto('/register');
@@ -233,7 +300,7 @@ test('sign in with the authenticator code on the sign-in page in one step', asyn
 // blank code shows why sign-in is paused. No JavaScript.
 test('a paused handle signs in with the password and authenticator code together', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('rescue');
-  const password = `${handle}-long-enough`;
+  const password = 'lantern-orbit-velvet-quarry';
   const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto('/register');

@@ -34,6 +34,9 @@ func BootstrapAdmin(ctx context.Context, db *sql.DB, handle, password, siteName 
 	if !validPassword(password) {
 		return errors.New("use a password of 12–72 bytes")
 	}
+	if weakPassword(handle, password) {
+		return errWeakPasswordHost
+	}
 	hash, err := hashPassword(password)
 	if err != nil {
 		return err
