@@ -37,7 +37,7 @@ import (
 //     deliver again what the restored records lost (xmrCancelWaitSQL, A-720). An order paid after the recheck is not
 //     affected: its ship_by is at least 72 hours from payment.
 //     An outage takes the same path (A-730, owner decision): each step records the database's time, and one that finds
-//     more than xmrOutageThreshold since the last asks for the recheck, with its notices naming the outage, so downtime
+//     more than xmrOutageGap since the last asks for the recheck, with its notices naming the outage, so downtime
 //     consumes neither a buyer's deadline nor a vendor's time. The check also runs first in a pass (xmrNoteDeadlineStepEarly).
 //     It sees only that this step did not run: public access
 //     down while the watcher runs is not visible here, and the operator handles that case by hand.
@@ -63,9 +63,19 @@ const xmrRecheckOutage = "outage"
 // time in UTC. It is absent before the first step after the upgrade.
 const xmrLastDeadlineStepKey = "escrow_xmr_last_deadline_step"
 
-// xmrOutageThreshold is the gap between two deadline steps that counts as an outage (A-730). A pass is bounded by
-// xmrEscrowPassTimeout and xmrRecheckBudget, well under it, so a slow pass does not count.
+// xmrOutageThreshold is the least gap between two deadline steps that counts as an outage (A-730; xmrOutageGap).
 const xmrOutageThreshold = time.Hour
+
+// xmrOutageGap is the gap between two deadline steps that counts as an outage: xmrOutageThreshold, or more when
+// PAYMENT_POLL_INTERVAL (up to an hour) would make ordinary passes that far apart (PAY101-9): twice the interval, so one
+// missed tick is no outage, and the pass's budget. An invalid interval is the 30 seconds the watcher then uses.
+func xmrOutageGap() time.Duration {
+	interval, err := pollInterval()
+	if err != nil {
+		interval = 30 * time.Second
+	}
+	return max(xmrOutageThreshold, 2*interval+xmrEscrowPassTimeout)
+}
 
 // xmrCancelWaitKey is the setting the recheck writes in the transaction that consumes xmrReleaseRecheckKey: the end of
 // the vendor's grace after a restore or an outage (step 4, A-720), an RFC 3339 time in UTC. Expired, it is harmless; a
@@ -81,9 +91,10 @@ const xmrCancelWaitCauseKey = "escrow_xmr_cancel_wait_cause"
 const xmrOutageCauseSQL = `(es.coin='XMR' AND COALESCE((SELECT value='` + xmrRecheckOutage + `' FROM settings WHERE key='` + xmrReleaseRecheckKey + `'),
 	(SELECT value='` + xmrRecheckOutage + `' FROM settings WHERE key='` + xmrCancelWaitCauseKey + `'),false))`
 
-// outageWhy is why an outage moved a deadline or made a cancel wait, as a clause (A-730). The escrow service: the same
-// gap follows the whole market being down, its database being down, and Monero escrow being switched off.
-const outageWhy = "an outage stopped this market's escrow service for over an hour"
+// outageWhy is why an outage moved a deadline or made a cancel wait, as a clause (A-730). It names no part of the market
+// and no length, since it must be true of the market, its database or Monero escrow being down, and of the operator's
+// request by hand when public access failed while the watcher ran (PAY101-10).
+const outageWhy = "an outage made this market unavailable"
 
 // xmrNoRecheckSQL: no restore recheck of Monero deadlines is pending (step 4). The release (step 3) waits while one is,
 // as a late dispute does (disputeClosedSQL, lateDispute): a recheck that failed leaves the setting, so the same pass
@@ -211,7 +222,9 @@ func (a *App) xmrDeadlines(pass context.Context) error {
 // deadline step runs last, and a first pass after an outage can spend minutes on its wallets, in which a dispute would be
 // refused as late and a no-ship cancel accepted. The server accepts requests from just after the watcher starts
 // (cmd/server's app.Start, then serveAll), so this one transaction is the window left. A failure does not touch the pass:
-// the check in xmrDeadlines runs anyway and reports it. Under the restore gate it writes nothing, as there.
+// the check in xmrDeadlines runs anyway and reports it. Under the restore gate it writes nothing, as there. It needs
+// neither the pass's connection nor the watcher's lock (PAY101-11): another process's check waits on the row, then reads
+// the new time, so two at once ask once.
 func (a *App) xmrNoteDeadlineStepEarly(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, xmrDeadlineBudget)
 	defer cancel()
@@ -221,7 +234,7 @@ func (a *App) xmrNoteDeadlineStepEarly(ctx context.Context) {
 }
 
 // xmrNoteDeadlineStep records the database's time of this deadline step and, when the last was more than
-// xmrOutageThreshold ago, asks for the recheck, in one transaction (A-730): a request already there stays as it is, so a
+// xmrOutageGap ago, asks for the recheck, in one transaction (A-730): a request already there stays as it is, so a
 // restored database, which carries an old time, stays a restore; one that fails keeps the request for the next pass.
 // No stored time asks for nothing, nor does one that cannot be read, which only a hand could have written. It runs after
 // the restore gate's check, so the time of a gated step stays old, and it is the restore's request that the first pass
@@ -239,7 +252,7 @@ func (a *App) xmrNoteDeadlineStep(ctx context.Context) error {
 		return err
 	}
 	if err == nil {
-		if at, parseErr := time.Parse(time.RFC3339Nano, last); parseErr == nil && now.Sub(at) > xmrOutageThreshold {
+		if at, parseErr := time.Parse(time.RFC3339Nano, last); parseErr == nil && now.Sub(at) > xmrOutageGap() {
 			if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO NOTHING", xmrReleaseRecheckKey, xmrRecheckOutage); err != nil {
 				return err
 			}
@@ -444,7 +457,7 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 			if _, err = tx.ExecContext(ctx, "UPDATE escrows SET release_recheck=false WHERE order_id=$1 AND coin='XMR'", id); err != nil {
 				return err
 			}
-			note, why = strings.ToUpper(what[:1])+what[1:]+" moved to "+until+" after an outage (Monero escrow): this market's escrow service did not run for over an hour, and this deadline has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute.", outageWhy
+			note, why = strings.ToUpper(what[:1])+what[1:]+" moved to "+until+" after an outage (Monero escrow): this market was unavailable, and this deadline has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute.", outageWhy
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,NULL,$3)", id, state, note); err != nil {
 			return err

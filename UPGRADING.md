@@ -15,15 +15,15 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
-## An outage over an hour gives orders near their deadline 72 hours (A-730, A-732)
+## An outage gives orders near their deadline 72 hours (A-730, A-732)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_last_deadline_step` and
 `escrow_xmr_cancel_wait_cause`. Downtime used to consume the 48-hour dispute window and the release deadline with no grace
 or notice. Each Monero escrow watcher pass now records the database's time at its deadline step. A pass that finds more than
-an hour since the last asks for the same recheck a restore does: every deadline of a shipped or delivered order with no
+an hour, or twice `PAYMENT_POLL_INTERVAL` plus the 10-minute pass timeout if that is longer (2 hours 10 minutes at the 1-hour maximum) since the last asks for the same recheck a restore does: every deadline of a shipped or delivered order with no
 dispute that has passed or ends within 72 hours moves to 72 hours later, with one order note and one notice to the buyer
 that name an outage, before any of them can complete. Later deadlines stay as they are. The first pass after this upgrade has
-no stored time and moves nothing. The same applies after Monero escrow was switched off for over an hour. A restored
+no stored time and moves nothing. The same applies after Monero escrow was switched off for longer than that. A restored
 database stays a restore: its request is already set, and its old time does not change the wording.
 
 The recheck also records the vendor's grace, since vendors lost the time too: for 72 hours a buyer's no-ship cancel of a paid
@@ -31,13 +31,27 @@ order whose ship-by time or delivery deadline passes before then is refused, nam
 or deliver it.
 
 What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
-Tor gateway or proxy, a network failure) leaves no gap, and nothing moves. Handle that case by hand after public access
-returns, by asking for the recheck yourself (`scripts/restore.sh` is not involved):
-`db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`.
-It runs on the next pass. The check runs at the very start of each pass, before any daemon or wallet call, and the watcher
-starts just before the server begins accepting requests. So the window after a restart in which a dispute on a deadline that
-passed in the outage is refused as late, and a no-ship cancel past its time accepted, is that one database transaction: normally
-milliseconds, at most 30 seconds. If that transaction fails, the window lasts until the check at the end of the same pass.
+Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
+releases go ahead. Ask for the recheck yourself as soon as ingress fails, with
+`db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
+which the next pass consumes, and repeat it within every 72 hours until ingress returns, since each request moves only deadlines
+within 72 hours of it. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
+and its buyer is told nothing.
+
+The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
+starts just before the server begins accepting requests. A dispute on a deadline that passed in the outage is refused as late,
+and a no-ship cancel past its time accepted, only in these cases:
+
+- After a restart, during that first check's one database transaction: normally milliseconds, at most 30 seconds including any
+  wait for a database connection. If it fails or runs out of time, until the check at the end of the same pass, or the next tick
+  if another process holds the lock.
+- When the database comes back with the process still up, until the next tick: up to the poll interval, or up to 10 minutes for
+  a pass already in flight.
+- For the whole time `ESCROW_XMR=off`: the watcher does not run, a dispute is refused, a cancel is accepted, and marking an order
+  shipped answers 404. The recheck runs on the first pass after it is on again.
+
+Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
+than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved.
 
 The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
 reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's
