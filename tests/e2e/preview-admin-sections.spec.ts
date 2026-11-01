@@ -74,3 +74,17 @@ test('the keyboard reaches each section from the navigation', async ({ page, bro
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Users.');
   await expect(sectionNav(page).getByRole('link', { name: 'Users', exact: true })).toHaveAttribute('aria-current', 'page');
 });
+
+// A-721: the audit table overflows a phone and holds no link, so the keyboard needs its wrapper to scroll it.
+test('the audit table scrolls by keyboard in a wrapper named by its heading', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto('/admin/system');
+  await waitForStyles(page);
+  const region = page.getByRole('region', { name: 'Audit trail' });
+  await expect(region).toHaveAttribute('tabindex', '0');
+  await expect(region.locator('thead')).toContainText('Account');
+  await region.focus();
+  await expect(region).toBeFocused();
+  await expect(region).toHaveCSS('outline-style', 'solid');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+});

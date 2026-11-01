@@ -67,6 +67,17 @@ test('draft cannot be paid without a wallet, cancellation is recorded, vendor se
   await page.goto('/orders');
   const row = page.locator('tr', { hasText: FIXTURE_LISTING }).first();
   await expect(row).toContainText('Buying');
+  // A-721: at 320 px a real order's status shows unscrolled, and the table scrolls in a named Tab stop.
+  await page.setViewportSize({ width: 320, height: viewport.height });
+  await waitForStyles(page);
+  const wrapper = page.getByRole('region', { name: 'Your orders' });
+  await expect(wrapper).toHaveAttribute('tabindex', '0');
+  await expect(row.locator('td').nth(1).locator('.badge')).toHaveText('Draft — unfunded');
+  const status = (await row.locator('td').nth(1).locator('.badge').boundingBox())!;
+  const scroller = (await wrapper.boundingBox())!;
+  expect(status.x + status.width, 'order status at 320 px').toBeLessThanOrEqual(scroller.x + scroller.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth), '/orders at 320 px').toBeLessThanOrEqual(320);
+  await page.setViewportSize(viewport);
 
   await page.goto(orderURL);
   await page.getByLabel('Reason (optional)').fill('Ordered the wrong currency');

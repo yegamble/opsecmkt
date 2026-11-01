@@ -138,6 +138,51 @@ async function funded(buyer: Page, request: APIRequestContext, title: string) {
   }
   return order;
 }
+// A-721: with 25 listings on the desk at 320x640, Waiting for you is near the top and its first next-step link a few
+// Tab stops away; at 320, 390 and 768 px each row's next step sits inside the table's wrapper unscrolled, the 64-hex id
+// selects whole, and at 200% text the table scrolls inside its wrapper instead of widening the page.
+async function deskOnAPhone(vendor: Page) {
+  const seed = 'a721-desk-listing-';
+  const size = vendor.viewportSize()!;
+  sql(`INSERT INTO products(id,vendor_id,title,description,category,region,kind,btc,xmr,stock)
+    SELECT '${seed}'||g, u.id, 'Desk listing '||g, 'Seeded by escrow-xmr-journey.spec.ts', 'Hardware', 'Worldwide', 'physical', 100000, 500000000000, 1
+    FROM users u, generate_series(1,25) g WHERE u.handle='xmr_vendor'`);
+  try {
+    await vendor.setViewportSize({ width: 320, height: 640 });
+    await vendor.goto('/vendor-dashboard');
+    expect(await vendor.locator('.product-card').count()).toBeGreaterThanOrEqual(25);
+    const section = vendor.locator('section.vendor-waiting');
+    expect((await section.getByRole('heading', { name: 'Waiting for you' }).boundingBox())!.y).toBeLessThanOrEqual(1280);
+    const next = section.locator('tbody tr').first().locator('td').nth(2).getByRole('link');
+    let stops = 0;
+    for (; stops < 20 && !(await next.evaluate(el => el === document.activeElement)); stops++) await vendor.keyboard.press('Tab');
+    await expect(next).toBeFocused();
+    const wrapper = vendor.getByRole('region', { name: 'Orders waiting for you' });
+    for (const width of [320, 390, 768]) {
+      await vendor.setViewportSize({ width, height: 640 });
+      await wrapper.evaluate(el => { el.scrollLeft = 0; });
+      const box = (await wrapper.boundingBox())!;
+      for (const row of await section.locator('tbody tr').all()) {
+        for (const item of await row.locator('td').nth(2).locator('a, small').all()) {
+          const at = (await item.boundingBox())!;
+          expect(at.x, `next step at ${width}px`).toBeGreaterThanOrEqual(box.x);
+          expect(at.x + at.width, `next step at ${width}px`).toBeLessThanOrEqual(box.x + box.width);
+        }
+      }
+      expect(await vendor.evaluate(() => document.documentElement.scrollWidth), `desk at ${width}px`).toBeLessThanOrEqual(width);
+    }
+    await vendor.setViewportSize({ width: 320, height: 640 });
+    const id = section.locator('tbody tr').first().locator('small.long-id');
+    await id.dblclick();
+    expect(await vendor.evaluate(() => getSelection()!.toString().trim())).toBe(await id.textContent());
+    await vendor.locator('html').evaluate(el => { el.style.fontSize = '200%'; });
+    expect(await vendor.evaluate(() => document.documentElement.scrollWidth), 'desk at 320 px and 200% text').toBeLessThanOrEqual(320);
+  } finally {
+    sql(`DELETE FROM products WHERE id LIKE '${seed}%'`);
+    await vendor.setViewportSize(size);
+    await vendor.goto('/vendor-dashboard');
+  }
+}
 // The vendor marks a paid physical order shipped with a fresh claim address and the password.
 async function ship(vendor: Page, request: APIRequestContext, url: string) {
   await vendor.goto(url);
@@ -281,7 +326,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   // A-710: in the window the vendor desk offers no claim; its payout waits for the buyer or the deadline.
   await vendor.goto('/vendor-dashboard');
   await expect(vendor.locator('section.vendor-waiting tbody tr', { hasText: orderID(first.url) })).toHaveCount(0);
-  await expect(vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) }).locator('td').nth(4)).toHaveText('Waiting for buyer or deadline');
+  await expect(vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) }).locator('td').nth(2)).toHaveText('Waiting for buyer or deadline');
   // Its end: the watcher completes the order, and the dispute form is gone.
   moveClock(first.url, "release_at=now()-interval '1 minute'");
   await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
@@ -297,9 +342,10 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   const claimLink = waitingRow.getByRole('link', { name: /^Claim your payment/ });
   await expect(claimLink).toBeVisible();
   const deskRow = vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) });
-  await expect(deskRow.locator('td').nth(4)).toHaveText('Waiting for your claim');
+  await expect(deskRow.locator('td').nth(2)).toHaveText('Waiting for your claim');
   await expect(vendor.getByRole('link', { name: 'Payouts not yet confirmed' })).toBeVisible();
   await shot(vendor, info, '04c-desk-waiting-for-claim');
+  await deskOnAPhone(vendor);
   await tabTo(vendor, claimLink);
   await vendor.keyboard.press('Enter');
   await expect(vendor).toHaveURL(new RegExp(`/order\\?id=${orderID(first.url)}#xmr-escrow-claim$`));
@@ -336,7 +382,7 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   // A-710: once claimed the order leaves Waiting for you, and the desk shows its release confirmed.
   await vendor.goto('/vendor-dashboard');
   await expect(waitingRow).toHaveCount(0);
-  await expect(deskRow.locator('td').nth(4)).toHaveText('Confirmed');
+  await expect(deskRow.locator('td').nth(2)).toHaveText('Confirmed');
 
   // An underpaid order: confirmed below the price, the buyer cancels it, and the refund is built and sent.
   await draft(buyer, digitalTitle);
@@ -365,6 +411,8 @@ test('Monero escrow physical order: shipped with a claim address, Confirm receip
   await expect(figure(buyer, 'Escrow status')).toContainText('Funded');
   await vendor.goto(order.url);
   await expect(vendor.getByRole('heading', { name: 'Mark shipped' })).toBeVisible();
+  await expect(vendor.locator('#xmr-escrow-ship').getByRole('link', { name: 'order correspondence' })).toHaveAttribute('href', '#order-messages'); // A-721
+  await expect(vendor.locator('#order-messages')).toBeVisible();
   await shot(vendor, info, 'p01-ship-form');
   const claimTo = await ship(vendor, request, order.url);
   // Nothing is built before the outcome (081): the release waits, and the deadline is stated in UTC.
