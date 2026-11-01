@@ -22,7 +22,7 @@ var reconciliationSteps = []string{
 	"Public access stayed stopped, and the restored market ran only on the protected administrator connection with the current external retention state (runbook steps 1 to 4).",
 	"The Monero wallet sweep finished: Admin shows no escrow wallet missing from disk and no unresolved wallet or balance (step 5).",
 	"Every held settlement's transaction and key images were checked in the daemon and its transfer history in the wallet, and each was resolved on Admin (step 6).",
-	"Orders funded or settled after the backup, balances and transaction history were checked, and an encrypted backup of the reconciled state was made (step 7).",
+	"Orders funded or settled after the backup, balances and transaction history were checked; escrow orders shipped, delivered or cancelled around the backup point were reviewed against the old database or with the parties, and vendors were told to re-ship or re-deliver what the restored records lack within 72 hours of the recheck, before a buyer can cancel a passed deadline; and an encrypted backup of the reconciled state was made (step 7).",
 	"The Admin settings and vendor bonds rolled back by the restore were re-checked against the operator record, and the host fee address and rate confirmed (step 7).",
 }
 

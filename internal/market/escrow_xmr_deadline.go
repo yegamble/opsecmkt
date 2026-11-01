@@ -29,6 +29,11 @@ import (
 //     (xmrRecheckReleaseDeadlines), as recheckReleaseDeadlines does for Bitcoin escrow with its own setting. Until the
 //     recheck has succeeded and consumed the setting, step 3 completes nothing, a dispute is not refused as late
 //     (lateDispute) and the buyer's no-ship cancel waits (noShipCancel), since a restored ship_by cannot move (A-714).
+//     The transaction that consumes the setting records the end of the vendor's grace, 72 hours on (xmrCancelWaitKey):
+//     on the documented restore order that pass runs before public access returns, so the wait has to outlast it. Until
+//     then the buyer's cancel of an order whose ship_by passes before that end still waits, and the vendor can ship or
+//     deliver again what the restored records lost (xmrCancelWaitSQL, A-720). An order paid after the recheck is not
+//     affected: its ship_by is at least 72 hours from payment.
 //  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped or delivered orders with
 //     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
 //     banned, steps 2 and 3 and the buyer's confirmation say the release is then held (xmrReleaseHeld, A-652c).
@@ -42,10 +47,21 @@ const digitalWindowNote = "dispute window ended"
 // xmrReleaseRecheckKey is the setting a restore from backup writes to ask for the Monero deadline recheck (step 4).
 const xmrReleaseRecheckKey = "escrow_xmr_release_recheck"
 
+// xmrCancelWaitKey is the setting the recheck writes in the transaction that consumes xmrReleaseRecheckKey: the end of
+// the vendor's grace after a restore (step 4, A-720), an RFC 3339 time in UTC. Expired, it is harmless; a later restore's
+// recheck replaces it.
+const xmrCancelWaitKey = "escrow_xmr_cancel_wait_until"
+
 // xmrNoRecheckSQL: no restore recheck of Monero deadlines is pending (step 4). The release (step 3) waits while one is,
 // as a late dispute does (disputeClosedSQL, lateDispute): a recheck that failed leaves the setting, so the same pass
 // completes no order whose restored deadline has passed before the buyer was given 72 hours (A-393, A-714).
 const xmrNoRecheckSQL = "NOT EXISTS (SELECT 1 FROM settings WHERE key='" + xmrReleaseRecheckKey + "')"
+
+// xmrCancelWaitSQL is the end of the vendor's grace after a restore (step 4, A-720) for the escrow es, or NULL when none
+// applies: not a Monero escrow, the grace has ended, or es.ship_by does not pass before it. A statement after the order
+// row lock reads it for the buyer's cancel (noShipCancel). OFFSET 0 keeps the cast to the key's own row.
+const xmrCancelWaitSQL = `(SELECT w.until FROM (SELECT value::timestamptz AS until FROM settings WHERE key='` + xmrCancelWaitKey + `' OFFSET 0) w
+	WHERE es.coin='XMR' AND w.until>now() AND w.until>es.ship_by)`
 
 // xmrOpenSQL is the order states whose release_at applies: a shipped physical order's release deadline and a delivered
 // digital order's dispute window (A-709).
@@ -231,7 +247,9 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 // xmrRecheckReleaseDeadlines moves, once after each restore from backup, every passed release deadline of a shipped
 // Monero escrow order, and every passed dispute window of a delivered one (A-709), with no dispute to now + 72 hours, with an order note and a notice to the buyer, in one
 // transaction that consumes the restore's request (step 4 of the file comment; recheckReleaseDeadlines' rules: only the
-// rechecks reset and set release_recheck, so a second restore rechecks as the first did).
+// rechecks reset and set release_recheck, so a second restore rechecks as the first did). The same transaction records
+// the end of the vendor's grace (xmrCancelWaitKey, A-720), with no gap between the two a buyer's cancel could use. A row
+// the restored database carries is replaced only by a later end, so a restore never shortens a grace.
 func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -284,6 +302,10 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		if _, err = insertNotification(ctx, tx, buyer, body, id); err != nil {
 			return err
 		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,to_char((`+releaseGraceSQL+`) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
+		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value WHERE settings.value::timestamptz<EXCLUDED.value::timestamptz`, xmrCancelWaitKey); err != nil {
+		return err
 	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrReleaseRecheckKey); err != nil {
 		return err

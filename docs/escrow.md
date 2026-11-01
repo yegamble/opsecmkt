@@ -244,7 +244,8 @@ market holds the wallet keys and builds, stores and sends every transaction itse
   stored transaction until an administrator confirms its relay on `/admin/payments`; retires every free account; moves every
   active or sealed wallet to *closing*, so no account of a restored wallet, one the restored records lack included, is
   offered to a new order; asks for a release deadline recheck (the deadline of a shipped order that had passed in the
-  restored records moves 72 hours later, and the buyer is told); and sets `xmr_escrow_sweep_required`. Until the
+  restored records moves 72 hours later, and the buyer is told, and a buyer's no-ship cancel of an order whose ship-by time
+  or delivery deadline passes in those 72 hours waits for their end); and sets `xmr_escrow_sweep_required`. Until the
   watcher's sweep has run, checkout answers 503 and no wallet or account is created. The sweep looks for wallets created
   after the backup: in each month from 12 months back through next month, the names after that month's newest row. One
   that opens with the derived password is sealed to the seed key as an *orphan*, kept, never offered an account, and its
@@ -366,7 +367,7 @@ wallet takes an order again and no settlement is relayed until an administrator 
   disputes: `TestXMREscrowNoBuildBeforeOutcome`, `TestXMREscrowConfirmReceiptStepUp`, `TestXMREscrowShipStepUp`,
   `TestXMREscrowShipNoShipCancelRaceOneOutcome`, `TestXMRConcessionResolveRaceOneOutcome`,
   `TestXMREscrowDeadlineWithBTCOff`, `TestXMREscrowDisputeSupersedes`, `TestXMREscrowNoShipCancel`,
-  `TestXMREscrowRestoreExtendsDeadline`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`.
+  `TestXMREscrowRestoreExtendsDeadline`, `TestXMREscrowRecheckFailureHoldsRelease`, `TestXMREscrowCancelWaitsForRecheck`, `TestXMREscrowCancelGraceAfterRecheck`.
   Retention and restore: `TestXMREscrowDestroyPreconditions`,
   `TestXMREscrowRestoredPastDestroy`, `TestXMREscrowUnopenableKeepsSeal`, `TestXMREscrowConfirmDestroyed`,
   `TestXMREscrowConfirmDestroyedRefusesUnspent`,

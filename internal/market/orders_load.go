@@ -812,18 +812,20 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 		ids = append(ids, o.ID)
 	}
 	type shipBy struct {
-		at     string
-		passed bool
+		at              string
+		passed, recheck bool
+		wait            sql.NullTime
 	}
 	due := map[string]shipBy{}
-	rows, err = a.db.QueryContext(ctx, `SELECT order_id,to_char(ship_by,'YYYY-MM-DD HH24:MI "UTC"'),ship_by<=now() FROM escrows WHERE order_id=ANY($1) AND ship_by IS NOT NULL`, ids)
+	rows, err = a.db.QueryContext(ctx, `SELECT es.order_id,to_char(es.ship_by,'YYYY-MM-DD HH24:MI "UTC"'),es.ship_by<=now(),es.coin='XMR' AND EXISTS(SELECT 1 FROM settings WHERE key=$2),`+xmrCancelWaitSQL+`
+		FROM escrows es WHERE es.order_id=ANY($1) AND es.ship_by IS NOT NULL`, ids, xmrReleaseRecheckKey)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var id string
 		var s shipBy
-		if err = rows.Scan(&id, &s.at, &s.passed); err != nil {
+		if err = rows.Scan(&id, &s.at, &s.passed, &s.recheck, &s.wait); err != nil {
 			rows.Close()
 			return err
 		}
@@ -836,7 +838,12 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 	for _, o := range orders {
 		w := vendorWaitingFor(o)
 		if o.State == statePaid {
-			w.ShipBy, w.ShipByPassed = due[o.ID].at, due[o.ID].passed
+			s := due[o.ID]
+			w.ShipBy, w.ShipByPassed = s.at, s.passed
+			w.CancelRecheck = s.recheck && (s.passed || s.wait.Valid)
+			if s.wait.Valid && !s.recheck {
+				w.CancelFrom = utcFrom(s.wait.Time)
+			}
 		}
 		d.VendorWaiting = append(d.VendorWaiting, w)
 	}

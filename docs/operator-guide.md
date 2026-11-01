@@ -1684,7 +1684,7 @@ restored wallet, one the restored records lack included, is offered to a new ord
 (`escrow_xmr_release_recheck`: on the watcher's first pass after the gate is cleared, every passed deadline of a shipped
 order, and every passed dispute window of a delivered digital one, moves 72 hours later and its buyer is told; until that
 recheck has succeeded no order completes on a passed deadline and a buyer's no-ship cancel of a paid order is refused,
-A-714); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
+A-714, and it then records a 72-hour grace for the vendor, `escrow_xmr_cancel_wait_until`, A-720); and sets `xmr_escrow_sweep_required`, which makes Monero escrow checkout
 answer 503 ("Monero escrow is paused until this market has checked its escrow wallets after restoring its records from a
 backup …"), and creates no wallet or account, until the watcher's **sweep** has run. The sweep needs the escrow wallet-rpc and
 the seed key; it runs on every pass, gate or not, and only a pass that did all of it clears the marker (`escrow: Monero
@@ -1693,9 +1693,16 @@ probes for wallets created after the backup and seals each it can open to the se
 listed to the administrators, who check them for coins of orders the database lost), records any it cannot open as an orphan
 too, reads every wallet that may hold coins, and gives a wallet older than the database a longer subaddress lookahead and a
 rescan so that deposits to accounts it does not know are seen. Before clearing the gate, review the escrow orders shipped,
-delivered or cancelled around the backup point: the restored records lack those made after it, and a restore cannot move
-a paid order's ship-by time or delivery deadline, so once the recheck has run the buyer of a paid order whose restored
-deadline has passed can cancel it for a refund at once, even if the vendor shipped or delivered it after the backup.
+delivered or cancelled around the backup point: the restored records lack those made after it, with their order messages
+and notices, and the wallet's transfer history shows deposits and claims, not a shipment or delivery, so the evidence is
+the old database, if it survives, or the parties. A restore cannot move a paid order's ship-by time or delivery deadline.
+For 72 hours after the recheck a buyer's cancel of a paid order whose restored deadline passes before then is refused
+(A-720), and the vendor can still ship or deliver it: tell vendors to re-ship or re-deliver in that time, using **Mark
+shipped** again for goods sent after the backup (they need no second dispatch). The 72 hours run from the first pass after
+the gate is cleared, not from when public access returns, so reopen it promptly. After them the buyer can cancel for a
+refund, even if the vendor shipped or delivered the order after the backup and did not repeat it. With `ESCROW_XMR=off` the
+watcher never runs: the recheck stays pending, that cancel is refused with "try again later" for as long as it stays off,
+and the 72 hours start on the first pass after Monero escrow is back on; do not delete the setting by hand.
 Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
 
 **What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
