@@ -1,8 +1,15 @@
 package market
 
 import (
+	"context"
+	"errors"
 	"html"
+	"os"
+	"slices"
+	"strings"
 	"testing"
+
+	"opsecmkt/internal/moderation"
 )
 
 // A-716 (BUY98-1): signed-out /register says, beside the PGP field and under both sign-in policies, what the key shows
@@ -59,7 +66,7 @@ func TestDisputeEvidenceCopyFollowsRetention(t *testing.T) {
 	const on = "These images are scheduled for deletion with the order’s private content, 30 days after financial closure, unless a scoped preservation duty applies."
 	const off = "Automatic retention is off; the server keeps these images until the operator removes them."
 	page := html.UnescapeString(p.page("/order?id="+p.order, p.buyerSess))
-	mustContain(t, page, holders, off, "If the operator runs a moderation model, it can read a description, never the image")
+	mustContain(t, page, holders, off, "automatic checks in the market's own code read a description; no model reads it or the image")
 	mustNotContain(t, page, on)
 	if err := p.A.initRetention(t.Context(), retentionConfig{Enabled: true, StateDir: t.TempDir() + "/private-retention"}); err != nil {
 		t.Fatal(err)
@@ -92,15 +99,67 @@ func TestCanaryCopyNamesModelInputsAndDigitalDeadlines(t *testing.T) {
 	page := html.UnescapeString(e.body("GET", "/canary", "", nil, 200))
 	mustContain(t, page,
 		"Only if the operator runs a moderation model on its own infrastructure",
-		"a listing's title, description, category, region and kind",
-		"an upload's description, including the private description of dispute evidence",
-		"a dispute's reason and resolution",
-		"a review's body and rating",
-		"a payment flag's disposition, without transaction IDs or addresses",
-		"It never reads direct messages, support tickets, order correspondence, deliveries or image pixels.",
+		"that model may read a dispute's reason and resolution; a review's body and rating; and a payment flag's disposition, without transaction IDs or addresses.",
+		"the kind of record, the age in days of the account behind it, the order's state for a dispute or flagged payment, and how many of that account's records were captured in the past hour.",
+		"No model reads a listing or an upload: if the operator runs abuse review, automatic checks in the market's own code read a listing's title, description, category, region and kind and an upload's description, including the private description of dispute evidence.",
+		"A listing's price, its category's median and fingerprint matches go only to those checks and are not given to the model.",
+		"The model never reads direct messages, support tickets, order correspondence, deliveries or image pixels.",
 		"It only proposes for staff and decides nothing itself.",
 		"For a digital order's escrow also its delivery deadline, after which the buyer may cancel it if it is not delivered, and the end of its dispute window",
 	)
+}
+
+// noModel refuses every item, so that a kind reaching it is recorded and nothing further is needed from it.
+type noModel struct{}
+
+func (noModel) Propose(context.Context, moderation.NormalizedInput) (moderation.Proposal, error) {
+	return moderation.Proposal{}, errors.New("no model in this test")
+}
+
+// A-716 (QA99-1): each queued kind sits on the side of the published copy that the engine actually sends it to, on
+// /canary#records and in the policy, so the copy cannot drift from modelReadsKind (reached through Engine.Evaluate).
+func TestCanaryCopyKindsMatchWhatReachesTheModel(t *testing.T) {
+	e := newTestApp(t)
+	e.user("canary_kinds", "buyer")
+	policy, err := os.ReadFile("docs/data-retention-privacy-policy.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := map[string]string{"/canary": html.UnescapeString(e.body("GET", "/canary", "", nil, 200)), "policy": string(policy)}
+	phrase := map[string]string{"listing": "a listing's title", "upload": "an upload's description", "dispute": "a dispute's reason", "review": "a review's body", "payment_flag": "a payment flag's disposition"}
+	for _, kind := range moderationQueueKinds {
+		want, ok := phrase[kind]
+		if !ok {
+			t.Fatalf("queued kind %q is not placed in the published model copy", kind)
+		}
+		model := &kindRecordingModel{next: noModel{}}
+		engine := moderation.Engine{Config: moderation.Config{Enabled: true}, Model: model}
+		d, err := engine.Evaluate(t.Context(), moderation.Input{ItemID: kind + ":copy", Kind: kind, Actor: moderation.Actor{ID: "actor-copy"},
+			Fields:  []moderation.Field{{Source: kind, Name: "text", Trust: "DATA", Value: "An ordinary sentence."}},
+			Context: moderation.DeterministicContext{Complete: true, Reversible: true, PriceAtomic: 100, CategoryMedianAtomic: 100, EvidenceIDs: []string{kind + ":copy"}, BlastRadius: 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reached := slices.Contains(model.kinds, kind)
+		if !reached && !slices.Contains(d.Proposal.ReasonCodes, "MODEL_NOT_USED") {
+			t.Fatalf("%s neither reached the model nor was refused it: %v", kind, d.Proposal.ReasonCodes)
+		}
+		for where, page := range copies {
+			marker := "that model may read"
+			if where == "policy" {
+				marker = "Such a model may read"
+			}
+			_, rest, ok := strings.Cut(page, marker)
+			read, after, ok2 := strings.Cut(rest, "No model reads a listing or an upload")
+			checks, _, ok3 := strings.Cut(after, "are not given to the model")
+			if !ok || !ok2 || !ok3 {
+				t.Fatalf("%s: model copy not found", where)
+			}
+			if strings.Contains(read, want) != reached || strings.Contains(checks, want) == reached {
+				t.Errorf("%s: %s reaches the model=%v, but the copy places %q otherwise", where, kind, reached, want)
+			}
+		}
+	}
 }
 
 // A-716 (PRIV98-2): the dispute form points at what a model may read.
