@@ -434,5 +434,62 @@ class ReleaseScanTest(unittest.TestCase):
             self.assertTrue(text in CI_CD, 'docs/ci-cd.md lacks %r' % text)
 
 
+class TagTimeChecklistTest(unittest.TestCase):
+    """The checklist's doc-edit step once named words that appeared nowhere but in itself (A-743; DA104-2, OPS104-3).
+
+    Its list says which string to replace in which file. Each must grep non-empty, and a release claim in those words
+    that the list does not name fails too, so the tag's commit, which replaces the strings and empties the list, passes.
+    """
+    # Lines that use the words without claiming anything about a release of this software.
+    NOT_A_CLAIM = ('pull-request runs of the development branch', 'a database a development branch',
+                   'a different build, such as a development branch', 'UPGRADING.md#unreleased-security-hardening')
+
+    @staticmethod
+    def checklist():
+        text = (REPOSITORY / 'docs' / 'ci-cd.md').read_text()
+        return text[text.index('## Tag-time checklist'):text.index('## Workflow maintenance')]
+
+    def rows(self):
+        return re.findall(r'^ +- `([^`]+)`: `([^`]+)`', self.checklist(), re.M)
+
+    def test_every_string_the_doc_edit_step_names_exists(self):
+        for name, text in self.rows():
+            self.assertIn(text, (REPOSITORY / name).read_text(), '%s no longer says %r' % (name, text))
+
+    def test_no_unlisted_release_claim(self):
+        rows = self.rows()
+        paths = [REPOSITORY / 'README.md', REPOSITORY / 'UPGRADING.md', *sorted((REPOSITORY / 'docs').rglob('*.md'))]
+        problems = []
+        for path in paths:
+            name = str(path.relative_to(REPOSITORY))
+            if 'evidence' in path.parts or name in ('docs/ci-cd.md', 'docs/verification.md'):
+                continue
+            listed = [text for row, text in rows if row == name]
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if not re.search(r'\bunreleased\b|development branch', line, re.I):
+                    continue
+                if not any(text in line for text in listed) and not any(text in line for text in self.NOT_A_CLAIM):
+                    problems.append('%s:%d: %s' % (name, number, line[:120]))
+        self.assertEqual(problems, [], 'not in the tag-time checklist:\n' + '\n'.join(problems))
+
+    def test_words_found_nowhere_are_gone(self):
+        self.assertNotIn('in no release', self.checklist())
+
+    def test_the_order_ends_edits_ci_dry_run_tag(self):
+        steps = re.findall(r'^\d+\. \*\*([^*]+)\*\*', self.checklist(), re.M)
+        at = {name: index for index, name in enumerate(steps)}
+        for name in ('Edit the docs.', 'Merge and wait for CI.', 'Dry run that commit.', 'Tag that commit.'):
+            self.assertIn(name, at, steps)
+        self.assertLess(at['Edit the docs.'], at['Merge and wait for CI.'])
+        self.assertLess(at['Merge and wait for CI.'], at['Dry run that commit.'])
+        self.assertLess(at['Dry run that commit.'], at['Tag that commit.'])
+
+    def test_says_what_happens_to_the_summary_and_the_anchor(self):
+        flat = ' '.join(self.checklist().split())
+        self.assertIn('The summary does not move', flat)
+        self.assertIn('docs/install/tor.md', flat)
+        self.assertIn('unreleased-security-hardening', flat)
+
+
 if __name__ == '__main__':
     unittest.main()

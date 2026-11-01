@@ -3,7 +3,9 @@
 This sanitized record tracks deployment decisions and unresolved gates. Follow
 [the production procedure](production.md) and [launch checklist](production-checklist.md)
 for a new installation. The current reset checkpoint supersedes the earlier
-migration observations preserved below.
+migration observations preserved below. The next checkpoint is the fresh stagenet
+market and its rehearsals; the [step list](../testnet-runbook.md#fresh-stagenet-market-and-rehearsals)
+says what each records here.
 
 Keep exact resource identifiers, addresses, onion identities, credentials, key
 locations, image digests and timestamped command evidence in the protected

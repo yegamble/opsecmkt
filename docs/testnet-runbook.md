@@ -1,6 +1,6 @@
 # Monero test-network payments runbook
 
-This runbook covers Monero escrow on a local fakechain or stagenet. Mainnet moves real funds and is the legacy `scripts/install.sh` default for local nodes (native `opsecmkt deploy init` defaults to stagenet); no real-funds mainnet transaction is recorded. Use `--monero-network stagenet` for rehearsal. Escrow is custodial and off by default. See [Enabling Monero payments](install/enable-payments.md).
+This runbook covers Monero escrow on a local fakechain or stagenet. Mainnet moves real funds and is the legacy `scripts/install.sh` default for local nodes (native `opsecmkt deploy init` defaults to stagenet); no real-funds mainnet transaction is recorded. Use `--monero-network stagenet` for rehearsal. Escrow is custodial and off by default. See [Enabling Monero payments](install/enable-payments.md). The owner's rebuild on stagenet and its rehearsals are in [Fresh stagenet market and rehearsals](#fresh-stagenet-market-and-rehearsals).
 
 ## Back up and restore Monero escrow wallets
 
@@ -22,7 +22,7 @@ Run Compose commands from the deployment directory with its restored `.env`. Pre
 4. Start only the daemon, wallet-rpc and app on their pinned network. Keep the public Tor gateways or clearnet proxy stopped; use the protected administrator connection for reconciliation.
 5. Wait for the Monero wallet sweep. Admin shows wallets missing from disk and settlements held for review. An unresolved wallet or balance remains a recovery blocker.
 6. For every held settlement, check its transaction and key images in the daemon and its transfer history in the wallet. Admin's password-confirmed relay check sends the stored transaction unchanged; it never builds a replacement after an ambiguous send.
-7. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state. Review escrow orders shipped, delivered or cancelled around the backup point: the restored records lack those made after it, with their order messages and notices, and the wallet's transfer history shows deposits and claims, not a shipment or delivery. Your evidence is the old database, if it survives; the parties can only add to it once public access returns at step 9, or through a contact you already hold outside the market. A restore cannot move a paid order's ship-by time or delivery deadline, so until the deadline recheck has run a buyer's no-ship cancel past that deadline is refused and no order completes on a passed deadline (A-714), and the recheck, on the watcher's first pass after the gate is cleared, moves every release deadline and dispute window that has passed or ends within 72 hours to 72 hours after that pass and tells each buyer (A-728), so none of those orders completes in that time unless its buyer confirms. It also records a grace of 72 hours (`escrow_xmr_cancel_wait_until`, A-720): until it ends, a buyer's cancel of a paid order whose restored deadline passes before then is refused, and the vendor can still ship or deliver it. Tell vendors to re-ship or re-deliver in that time: to use **Mark shipped** again for goods sent after the backup (they need no second dispatch) and to deliver digital content again. The grace and the buyers' 72 hours run from that first pass, not from step 9, so reopen public access promptly. Once it has ended the buyer can cancel for a refund, even if the vendor shipped or delivered the order after the backup and did not repeat it. With `ESCROW_XMR=off` no watcher runs: the recheck stays pending, a buyer's cancel of a passed deadline is refused with "try again later" for as long as it stays off, and the grace starts on the first pass after you turn Monero escrow back on; do not delete the setting by hand. Re-check the Admin settings against your operator record: the restore rolls back every setting saved after the backup or recovery point, such as **New escrow checkouts**, site access, registrations, the vendor bond amount and approval mode in **Admin → Vendor applications** and the held-release refund period for banned vendors (`ban_hold_refund_days`, **Admin → Payments**, A-652f), and undoes bonds recorded as received after that point, bans and unbans, and held releases refunded to buyers after that point (check banned vendors' orders against your operator record before refunding one again). The fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, so a database restore does not roll them back; confirm the host values instead.
+7. Check orders funded or settled after the backup, compare balances and transaction history, and make another encrypted backup of the reconciled state. Review escrow orders shipped, delivered or cancelled around the backup point: the restored records lack those made after it, with their order messages and notices, and the wallet's transfer history shows deposits and claims, not a shipment or delivery. Your evidence is the old database, if it survives; the parties can only add to it once public access returns at step 9, or through a contact you already hold outside the market. A restore cannot move a paid order's ship-by time or delivery deadline, so until the deadline recheck has run a buyer's no-ship cancel past that deadline is refused and no order completes on a passed deadline (A-714), and the recheck, on the watcher's first pass after the gate is cleared, moves every release deadline and dispute window that has passed or ends within 72 hours to 72 hours after that pass and tells each buyer and vendor (A-728, A-737), so none of those orders completes in that time unless its buyer confirms. It also records a grace of 72 hours (`escrow_xmr_cancel_wait_until`, A-720): until it ends, a buyer's cancel of a paid order whose restored deadline passes before then is refused, and the vendor can still ship or deliver it. Tell vendors to re-ship or re-deliver in that time: to use **Mark shipped** again for goods sent after the backup (they need no second dispatch) and to deliver digital content again. The grace and the buyers' 72 hours run from that first pass, not from step 9, so reopen public access promptly. Once it has ended the buyer can cancel for a refund, even if the vendor shipped or delivered the order after the backup and did not repeat it. With `ESCROW_XMR=off` no watcher runs: the recheck stays pending, a buyer's cancel of a passed deadline is refused with "try again later" for as long as it stays off, and the grace starts on the first pass after you turn Monero escrow back on; do not delete the setting by hand. Re-check the Admin settings against your operator record: the restore rolls back every setting saved after the backup or recovery point, such as **New escrow checkouts**, site access, registrations, the vendor bond amount and approval mode in **Admin → Vendor applications** and the held-release refund period for banned vendors (`ban_hold_refund_days`, **Admin → Payments**, A-652f), and undoes bonds recorded as received after that point, bans and unbans, and held releases refunded to buyers after that point (check banned vendors' orders against your operator record before refunding one again). The fee address and rate (`ESCROW_XMR_FEE_ADDRESS`, `ESCROW_XMR_FEE_BPS`) are host configuration, so a database restore does not roll them back; confirm the host values instead.
 8. Stop the app, then [clear the gate](#clear-the-gate) with the host command below, which refuses while the app runs. Start only the app again and verify Admin readiness. Clearing the gate asserts that reconciliation is complete; it does not discover missing obligations or release individual holds.
 9. Once reconciliation and readiness checks pass, run `docker compose up -d` with the preserved profiles to restart public Tor ingress and the enabled mirror. On mirror deployments, check `docker compose ps tor-mirror` and confirm its saved onion address answers. On clearnet deployments, reopen the reverse proxy after these checks. Then tell vendors what the restored records lack ([orders around the backup point](#orders-around-the-backup-point)): this is the first moment they can read it or act on it.
 
@@ -206,3 +206,319 @@ and the script header for its dedicated funded wallet, empty escrow wallet direc
 Select an exact HTTPS block URL on `stagenet.xmrchain.net` or `xmr-stagenet.librenode.com`; both the runner and Go
 test fetch the selected host's block API before wallet work. An unavailable or mismatching source refuses the run.
 Its source/offline checks are not a funded public result. The recorded public digital claim passed with ten confirmations on both funding and release; it does not establish public refund timing, physical-order deadlines or deployment readiness.
+
+## Fresh stagenet market and rehearsals
+
+This is the owner's step list for A-699: retire the mainnet-configured, intake-paused market, build an empty stagenet market on the same hosts from the tagged build (which also does A-669's rebuild), then run the rehearsals A-562 and A-698 and the public journey PM-3 on it. A network switch in place is not possible: the network pin refuses it once escrow or bond wallet rows exist, and no command imports remote escrow material into an existing installation ([enable payments](install/enable-payments.md#native-production-with-separate-payment-services)). None of this has been run. Every `opsecmkt` flag below, except A-741's `-request-deadline-recheck`, was checked against the source (`tests/test_runbook_rehearsals.py`), not on a host, so a refusal is a finding: stop and record it. Replace capitalized words with your own values, and keep private values in mode-`0600` files.
+
+### What is retired
+
+The whole market that runs now, and nothing in it comes across: its database, its escrow and bond wallets on the payment host, its private installation directory with the application key, setup token, audit signing key and wallet secret, its external retention ledger, its public onion identity on the gateway host, its administrator onion identity in `onion-admin/` and the `tor_admin_identity` volume, and the administrator client keys bound to that onion. Its mainnet daemon stops running. The new market generates all of these afresh.
+
+Retired first means stopped, not deleted. The rebuild needs no deletion: it uses a new directory, database, wallet directory, retention directory and onion directory, so it never overwrites a populated identity volume or a wallet. A retired public or administrator identity is never reused, for this market or any other.
+
+### What the owner must approve
+
+These are destructive, and a review, a ledger row or this runbook does not authorize them: the owner approves the concrete action and its data loss, naming the exact resource, in the private operator record. The 2026-10-16 authorization covered that rebuild, not these. First confirm what would be lost: run this read-only on the protected connection to the old database, and read each old wallet's balance on the payment host. The market is recorded as empty with no real-funds transaction; any answer that says otherwise stops this list.
+
+```sql
+SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM orders) AS orders,
+       (SELECT count(*) FROM escrows) AS escrows, (SELECT count(*) FROM xmr_settlements) AS settlements;
+```
+
+| Action needing approval | What is lost, for good |
+| --- | --- |
+| Delete the old market database, and its provider backups when they expire | Accounts, audit history, images and the sealed wallet seeds. Provider deletion does not attest erasure of the media or of every historical backup |
+| Delete the old mainnet wallet files on the payment host | Any coins in them, unless a seed survives. Decide this together with the database, which holds the sealed seeds: losing both loses the funds outright |
+| Delete the old installation directory, retention ledger and retired keys | Everything sealed under those keys becomes unreadable, the old database's retention can no longer be replayed, and no further audit export can be signed under the old key |
+| Delete the old public onion directory on the gateway, and the old `onion-admin/` files and `tor_admin_identity` volume on the application host | Those two addresses, permanently. Nobody can publish them again |
+
+Deleting the old installation directory has one trap. Production `install` left a storage-check drop-in for the old project on both Docker and containerd, which runs against that directory at every daemon start, so removing the directory alone stops Docker and containerd starting on the next boot. Get the old project name from `deploy plan --dir OLD_DIR` first and, only with the approval above, in this order:
+
+```sh
+rm /etc/systemd/system/docker.service.d/50-opsecmkt-storage-OLD_PROJECT.conf
+rm /etc/systemd/system/containerd.service.d/50-opsecmkt-storage-OLD_PROJECT.conf
+systemctl daemon-reload
+docker volume ls --filter label=com.docker.compose.project=OLD_PROJECT
+```
+
+Delete only the volumes that list names, one at a time, and only then the directory. Until approval, leave all of it in place, unstarted.
+
+### What is preserved
+
+The three hosts and their encrypted roots, LUKS headers and unlock material; operator SSH access and sudo; provider firewalls and host policy; the managed PostgreSQL cluster (a new database in it, not the old one); the private issuing CAs, and leaf certificates whose hostnames stay the same; ClamAV and its signatures; the version worker, its signing key and the report directory with its pinned public key; the old installation, wallet and onion material until the approval above; historical recovery archives and the private operator record; and every published record in `docs/evidence/` and the [deployment notes](install/deployment-notes.md), which stay as history.
+
+### Re-initialize from the tagged build
+
+Prerequisite: A-694 to A-697 and the tag (A-680) have landed. The steps keep the order of [the production procedure](install/production.md). The controller manages only the application host; the others are by hand.
+
+1. **Stop the old market**, with the binary it was installed with. This deletes nothing: `deploy down` retains every volume and private file. On the gateway host stop the public Tor service with its supervisor, and `systemctl stop opsecmkt-gateway`. Stop the mainnet daemon and wallet RPC on the payment host.
+
+   ```sh
+   ./opsecmkt deploy down --dir OLD_DIR
+   ```
+
+2. **Get the tagged build.** On the application and gateway hosts, verify the release binary and install it where production starts require it. The old project's drop-in now runs this binary at each boot, so check it accepts the old directory before any reboot. In the tagged checkout, [build and publish the application image](install/binary.md#building-and-publishing-the-application-image) and the [Tor image](install/binary.md#building-and-publishing-the-tor-image), so `APP_IMAGE` and `TOR_IMAGE` hold full digest references. Apply the hosts' security updates and check the A-669 fix: expect `deb12u2` or later. Keep the digests and this output in the private record.
+
+   ```sh
+   gh release download YOUR_TAG --repo OWNER/opsecmkt --dir release-YOUR_TAG
+   (cd release-YOUR_TAG && sha256sum -c SHA256SUMS)
+   install -m 755 release-YOUR_TAG/opsecmkt-linux-amd64 /usr/local/bin/opsecmkt
+   /usr/local/bin/opsecmkt version
+   /usr/local/bin/opsecmkt deploy storage check-bound --dir OLD_DIR
+   docker run --rm --network none --entrypoint dpkg "$APP_IMAGE" -l libssl3
+   docker run --rm --network none --entrypoint dpkg "$TOR_IMAGE" -l libssl3
+   ```
+
+3. **Prepare the new private inputs**, all in a new directory, here `/srv/opsecmkt-inputs-stagenet`:
+   - A new empty UTF8 database and its own role, per the [external database procedure](install/external-database.md), with its URL in a mode-`0600` file.
+   - On the payment host, a stagenet daemon and a dedicated wallet RPC with a new data directory and an empty wallet directory, per [enable payments](install/enable-payments.md#native-production-with-separate-payment-services) and the [service flows](install/service-topology.md#allowing-only-required-service-flows): `--stagenet` on both, `--daemon-address` naming that daemon, `--shared-ringdb-dir=WALLET_DIR/.shared-ringdb`, authenticated HTTPS for the application host only, and fresh RPC credentials in two mode-`0600` URL files.
+   - [Payment-host Tor egress](operator-guide.md#declaring-separate-payment-host-tor-egress), checked as that section says. The `remote-tor` setting below only records your declaration; without it, native production Tor holds every settlement relay and A-562 cannot run.
+   - A fresh [seed-recovery OpenPGP pair](install/binary.md#importing-and-generating-keys), made offline, with only its public half here.
+   - A new external retention directory: an old ledger never goes with a new database.
+
+4. **Make fresh identities** on the trusted machines: the storefront identity on the issuing machine, and the administrator's client key on that administrator's machine ([steps](install/tor.md#generate-the-administrators-client-key)). Copy only the `.auth` file to `admin-clients/`. `init` generates the administrator onion itself.
+
+   ```sh
+   ./opsecmkt keys generate onion --out-dir ./identities-stagenet/storefront
+   ./opsecmkt keys generate tor-client --public-out ./admin-public/stagenet.auth --private-out ./admin-private/stagenet.key
+   ```
+
+5. **Initialize once**, in a new directory; `init` refuses an existing one. Add `--monero-rpc-cert` and `--monero-rpc-key` if the payment proxy uses mutual TLS instead of URL credentials. `--site-access` and `--registrations` are your choice, as long as a buyer and a vendor account can be made.
+
+   ```sh
+   /usr/local/bin/opsecmkt deploy init --dir /srv/opsecmkt/market-stagenet --mode prod \
+     --app-image "$APP_IMAGE" --exposure tor \
+     --gateway-url http://YOUR_NEW_PUBLIC_ONION.onion --app-host app.internal \
+     --admin-tor-image "$TOR_IMAGE" --admin-client-auth-dir /srv/opsecmkt-inputs-stagenet/admin-clients \
+     --app-bind 10.20.0.10:8080 --backend-bind 10.20.0.10:8443 \
+     --database-url-file /srv/opsecmkt-inputs-stagenet/database.url \
+     --database-ca /srv/opsecmkt-inputs-stagenet/database-ca.pem \
+     --tls-cert /srv/opsecmkt-inputs-stagenet/app.pem --tls-key /srv/opsecmkt-inputs-stagenet/app.key \
+     --upload-ca /srv/opsecmkt-inputs-stagenet/upload-ca.pem \
+     --upload-cert /srv/opsecmkt-inputs-stagenet/backend.pem --upload-key /srv/opsecmkt-inputs-stagenet/backend.key \
+     --retention-dir /srv/opsecmkt-retention-stagenet --set RETENTION_ENABLED=on \
+     --dependency-report-dir YOUR_REPORT_DIR --dependency-report-public-key YOUR_PINNED_KEY_FILE \
+     --escrow-xmr --monero-network stagenet \
+     --monero-wallet-rpc-url-file /srv/opsecmkt-inputs-stagenet/wallet.url \
+     --monero-daemon-url-file /srv/opsecmkt-inputs-stagenet/daemon.url \
+     --monero-rpc-ca /srv/opsecmkt-inputs-stagenet/monero-ca.pem \
+     --monero-seed-key /srv/opsecmkt-inputs-stagenet/escrow-public.asc \
+     --set ESCROW_XMR_TOR_RELAY=remote-tor
+   /usr/local/bin/opsecmkt deploy plan --dir /srv/opsecmkt/market-stagenet
+   /usr/local/bin/opsecmkt deploy doctor --dir /srv/opsecmkt/market-stagenet
+   /usr/local/bin/opsecmkt deploy install --dir /srv/opsecmkt/market-stagenet
+   /usr/local/bin/opsecmkt deploy status --dir /srv/opsecmkt/market-stagenet
+   ```
+
+   Stop if `plan` does not say stagenet. If the old installation used [reboot control](install/production.md#optional-application-host-reboot-control), configure it for the new directory; whether the old agent interferes is unverified, so stop on a refusal.
+
+6. **Prepare the gateway, with public ingress still fenced.** Transfer only the storefront identity to the gateway host, into a new `HiddenServiceDir` such as `/var/lib/tor/public-market-stagenet/` or a new volume, and never overwrite the populated `/var/lib/tor/public-market/` ([steps](install/tor.md#prepare-the-public-gateway-identity)). Point the Tor fragment at the new directory, without starting it, and `systemctl start opsecmkt-gateway`.
+
+7. **Bind the client key** to the new administrator onion that `plan` prints, as in [bind the client key](install/tor.md#bind-the-client-key-and-verify-ingress), keeping `.auth_private` off the server:
+
+   ```sh
+   ./opsecmkt keys import tor-client --in ./admin-private/stagenet.key --public-out ./admin-public/bound-stagenet.auth --private-out ./admin-private/stagenet.auth_private --onion YOUR_NEW_ADMINISTRATOR_ONION.onion
+   ```
+
+8. **Set up and verify.** Create the administrator at the administrator onion's `/setup` or with the command below, enroll an authenticator, and set **New escrow checkouts** to **Paused**. Then start public Tor, confirm its `hostname` file is the new address, and run the checks in [production section 6](install/production.md#6-complete-first-run-setup-and-verify-journeys). Stagenet synchronization takes as long as it takes; measure it. When the daemon and wallet are synced and **Admin → Payments** accepts the network, wallet secret and seed key, take the first encrypted backups, then set **New escrow checkouts** to **Escrow**.
+
+   ```sh
+   DATABASE_URL_FILE=/srv/opsecmkt-inputs-stagenet/database.url /usr/local/bin/opsecmkt -bootstrap-admin YOUR_ADMIN_HANDLE -site-name 'Stagenet rehearsal'
+   ```
+
+**Record:** in the private record, the old market's answers, the approvals, digests and `libssl3` output; in the [deployment notes](install/deployment-notes.md), a new dated checkpoint in role names, as [Recording the results](#recording-the-results) says. This shows a healthy empty stagenet market and A-669's rebuild, and it does not show that any payment works.
+
+### Legs and their order
+
+**No runner exists for any of these.** `scripts/test-escrow-xmr-public-stagenet.py` is one digital claim with an empty wallet directory, loopback RPC and a disposable loopback PostgreSQL, so it never touches the deployed `--mode prod` topology, and `scripts/test-host-bootstrap.py` runs in a network namespace with no host apply. Every leg here is by hand, on the deployed market. Do not edit a deadline in the database to save time (A-729): the leg would then prove nothing about it.
+
+| Run order | Leg | Real time |
+| --- | --- | --- |
+| 1 | A-562 digital claim | About an hour: the one recorded sample took 22 minutes to fund and 28 from claim to confirmed |
+| 2 | PM-3, which is also A-562's physical refund | About an hour of confirmations, plus your own pace |
+| 3 | A-562 deadline release, started with leg 1 | The real 48 hours, then about 30 minutes for its claim |
+| 4 | Outage (a), then (b) | Over an hour each, with (a) timed to span the end of a dispute window |
+| 5 | A-698 restore, redeployment, host policy, replacement host | Hours each, and a spare encrypted host |
+
+**Do not stop the application for over the outage threshold while leg 3 runs.** The threshold is more than an hour, or twice `PAYMENT_POLL_INTERVAL` plus the 10-minute pass timeout if that is longer; at the default 30 seconds, one hour. A longer stop, including a locked reboot or a host move, moves every shipped or delivered order's deadline that ends within 72 hours to 72 hours later, and starts the 72-hour grace on a buyer's no-ship cancel, as it should, and leg 3 waits again. That is why the A-698 legs come last.
+
+### Leg: production wallet topology (A-562)
+
+"Rehearse on stagenet with the native `--mode prod` topology wallet creation, transfer do_not_relay, relay_tx and Digest under concurrent polling through the TLS proxy — one digital claim, one physical refund, one deadline release." **No runner.** Do it in Tor Browser with a buyer and a vendor account on the public onion and the administrator on the private onion; approve the vendor under [Vendor applications](operator-guide.md#vendor-applications). Pay from a dedicated stagenet wallet you own. Keep `PAYMENT_POLL_INTERVAL` at its default, and during each send keep reloading `/admin/payments` in another tab, so the watcher and the pages call the wallet through the proxy while it builds and relays.
+
+1. **Digital claim.** Publish a digital listing with automatic delivery. The buyer checks out, giving a stagenet refund address, and pays. Funding takes 10 confirmations; the order is then **Delivered**, with its 48-hour dispute window. The buyer uses **Confirm receipt** with their password, the vendor claims with a fresh stagenet address and their password, and the watcher builds, relays and confirms the release. Check the wallet received the planned amount.
+2. **Physical refund.** Run PM-3, below.
+3. **Deadline release.** Alongside step 1, place a second digital order and have the buyer do nothing for the real 48 hours. Expect the watcher to complete it with the note "dispute window ended"; then the vendor claims. A physical order's release deadline is at least 7 days (the setting's minimum on `/admin/payments`, for orders placed afterwards), and only there does the market build the release at the deadline with no vendor action. Run that as well if the 7 days are affordable; otherwise say it was not run.
+
+After each send read the row, on the protected connection. A `tx_hash` present before `relayed_at`, ending `confirmed`, shows build then relay. Expect exactly one row per outcome for an order.
+
+```sql
+SELECT kind, state, tx_hash, fee, created, relayed_at, confirmed_at FROM xmr_settlements WHERE order_id = 'ORDER_ID' ORDER BY id;
+```
+
+**Record:** a row in [verification.md](verification.md#evidence-table) with tier "deployed instance on public stagenet", the tagged commit, and for each order its kind, transaction hash, heights and durations. Note whether `wallet.url` carries credentials: with mutual TLS alone, Digest was not exercised, so say so. Omit addresses, handles, onions and hostnames.
+
+**Does not prove:** mainnet or real funds; fee or ring stress, reorganisations or a restart mid-send (the fakechain legs of section 9 cover some of these, on a fakechain); concurrency beyond one operator's reloads; a physical deadline release unless you ran one; that anyone but you can use the market.
+
+### Leg: public physical journey (PM-3)
+
+PM-3 is the "public-stagenet run of the physical journey (fund → ship with claim address → dispute → refund decision → refund confirmed) over Tor, recorded in docs/evidence/public-testnet/". **No runner.** Run on this market it is also A-562's physical refund.
+
+1. The vendor publishes a physical listing, through the public onion in Tor Browser.
+2. The buyer checks out, giving a stagenet refund address, and pays. Funding takes 10 confirmations; the order is **Paid**.
+3. The vendor uses **Mark shipped** with a fresh stagenet claim address and their password. Nothing is built yet, and the release deadline is fixed.
+4. The buyer opens a dispute at `/disputes` with **Submit dispute**, before that deadline. The vendor may reply.
+5. On the private onion, an administrator who is not a party opens the dispute on `/moderator`, selects the refund outcome, writes the decision (20 to 5000 characters, stored unencrypted, so nothing private) and uses **Resolve dispute** with their password and code.
+6. The watcher builds and relays the refund. Wait for 10 confirmations and check that the buyer's wallet received it and the claim address nothing. Read the row as in the A-562 leg, expecting one `refund`, `confirmed`. Reload the order as the buyer and as the vendor.
+
+**Record:** a new directory `docs/evidence/public-testnet/<UTC date>-<commit, 12 hex>/stagenet-xmr-physical/README.md`, written by hand and saying so: tagged commit, node versions, UTC time and observed height of each step, funding and refund transaction hashes, fee, amounts, confirmations, and what ran over Tor (both browsers on the onions; the daemon only as far as your egress checks showed). Sanitize a separate copy, per [CONTRIBUTING](../CONTRIBUTING.md): no addresses, handles, onion addresses, hostnames, IPs, order IDs, screenshots, decision text or raw logs. Keep the originals, with their real timestamps, in the protected record. Run `python3 -m unittest discover -s tests -p 'test_public_evidence_privacy.py' -v`, which limits cloud JSON only, so read your prose too. Add a line to [its index](evidence/public-testnet/README.md) and cite it in verification.md.
+
+**Does not prove:** anonymity, or that Monero traffic used Tor (`remote-tor` is your declaration, and your egress check is one observation); public refund timing beyond this one sample; a release to the vendor; a physical deadline; a shipment, which is only a form here; the [Manual Tor Browser pass](verification.md#manual-tor-browser-pass-owner), which has its own list.
+
+### Leg: real outages (DA104-E1)
+
+**No runner.** The tests behind these (`TestXMROutageMovesNearDeadlines` and others) use a database and a simulated wallet RPC, with no real outage. Run these after leg 3's claim has confirmed, with no settlement mid-send.
+
+**(a) The application is down.** Fund a digital order, O, a couple of hours after leg 3's order, so that leg 3 finishes first, and let it sit **Delivered**. When its order page says the window ends in about 30 minutes, stop the application. Leave it down until the window has passed and over the threshold has elapsed, then start it.
+
+```sh
+/usr/local/bin/opsecmkt deploy down --dir /srv/opsecmkt/market-stagenet
+/usr/local/bin/opsecmkt deploy up --dir /srv/opsecmkt/market-stagenet
+```
+
+Expect, after the first watcher pass: O still **Delivered**; one order note, "Dispute window moved to … after an outage (Monero escrow)"; one notice to the buyer and one to the vendor, naming the outage; a new end 72 hours after that pass; and nothing completed. A dispute in the first moments can be refused as late ([after an outage](#reconcile-a-restored-database-before-enabling-payouts)), and one after the first pass should be accepted; if you try that, use another order, since a dispute takes O out of (b).
+
+**(b) Public ingress is down, and the watcher cannot see it.** About an hour. Stop the public Tor service on the gateway host, and confirm with an independent Tor client that the storefront no longer answers. Wait five minutes: expect no new note on O, since the application runs on and notices nothing. Then, from the operator's real shell on the application host, ask for the recheck. The database is remote, so there is no `db` container to run SQL in.
+
+```sh
+DATABASE_URL_FILE=/srv/opsecmkt-inputs-stagenet/database.url /usr/local/bin/opsecmkt -request-deadline-recheck
+```
+
+`-request-deadline-recheck` is A-741's command; a build without it refuses the flag, and then this leg waits for one that has it. Over the private administrator onion, which stays up, check that `/admin/payments` shows the request, and copy what it says into the private record. Expect O's window, which now ends within 72 hours, to move once more on the next watcher pass: exactly one more note and one more notice to each party, and nothing completed. Keep ingress down for the rest of the hour, start Tor again, and read those notices as the buyer and as the vendor through the storefront. Finish O with **Confirm receipt** and a claim.
+
+**Record:** a row each in verification.md with tier "deployed instance on public stagenet", stating the stop and start times in UTC, the threshold in force, the note and notice counts, the deadline before and after, and what `/admin/payments` said. Omit order IDs, handles and onions. A failure also goes in the [deployment notes](install/deployment-notes.md#issues-during-the-fresh-reset) as an issue, kept, not retried away.
+
+**Does not prove:** that a completion can be undone (it cannot: an order that completed before the request stays completed); that anyone reads a notice, which is in the market only; a database outage, a clock jump or a VM pause; an outage longer than 72 hours, which needs the request repeated within every 72 hours.
+
+### Leg: restore rehearsal (A-698)
+
+Acceptance line: "Persistent data survives container replacement. Backup and restore instructions cover database records, deployment secrets, and any onion identity keys; a restore rehearsal is recorded." **No runner on these hosts**; `scripts/test-backup-restore.sh` and `scripts/test-tor-identity-restore.sh` are local. Use a spare encrypted host, the same one as the replacement leg, and a new empty database, isolated from users and payment services. Never restore onto, or run tools against, the live database or wallet.
+
+1. Take the backup from a matching source checkout on the backup host, and export the configuration to an absent directory ([recovery](install/recovery.md)):
+
+   ```sh
+   export BACKUP_DATABASE_URL="$(cat /secure/opsecmkt/database.url)"
+   AGE_RECIPIENT=age1YOUR_PUBLIC_RECIPIENT ./scripts/backup.sh /secure/backups/stagenet.dump.age
+   unset BACKUP_DATABASE_URL
+   /usr/local/bin/opsecmkt deploy recovery export --dir /srv/opsecmkt/market-stagenet --recipient-public-key /srv/operator/offline-recovery-public.asc --out /srv/operator/stagenet-recovery-YYYY-MM-DD
+   ```
+
+2. Restore into the rehearsal database, which asks for the explicit `RESTORE` confirmation:
+
+   ```sh
+   export RESTORE_DATABASE_URL="$(cat /secure/opsecmkt/rehearsal-database.url)"
+   AGE_IDENTITY=/secure/offline/backup-key.txt ./scripts/restore.sh /secure/backups/stagenet.dump.age
+   unset RESTORE_DATABASE_URL
+   ```
+
+3. On the spare host, start one isolated application on loopback with the preserved application key and a private copy of the **current** retention ledger, with no Tor service and no wallet. Running the managed installation here instead would publish the live administrator onion from a second host, and its wallet URL names the live wallet.
+
+   ```sh
+   RETENTION_ENABLED=on RETENTION_STATE_DIR=/secure/rehearsal/retention-copy /usr/local/bin/opsecmkt serve --profile dev --addr 127.0.0.1:8080 --database-url-file /secure/rehearsal/database.url --app-secret-key-file /secure/rehearsal/app-secret.key --setup-token-file /secure/rehearsal/setup-token.key --cookie-secure false
+   ```
+
+   Expect retention replay to finish, the expected rows to be present, and `payments_recovery_required` still set. Stop it, then clear the gate as [above](#clear-the-gate), answering for the rehearsal only:
+
+   ```sh
+   DATABASE_URL_FILE=/secure/rehearsal/database.url /usr/local/bin/opsecmkt -clear-restore-gate YOUR_ADMIN_HANDLE
+   ```
+
+4. Stop the live wallet RPC briefly, copy the wallet directory to encrypted storage on the spare host, restart it, and open the copy with a separate stagenet wallet RPC there, using the original wallet secret. Compare balances with the live wallet. Remove that wallet RPC and copy afterwards under your retention policy.
+
+**Record:** a row in verification.md and a line in the deployment notes, in role names: dates, whether row counts match, retention replay, gate state before and after, wallet balance match. Keep logs and copies in the protected record, and destroy the rehearsal database when finished.
+
+**Does not prove:** the reconciliation of a restored application with its wallet: `deploy endpoint set` replaces only a database reference, so no supported command points an isolated application at a copied wallet, and that path stays with the fakechain `Restore` leg of section 9. Nor a provider point-in-time recovery, a restore holding real users' records, or offline seed decryption unless you also ran it.
+
+### Leg: app-only redeployment (A-698)
+
+Acceptance line: "An actual app-only container redeployment preserves the saved access and registration settings." CI has ticked that line for development mode, and its host half is still open, as the line says. **No runner on these hosts**: `scripts/test-native-deploy.sh` covers development mode on a CI engine. Take backups as [redeploying only the application](install/service-topology.md#redeploying-only-the-application) says, change the saved site-access and registration settings to values you can recognize, and build a second image from the tagged commit under another name so that its digest differs.
+
+```sh
+/usr/local/bin/opsecmkt deploy plan --dir /srv/opsecmkt/market-stagenet
+/usr/local/bin/opsecmkt deploy status --dir /srv/opsecmkt/market-stagenet
+/usr/local/bin/opsecmkt deploy redeploy --dir /srv/opsecmkt/market-stagenet --app-image SECOND_IMAGE@sha256:DIGEST
+/usr/local/bin/opsecmkt deploy status --dir /srv/opsecmkt/market-stagenet
+```
+
+Expect the settings to survive a reload; the `tor-admin` container, its onion address, every volume, the retention directory and `operator.json` other than the image to be as before; no change on the database, payment, gateway or worker hosts; and an upload through the gateway and **Admin → Payments** readiness to still pass. Stay under the outage threshold, or expect its recheck.
+
+**Record:** the deployment notes in role names, and update the sentence ending "on the owner's hosts is tracked as A-698" in [acceptance](acceptance.md) with the date and its verification.md row. Digests stay private.
+
+**Does not prove:** an upgrade with a migration, since both images are one commit; a rollback; a change on any other host.
+
+### Leg: host policy and pending boot (A-698)
+
+Acceptance line: "Supported-host apply/confirm/rollback and pending boot are rehearsed with fresh allowed/denied SSH, gateway mTLS and actual Docker forwarding on every public address; independent public/private Tor clients pass." **No runner**; `scripts/test-host-bootstrap.py` proves only packet rules in a namespace.
+
+The profile is an Ubuntu 24.04 application host on static systemd-networkd with no other firewall manager ([bootstrap](install/server-bootstrap.md)). If the existing host is refused, record the refusal and do not disable anything to pass it: that host needs its own reviewed policy, and the line stays open for it. Rehearse on the spare host first, and keep an independent authenticated console open throughout, since a wrong policy locks you out until rollback. Every apply needs a fresh operator SSH session and sudo proven beforehand.
+
+```sh
+./opsecmkt host plan --config host.json --out host-plan
+sudo --preserve-env=SSH_CONNECTION ./opsecmkt host apply --config host-plan/host.json --operator-access-verified
+sudo --preserve-env=SSH_CONNECTION ./opsecmkt host confirm --config host-plan/host.json
+sudo ./opsecmkt host rollback
+```
+
+1. **Timer rollback.** `apply`, then do nothing for the five minutes. Expect the previous table and managed files back.
+2. **Explicit rollback.** `apply`, then `rollback`. A repeat changes nothing.
+3. **Pending boot.** `apply`, then reboot before confirming, and unlock the root by hand. Expect rollback to run before the candidate policy and before Docker and containerd.
+4. **Confirm.** `apply`, then, from a **new** SSH connection within five minutes, `confirm`. Its connection tuple must differ from `apply`'s.
+5. **Probes**, as in [verify allowed and denied connections](install/server-hardening.md#4-verify-allowed-and-denied-connections), each fresh, on every assigned IPv4 and IPv6 address: approved SSH passes and unapproved SSH does not; the gateway's `/healthz` passes with verified TLS, and its backend mutual TLS works only with the gateway identity; each Docker-published port is unreachable from an independent public address. A missing IPv6 probe is pending, not a pass.
+6. **Independent Tor clients**, two fresh ones: the public onion answers `/healthz` and returns `404` for `/setup` and `/admin`; the authorized client reaches the private `/login`, and the unauthorized one gets `0xF4`. A timeout or circuit error is inconclusive, never a denial ([diagnosis](install/tor.md#diagnosing-a-timeout-after-entering-the-client-key)).
+
+Then take the same steps on the production application host, at a time no order waits on it.
+
+**Record:** the source, destination, port, expected and actual result of each probe stay private; the deployment notes get the matrix by role and count, as the 2026-10-16 checkpoint did, plus each failure, kept. verification.md gets a row.
+
+**Does not prove:** the provider firewall or the database, payment and gateway hosts' policies, which this profile does not manage; that the policy still holds after a later change; lasting onion availability; independent network attestation, since `confirm` checks session metadata.
+
+### Leg: replacement application host (A-698)
+
+Acceptance line: "A replacement production app host restores retained configuration, identities and current external retention state on verified encrypted storage, rebinds explicitly, installs against retained services, and passes isolated restore and locked-boot checks." **No runner**: the configuration-bundle round-trip tests are partial evidence. Follow [recover application configuration](install/recovery.md) and [rebuilding or replacing only the application](install/binary.md#rebuilding-or-replacing-only-the-application). The outage threshold will probably pass, so expect the recheck. Allow the spare host in the database's, payment proxy's and gateway's rules first.
+
+1. On the spare host, verify LUKS2, static addressing, host policy and the isolated restore above. Export the configuration again if it has changed.
+2. **Fence the old host**, and make sure it cannot resume the application or its onion: an administrator onion must never run from two hosts.
+
+   ```sh
+   /usr/local/bin/opsecmkt deploy down --dir /srv/opsecmkt/market-stagenet
+   ```
+
+3. Decrypt offline and stream the recovery document directly to the new host. Copy the current retention directory through an authenticated encrypted channel. If hostnames change, reissue the leaf certificates, keeping CA keys offline, and install them with `deploy tls replace`. Then:
+
+   ```sh
+   /usr/local/bin/opsecmkt deploy recovery restore --dir /srv/opsecmkt/market-stagenet --old-host-fenced
+   /usr/local/bin/opsecmkt deploy storage bind --dir /srv/opsecmkt/market-stagenet
+   /usr/local/bin/opsecmkt deploy plan --dir /srv/opsecmkt/market-stagenet
+   /usr/local/bin/opsecmkt deploy doctor --dir /srv/opsecmkt/market-stagenet --start-check
+   /usr/local/bin/opsecmkt deploy install --dir /srv/opsecmkt/market-stagenet
+   ```
+
+4. Expect the same administrator onion, retained from `onion-admin/` into a fresh volume; a populated identity volume with another address refuses, and is never overwritten. Point the gateway at the new private address, and repeat the probes and Tor clients of the previous leg, a gateway upload, and a small funded order that reaches a confirmed settlement.
+5. **Locked boot.** Reboot the replacement, unlock by hand, and expect services to return with no other action, the storage check that `install` set up passing, and readiness again. Re-acknowledge reboot control if you use it.
+
+**Record:** the deployment notes and verification.md in role names: dates, each step's result, and that the old host stayed fenced. Keep it fenced until the owner decides its fate, which is another approval.
+
+**Does not prove:** the old host's erasure; a move of the database, payment or gateway hosts; that no one kept a copy of a key; recovery with the old host unavailable, unless you rehearsed it that way.
+
+### Recording the results
+
+Evidence follows [CONTRIBUTING](../CONTRIBUTING.md): inspect and sanitize a separate copy for secrets, user data and operational identifiers, and keep the protected original with its authentic date. Never fabricate or reshape a timestamp, and keep failures alongside passes.
+
+- **Protected operator record:** approvals, exact resource names, addresses, onions, image digests, key locations, raw transcripts and logs. A-669 asks for digests in the deployment notes, but that file's own rule keeps them here; publish there the `libssl3` version and that the digests are recorded privately.
+- **[Deployment notes](install/deployment-notes.md):** a dated checkpoint in role names only.
+- **[verification.md](verification.md#evidence-table):** one row per leg. A result on these hosts is its own tier, never promoted to or from a simulated wallet or fakechain row.
+- **[Public evidence](evidence/public-testnet/README.md):** PM-3, in the directory named there.
+- **[Acceptance](acceptance.md):** tick a line only once its record exists, citing that record. A partly run leg leaves the line open, with what remains named.
+
+The whole set does not prove that mainnet works, that real funds are safe, or anonymity. The decision to take real funds stays separate, and this market stays on stagenet until the owner decides otherwise.

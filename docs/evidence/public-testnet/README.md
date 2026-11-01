@@ -18,6 +18,10 @@ independently fetch the selected host's block API and refuse a missing or mismat
 automatic fallback. Public API availability and a syncing cloud node are preparation, not passing escrow evidence.
 The [2026-10-10 public stagenet digital claim](2026-10-10-ac71878dfde4/stagenet-xmr/README.md) passed on frozen ac71878dfde4: actual 0.01 sXMR funding and confirmed release, ten confirmations each, and exact planned claimant receipt. It includes observed sync/storage, verified private recovery and cloud cleanup. Public refunds remain unmeasured; the offline stagenet fork is a separate evidence tier.
 
+No runner exists for the physical journey (PM-3) on the deployed market. Its record is a hand-written
+`<UTC date>-<commit, 12 hex>/stagenet-xmr-physical/README.md`, which says it is by hand and follows the
+[rehearsal steps](../../testnet-runbook.md#leg-public-physical-journey-pm-3). None is recorded yet.
+
 ## Publishing supplemental cloud records
 
 The runners write the proof manifest and transcript; supplemental cloud records are reviewed separately.
