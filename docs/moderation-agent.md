@@ -142,6 +142,10 @@ use rather than absent, and no warning.
 
 ## Optional local inference
 
+Turning a model on removes no item from the human queue. At `moderation-v6` a
+model result can add reason codes and raise an item to `ESCALATE_ADMIN`; it can
+never clear one. Staff the queue before you enable it.
+
 Select a reviewed runtime image supporting native Unix-socket HTTP and the
 required llama.cpp completion, tokenize and grammar API. There is no selected or downloaded
 default image/model. The standalone configuration is

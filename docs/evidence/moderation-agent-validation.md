@@ -265,6 +265,17 @@ selected model ends at `}` with `stop_type` `eos`, within 256 tokens and the
 remains the opsec-llm seat's local-runtime rerun and an operator acceptance
 check.
 
+The seat's rerun on 2026-11-01 (iteration 105) ran v6 through the real local
+adapter, engine and routing on a 71-item synthetic set, at the local-runtime tier
+only: an unpinned llama-server from a desktop bundle, a 7B development model that
+is not a production candidate, and a contended host. All 180 replies in its two
+full runs stopped with `stop_type` `eos`, at most 147 generated tokens. On the same
+model the shipped Stage A prompt flagged 26 of 29 benign items as injection, so
+this run says the prompt needs work (A-745), not that a model is fit. At the
+shipped CPU limits the model timed out on 11 of 12 items. Its artifacts were
+scratch and were not kept. Termination at a pinned build and through the launcher
+is still unverified.
+
 Focused local verification completed before the final-source CI run:
 
 - Closed protocol, custom-adapter prose removal, routing and coded provenance
