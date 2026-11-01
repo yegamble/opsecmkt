@@ -95,10 +95,11 @@ type Order struct {
 
 // VendorWaiting is one order in the vendor desk's "Waiting for you" section (A-710): what the vendor does next
 // (Action, on the order page at the fragment Anchor) and a paid order's ship-by or delivery deadline (ShipBy; ShipByPassed once it passed).
+// CancelRecheck: the buyer's cancel waits for a restore's recheck (A-714); CancelFrom: for the vendor's grace after it (A-720).
 type VendorWaiting struct {
-	Order                  Order
-	Action, Anchor, ShipBy string
-	ShipByPassed           bool
+	Order                              Order
+	Action, Anchor, ShipBy, CancelFrom string
+	ShipByPassed, CancelRecheck        bool
 }
 type Message struct {
 	ID, Sender, Recipient, Body, Created string
@@ -818,13 +819,14 @@ type EscrowCosignerView struct{ Who, Key string }
 // Left the time left when the page loaded; Due once it has passed; Rechecked when a restore from backup moved it;
 // VendorClosed when the vendor is banned, so the release is held at completion (Monero escrow, A-652c, A-652d), and
 // then HoldRefundDays, after which an administrator may refund the held release to the buyer (A-652f). Digital: the
-// order is a delivered digital Monero escrow order and At ends its dispute window (A-709). closed: it has passed and no
-// restore recheck is pending, so a dispute is refused (lateDispute) and not offered.
+// order is a delivered digital Monero escrow order and At ends its dispute window (A-709). Recheck: it has passed and a
+// restore recheck is pending, which will move it (A-720). closed: it has passed and no restore recheck is pending, so a
+// dispute is refused (lateDispute) and not offered.
 type EscrowDeadlineView struct {
-	At, Left                              string
-	Due, Rechecked, VendorClosed, Digital bool
-	HoldRefundDays                        int
-	closed                                bool
+	At, Left                                       string
+	Due, Rechecked, VendorClosed, Digital, Recheck bool
+	HoldRefundDays                                 int
+	closed                                         bool
 }
 
 // DeadlineBanner is one /orders banner (escrow_deadline.go): an escrow order of the viewer's whose release deadline At
