@@ -194,7 +194,7 @@ func TestXMREscrowNetworkPinMismatch(t *testing.T) {
 	if got := x.networkPin(); len(got) != 1 || got[0] != "fakechain" {
 		t.Fatalf("pin %v", got)
 	}
-	settings := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1) ORDER BY key", settingXMRHealth)
+	settings := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1,$2) ORDER BY key", settingXMRHealth, xmrLastDeadlineStepKey)
 	state := func() string {
 		return strings.Join(agStrings(t, x.testEnv, "SELECT order_id||' '||address FROM escrows ORDER BY order_id"), ",") + "|" +
 			strings.Join(x.wallets(), ",") + "|" + strings.Join(agStrings(t, x.testEnv, "SELECT address||' '||state FROM xmr_escrow_slots ORDER BY id"), ",")
@@ -230,7 +230,7 @@ func TestXMREscrowNetworkPinMismatch(t *testing.T) {
 			t.Fatalf("a refused start called %s", c.Method)
 		}
 	}
-	after := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1) ORDER BY key", settingXMRHealth)
+	after := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1,$2) ORDER BY key", settingXMRHealth, xmrLastDeadlineStepKey)
 	if strings.Join(settings, ",") != strings.Join(after, ",") || state() != before {
 		t.Fatalf("a refused start changed the database: %v -> %v", settings, after)
 	}
@@ -333,7 +333,7 @@ func TestXMREscrowSkipsWhileNotSynced(t *testing.T) {
 			unpaid, _ := x.freshCheckoutOn(tc.nettype)
 			agExec(x.testEnv, "UPDATE escrows SET created=now()-interval '3 days' WHERE order_id=$1", unpaid)
 			paid, paidAddr := x.freshCheckoutOn(tc.nettype)
-			settings := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1) ORDER BY key", settingXMRHealth)
+			settings := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1,$2) ORDER BY key", settingXMRHealth, xmrLastDeadlineStepKey)
 			logs := captureLog(t)
 			x.fake.edit(func(f *fakeXMREscrow) {
 				tc.set(f)
@@ -365,7 +365,7 @@ func TestXMREscrowSkipsWhileNotSynced(t *testing.T) {
 			if page := x.adminPage(); !strings.Contains(page, "Monero escrow daemon not synced: "+tc.why+".") {
 				t.Fatalf("admin page lacks the not-synced line:\n%s", page)
 			}
-			if got := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1) ORDER BY key", settingXMRHealth); strings.Join(got, ",") != strings.Join(settings, ",") {
+			if got := agStrings(t, x.testEnv, "SELECT key||'='||value FROM settings WHERE key NOT IN ('installed',$1,$2) ORDER BY key", settingXMRHealth, xmrLastDeadlineStepKey); strings.Join(got, ",") != strings.Join(settings, ",") {
 				t.Fatalf("settings changed by the guard: %v -> %v", settings, got)
 			}
 

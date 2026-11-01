@@ -116,12 +116,15 @@ var passwordWork = make(chan struct{}, 4)
 var registerWork = make(chan struct{}, 1)
 
 // errRegisterBusy refuses a registration with no slot. It has its own answer and is no part of the attack signal, which
-// counts refused sign-ins.
+// counts refused sign-ins; /admin/security shows how many (noteRegisterBusy).
 var errRegisterBusy = fail(503, "Registration is busy. Try again shortly.")
 
 // bcryptCost is the work factor for new password hashes. Tests lower it to bcrypt.MinCost (TestMain) so
 // the -race suite stays within the request timeout; production keeps 12.
 var bcryptCost = 12
+
+// generateAccountHash is /setup's and /register's bcrypt; tests count its calls to prove a refusal ran none.
+var generateAccountHash = bcrypt.GenerateFromPassword
 
 // dummyHash is compared against when a login handle does not exist, so unknown and known handles cost the
 // same bcrypt work. It is generated lazily at bcryptCost (after TestMain can lower it) from a random
@@ -535,6 +538,7 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 		select {
 		case registerWork <- struct{}{}:
 		default:
+			a.noteRegisterBusy(c.Ctx())
 			return "", "", "", nil, errRegisterBusy
 		}
 	}
@@ -544,12 +548,18 @@ func authGate(c *actionCtx) (handle, password, rescueID string, release func(), 
 	default:
 		if limitRegistration {
 			<-registerWork
+			a.noteRegisterBusy(c.Ctx())
 			return "", "", "", nil, errRegisterBusy
 		}
-		// A-725: refused password checks are half of the attack signal. Not while registrations hold slots (SEC725-2):
-		// the image on sign-in would stop none of them, and it would only keep people out.
-		if path == "/login" && (privateAdminIngress(c.Ctx()) || len(registerWork) == 0) { // that ingress's slots are its own
-			a.noteSignInBusy(c.Ctx())
+		// A-725: refused password checks are half of the attack signal. While a registration holds a slot the image would
+		// stop no registration (SEC725-2), so those count apart, at a higher threshold, but they must count (SEC102-1):
+		// a right password refunds its budget and fails nothing, so no other record of these refusals exists.
+		if path == "/login" {
+			if privateAdminIngress(c.Ctx()) || len(registerWork) == 0 { // that ingress's slots are its own
+				a.noteSignInBusy(c.Ctx())
+			} else {
+				a.noteSignInHeldBusy(c.Ctx())
+			}
 		}
 		return "", "", "", nil, fail(503, "Authentication is busy. Try again shortly.")
 	}
@@ -702,6 +712,9 @@ func authAction(c *actionCtx) (actionResult, error) {
 		if !policy.RegistrationOpen {
 			return actionResult{}, fail(http.StatusForbidden, registrationClosedMessage)
 		}
+		if err := a.refuseRegistrationWithoutKey(ctx, f.Get("pgp"), vendor); err != nil {
+			return actionResult{}, err
+		}
 	}
 	handle, password, rescueID, release, err := authGate(c)
 	if err == errSignInPaused {
@@ -792,7 +805,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 	if path == "/register" && !installed {
 		return actionResult{}, fail(403, "Complete installation first")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	hash, err := generateAccountHash([]byte(password), bcryptCost)
 	if err != nil {
 		return actionResult{}, fail(500, "Unable to create account")
 	}
@@ -821,7 +834,7 @@ func authAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		if registrationKey == "" && (required || vendor) {
-			return actionResult{}, fail(400, "A usable PGP public key is required for vendor registration and when this market requires PGP at sign-in. Add your public key to the registration form.")
+			return actionResult{}, errRegistrationKeyRequired
 		}
 		id = randomToken()
 		if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,handle,password_hash,role,pgp,pgp_fingerprint) VALUES($1,$2,$3,'buyer',$4,$5)", id, handle, string(hash), registrationKey, registrationFingerprint); err != nil {
@@ -850,6 +863,34 @@ func authAction(c *actionCtx) (actionResult, error) {
 		next = "/account#vendor-application"
 	}
 	return a.secondFactor(c, id, string(hash), "", next)
+}
+
+// errRegistrationKeyRequired refuses a registration without the PGP key this market or a vendor account requires.
+var errRegistrationKeyRequired = fail(400, "A usable PGP public key is required for vendor registration and when this market requires PGP at sign-in. Add your public key to the registration form.")
+
+// refuseRegistrationWithoutKey refuses, before the human check and any slot, a registration that can only end refused
+// for its missing key (SEC102-2): it would otherwise spend a question and bcrypt in the only registration slot, and a
+// flood of them would refuse everyone registering. It reads without a lock, so authAction checks again under the lock
+// in its transaction. Before installation it refuses nothing, so such a request still hears to complete installation.
+func (a *App) refuseRegistrationWithoutKey(ctx context.Context, armored string, vendor bool) error {
+	if strings.TrimSpace(armored) != "" {
+		return nil
+	}
+	var installed bool
+	if err := a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed); err != nil {
+		return fail(503, "Service unavailable")
+	}
+	if !installed {
+		return nil
+	}
+	required, err := pgpLoginRequired(ctx, a.db)
+	if err != nil {
+		return fail(503, "Service unavailable")
+	}
+	if required || vendor {
+		return errRegistrationKeyRequired
+	}
+	return nil
 }
 
 // rescueSignIn finishes a paused /login whose authenticator code (rescueAccount) and password were right: the A-159(a)

@@ -136,8 +136,11 @@ func xmrEscrowWatcher(ctx context.Context, a *App) {
 			return
 		case <-t.C:
 		}
+		if !a.escrowXMR.ready.Load() {
+			a.xmrNoteDeadlineStepEarly(ctx) // the retry's node calls can take watcherPassTimeout
+		}
 		a.retryEscrowXMR(ctx, retry)
-		pass, cancel := context.WithTimeout(ctx, xmrEscrowPassTimeout)
+		pass, cancel := context.WithTimeout(withXMRShutdown(ctx), xmrEscrowPassTimeout)
 		err := a.xmrEscrowPollOnce(pass)
 		cancel()
 		if err != nil && ctx.Err() == nil {
@@ -210,6 +213,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	if a.db == nil || x == nil {
 		return nil
 	}
+	a.xmrNoteDeadlineStepEarly(ctx) // before any node or wallet call, and whoever holds the lock (A-730, PAY101-11)
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
 		return err

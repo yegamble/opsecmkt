@@ -68,9 +68,15 @@ const disputeClosedSQL = `EXISTS (SELECT 1 FROM escrows es WHERE es.order_id=o.i
 // or delivered after the backup was taken.
 var errCancelRecheck = fail(409, "This order cannot be cancelled yet: this market's records are being reconciled after a restore from backup, and the vendor may have shipped or delivered the order after that backup was taken. A buyer's cancel waits until 72 hours after the market has rechecked its escrow deadlines; try again later. Nothing was changed.")
 
-// cancelWaitRefusal refuses the buyer's no-ship cancel during the vendor's grace after a restore's recheck (noShipCancel,
-// xmrCancelWaitSQL, A-720).
-func cancelWaitRefusal(until time.Time) error {
+// errCancelRecheckOutage is errCancelRecheck when an outage asked for the recheck (A-730).
+var errCancelRecheckOutage = fail(409, "This order cannot be cancelled yet: "+outageWhy+", and the vendor may not have been able to ship or deliver the order in that time. A buyer's cancel waits until 72 hours after the market has rechecked its escrow deadlines; try again later. Nothing was changed.")
+
+// cancelWaitRefusal refuses the buyer's no-ship cancel during the vendor's grace after a recheck (noShipCancel,
+// xmrCancelWaitSQL, A-720), which outage says an outage asked for (A-730).
+func cancelWaitRefusal(until time.Time, outage bool) error {
+	if outage {
+		return fail(409, "You can cancel this order from "+utcFrom(until)+" if the vendor has not shipped or delivered it by then: "+outageWhy+", and the vendor may not have been able to ship or deliver this order in that time, so the vendor has until then to do so. Nothing was changed.")
+	}
 	return fail(409, "You can cancel this order from "+utcFrom(until)+" if the vendor has not shipped or delivered it by then: this market restored its records from a backup, and the vendor may have shipped or delivered this order after that backup was taken, so the vendor has until then to do so again. Nothing was changed.")
 }
 
@@ -152,19 +158,21 @@ func noShipCancel(c *actionCtx, o *Order) error {
 		return errConflict
 	}
 	var shipBy, wait sql.NullTime
-	var open, recheck bool
+	var open, recheck, outage bool
 	var days sql.NullInt64
-	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+" FROM escrows es WHERE es.order_id=$1",
-		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&shipBy, &open, &days, &recheck, &wait); err != nil {
+	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+","+xmrOutageCauseSQL+" FROM escrows es WHERE es.order_id=$1",
+		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&shipBy, &open, &days, &recheck, &wait, &outage); err != nil {
 		return err
 	}
 	switch {
 	case !shipBy.Valid:
 		return errCancelNoShipBy
+	case recheck && (open || wait.Valid) && outage: // A-730: an outage asked for it
+		return errCancelRecheckOutage
 	case recheck && (open || wait.Valid): // A-714: lateDispute's exception; ship_by is immutable (migration 079), so a restore cannot move it
 		return errCancelRecheck
 	case wait.Valid: // A-720: the recheck has run, and the vendor's grace has not ended
-		return cancelWaitRefusal(wait.Time)
+		return cancelWaitRefusal(wait.Time, outage)
 	case !open && o.Kind == "digital": // A-709: a digital Monero escrow order's delivery deadline (escrowTransitionHook)
 		return fail(409, fmt.Sprintf("You can cancel this order from %s if the vendor has not delivered it by then: %d hours from payment. Nothing was changed.", utcFrom(shipBy.Time), digitalDeliveryHours))
 	case !open:

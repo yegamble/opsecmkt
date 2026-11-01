@@ -168,7 +168,11 @@ func TestRestoreGateCLI(t *testing.T) {
 	}
 	unchanged("set and clear while serving", gate0, others0, xmr0, nil)
 
-	// -set-restore-gate applies the protection with one audit row and no user.
+	// -set-restore-gate applies the protection with one audit row and no user. A backup taken while an outage's recheck was
+	// pending carries that request: the restore overwrites it, so the recheck says a restore (A-730).
+	if _, err = db.Exec("INSERT INTO settings(key,value) VALUES('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO UPDATE SET value='outage'"); err != nil {
+		t.Fatal(err)
+	}
 	stdout, stderr, code = runServer(t, nil, "-set-restore-gate")
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Restore gate set: ") ||
 		!strings.Contains(stdout, "held 0 restored Monero escrow settlement(s), retired 1 free escrow account(s), moved 1 escrow wallet(s) to closing and closed 1 vendor bond wallet(s); audited.") {
