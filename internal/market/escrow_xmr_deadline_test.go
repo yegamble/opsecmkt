@@ -2,6 +2,8 @@ package market
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"html"
 	"net/url"
 	"strconv"
@@ -692,5 +694,131 @@ func TestXMRDeadlinesRunAfterWalletHang(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a shutdown did not end the deadline step's lock wait")
+	}
+}
+
+// A-732 (PAY101-8): the recheck has its own, longer budget, since it is one transaction (a frozen now() and the grace
+// written with it) that cannot be batched: one that outlasts the deadline budget commits, and the completions and
+// reminders after it keep that bound. Its own budget bounds it, and a shutdown still ends it, also after the pass's
+// deadline has passed.
+func TestXMRRecheckOutlastsDeadlineBudget(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	defer func(deadline, recheck time.Duration) { xmrDeadlineBudget, xmrRecheckBudget = deadline, recheck }(xmrDeadlineBudget, xmrRecheckBudget)
+	const short = 400 * time.Millisecond
+	xmrDeadlineBudget = short
+	x.mustPoll()
+	physical := x.physical(x.vendor)
+
+	// hold locks a row as a concurrent request would.
+	hold := func(query, id string) *sql.Tx {
+		t.Helper()
+		tx, err := x.DB.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { tx.Rollback() })
+		if _, err = tx.Exec(query, id); err != nil {
+			t.Fatal(err)
+		}
+		return tx
+	}
+	const lockOrder, lockEscrow = "SELECT 1 FROM orders WHERE id=$1 FOR UPDATE", "SELECT 1 FROM escrows WHERE order_id=$1 FOR UPDATE"
+	ask := func() {
+		t.Helper()
+		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
+	}
+	asked := func() bool {
+		t.Helper()
+		return agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrReleaseRecheckKey) == 1
+	}
+
+	// The recheck waits past the deadline budget (under the pool's 3 s lock_timeout), and commits.
+	moved, _, _ := x.shippedXMR(physical)
+	x.forceDeadline(moved, "release_at=now()-interval '1 hour'")
+	ask()
+	tx := hold(lockOrder, moved)
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- x.A.xmrDeadlines(context.Background()) }()
+	x.waitForLockWaits(1)
+	time.Sleep(2 * short)
+	tx.Rollback()
+	if err := <-done; err != nil {
+		t.Fatalf("a recheck longer than the deadline budget (%s, took %s): %v", short, time.Since(start), err)
+	}
+	if took := time.Since(start); took <= short {
+		t.Fatalf("the recheck took %s, not longer than the deadline budget %s", took, short)
+	}
+	if asked() || x.releaseAt(moved).Before(x.dbNow().Add(71*time.Hour)) {
+		t.Fatalf("the recheck did not commit: request %v, deadline %s", asked(), x.releaseAt(moved))
+	}
+
+	// Completions keep their bound: a due order's lock ends the step at the budget, not at the lock_timeout.
+	due, _, _ := x.shippedXMR(physical)
+	x.forceDeadline(due, "release_at=now()-interval '1 minute'")
+	tx = hold(lockOrder, due)
+	start = time.Now()
+	err := x.A.xmrDeadlines(context.Background())
+	tx.Rollback()
+	if took := time.Since(start); err == nil || took > 2*time.Second || x.state(due) != stateShipped {
+		t.Fatalf("a completion against a held row took %s (budget %s): %v, order %s", took, short, err, x.state(due))
+	}
+	if err = x.A.xmrDeadlines(context.Background()); err != nil || x.state(due) != stateCompleted {
+		t.Fatalf("the completion after the lock: %v, order %s", err, x.state(due))
+	}
+
+	// So do reminders.
+	soon, _, _ := x.shippedXMR(physical)
+	x.forceDeadline(soon, "release_at=now()+interval '24 hours',reminded_at=NULL")
+	tx = hold(lockEscrow, soon)
+	start = time.Now()
+	err = x.A.xmrDeadlines(context.Background())
+	tx.Rollback()
+	if took := time.Since(start); err == nil || took > 2*time.Second {
+		t.Fatalf("a reminder against a held row took %s (budget %s): %v", took, short, err)
+	}
+
+	// The recheck's own budget bounds it, and it fails closed.
+	xmrRecheckBudget = short
+	bounded, _, _ := x.shippedXMR(physical)
+	x.forceDeadline(bounded, "release_at=now()-interval '1 hour'")
+	ask()
+	tx = hold(lockOrder, bounded)
+	start = time.Now()
+	err = x.A.xmrDeadlines(context.Background())
+	tx.Rollback()
+	if took := time.Since(start); err == nil || took > 2*time.Second || !asked() || x.state(bounded) != stateShipped {
+		t.Fatalf("a recheck past its budget took %s: %v, request %v, order %s", took, err, asked(), x.state(bounded))
+	}
+
+	// A shutdown ends a recheck at once, also after the pass's own deadline has passed: the pass's context then no longer
+	// reports the cancel, so the watcher names the context that does. The budget outlasts the wait, so only the shutdown
+	// can end it before the 3 s lock_timeout.
+	xmrRecheckBudget = time.Minute
+	tx = hold(lockOrder, bounded)
+	shutdown, stop := context.WithCancel(context.Background())
+	defer stop()
+	pass, expire := context.WithTimeout(withXMRShutdown(shutdown), time.Millisecond)
+	defer expire()
+	<-pass.Done()
+	go func() { done <- x.A.xmrDeadlines(pass) }()
+	x.waitForLockWaits(1)
+	start = time.Now()
+	stop()
+	select {
+	case err = <-done:
+		if err == nil || time.Since(start) > 2*time.Second {
+			t.Fatalf("a shutdown ended the recheck in %s: %v", time.Since(start), err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a shutdown after the pass's deadline did not end the recheck")
+	}
+	tx.Rollback()
+	if !asked() {
+		t.Fatal("the cancelled recheck consumed its request")
+	}
+	// A shutdown before the step: it does not start.
+	if err = x.A.xmrDeadlines(pass); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a step after a shutdown: %v", err)
 	}
 }
