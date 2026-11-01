@@ -116,3 +116,55 @@ func TestPublicStockShownInBands(t *testing.T) {
 		t.Fatal("the in-stock filter does not follow the stock")
 	}
 }
+
+// A-715 (SEC98-1): a buyer's saved draft above the current stock is refused at checkout in one sentence for every stock
+// value below the saved quantity, so one draft at the top of a stock band is not a GET-only monitor of the exact stock
+// and of every sale. The vendor and the staff still see the exact stock. DB integration.
+func TestDraftAboveStockNamesNoCount(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	product := x.physical(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET stock=5 WHERE id=$1", product)
+	draft := x.order(x.buyer, product, "XMR", stateDraft)
+	agExec(x.testEnv, "UPDATE orders SET quantity=5 WHERE id=$1", draft)
+	_, modSess := x.user("sbd_mod_"+randomToken()[:6], "moderator")
+	const refusal = "The saved quantity is more than this listing has available now. Review the listing to save a smaller quantity, or cancel this unfunded draft."
+	tokens := regexp.MustCompile(`value="[0-9a-f]{16,}"`)
+	draftPage := func(stock int) string {
+		t.Helper()
+		var got int
+		if err := x.DB.QueryRow("SELECT stock FROM products WHERE id=$1", product).Scan(&got); err != nil || got != stock {
+			t.Fatalf("stock %d (%v), want %d", got, err, stock)
+		}
+		page := x.orderPage(draft, x.buyerSess)
+		mustContain(t, page, refusal)
+		for _, leak := range []string{"Only " + strconv.Itoa(stock), strconv.Itoa(stock) + " units", strconv.Itoa(stock) + " unit "} {
+			mustNotContain(t, page, leak)
+		}
+		return tokens.ReplaceAllString(page, `value="token"`)
+	}
+	// Exactly the stock: the draft can still check out.
+	mustNotContain(t, x.orderPage(draft, x.buyerSess), refusal)
+	x.mustPoll() // refills the free escrow accounts
+	x.freshCheckoutOf(product, 2)
+	three := draftPage(3)
+	x.mustPoll() // refills the free escrow accounts
+	x.freshCheckoutOf(product, 2)
+	one := draftPage(1)
+	if three != one {
+		a, b := strings.Split(three, "\n"), strings.Split(one, "\n")
+		for i := range min(len(a), len(b)) {
+			if a[i] != b[i] {
+				t.Errorf("a sale changed the buyer's draft page at line %d:\n%s\n%s", i, a[i], b[i])
+				break
+			}
+		}
+		t.Fatalf("a sale changed the buyer's draft page (%d and %d lines)", len(a), len(b))
+	}
+	agExec(x.testEnv, "UPDATE products SET stock=0 WHERE id=$1", product)
+	draftPage(0)
+	agExec(x.testEnv, "UPDATE products SET stock=1 WHERE id=$1", product)
+	// The vendor and the staff keep the exact count on the listing, where they see it today.
+	for _, sess := range []string{x.vendorSess, modSess} {
+		mustContain(t, html.UnescapeString(x.page("/product?id="+product, sess)), "<dt>Available stock</dt>\n<dd>1</dd>")
+	}
+}

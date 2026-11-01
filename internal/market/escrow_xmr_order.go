@@ -24,7 +24,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	var refund, strayState, strayWait string
 	var feeBps, openStrays int64
-	var shipByOpen, tooFew bool
+	var shipByOpen, tooFew, recheck bool
 	var issued, windowFrom time.Time
 	var firstSeen sql.NullTime
 	var shipBy, destroyed sql.NullTime
@@ -34,10 +34,11 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		(SELECT min(created) FROM payments WHERE order_id=es.order_id AND NOT locked AND NOT after_close),
 		es.ship_by,COALESCE(es.ship_by<=now(),false),w.destroyed_at,COALESCE(x.state,''),COALESCE(x.send_error,''),
 		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund' AND r.state='failed' AND r.send_error=$2),
-		(SELECT count(*) FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='stray_refund' AND r.state IN ('requested','built','relayed'))
+		(SELECT count(*) FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='stray_refund' AND r.state IN ('requested','built','relayed')),
+		EXISTS(SELECT 1 FROM settings WHERE key=$3)
 		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
 		LEFT JOIN LATERAL (SELECT x.state,x.send_error FROM xmr_settlements x WHERE x.order_id=es.order_id AND x.kind='stray_refund' ORDER BY x.id DESC LIMIT 1) x ON true
-		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &openStrays); err != nil {
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &openStrays, &recheck); err != nil {
 		return err
 	}
 	if destroyed.Valid {
@@ -194,8 +195,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	// Only the actions a Monero escrow order can take (escrowOrder's rules): no pooled "Mark shipped" (the panel has the
 	// Monero ship form, with the claim address and a password step-up); the buyer of a paid order cancels from its
-	// ship-by time (a digital one's delivery deadline, A-709); no dispute once the release deadline or dispute window has
-	// passed (PM-4, lateDispute); a cancel that refunds coins states and carries their amount.
+	// ship-by time (a digital one's delivery deadline, A-709) unless a restore's recheck is pending (A-714); no dispute
+	// once the release deadline or dispute window has passed (PM-4, lateDispute); a cancel that refunds coins states and
+	// carries their amount.
 	counted := received + pending
 	kept := d.Transitions[:0]
 	for _, t := range d.Transitions {
@@ -210,6 +212,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not delivered the content by then; the escrow is then refunded to your refund address."
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipByOpen:
 			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
+		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && recheck: // A-714: noShipCancel's refusal
+			t.Action, t.Label = "", "You cannot cancel yet: this market's records are being reconciled after a restore from backup, and the vendor may have shipped or delivered this order after that backup was taken. The cancel is offered again once the market has rechecked its escrow deadlines; reload this page later."
 		case t.To == stateCancelled && counted > 0:
 			t.Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + a.escrowAmount(o, counted) + " in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds and sends the refund transaction. This is final."}
 		}
@@ -342,6 +346,8 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		return err
 	}
 	switch {
+	case o.State == statePaid && shipByOpen && recheckAsked: // A-714: the buyer's cancel waits (noShipCancel)
+		v.NextStep += " The buyer's cancel waits while this market's records are being reconciled after a restore from backup: the vendor may have shipped or delivered this order after that backup was taken. It is offered again once the market has rechecked its escrow deadlines; reload this page later."
 	case o.State == statePaid && o.Kind == "physical" && shipByOpen:
 		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and the escrow is then refunded to the buyer's refund address."
 	case o.State == statePaid && shipByOpen:

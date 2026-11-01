@@ -70,6 +70,13 @@ test('paid order keeps private correspondence and shipping links on the order pa
   await expect(form.locator('input[name="order_id"]')).toHaveValue('8cf1aaf1bfa545a92504cdfe264306ee5f9d9ac801736734b173d8631a891cd9');
   await expect(form.locator('input[name="form_nonce"]')).toHaveValue(/^[0-9a-f]{32}$/);
   await expect(page.getByRole('link', { name: 'Send encrypted shipping details' })).toHaveAttribute('href','#order-messages');
+  // A-716: the steps of an encryption that writes no plaintext file, and what the vendor can do with the address.
+  const shipping=page.locator('.shipping-prompt');
+  await expect(shipping.locator('ol li')).toHaveCount(4);
+  await expect(shipping.locator('code').filter({ hasText: 'gpg --import vendor.asc' })).toBeVisible();
+  await expect(shipping.locator('code').filter({ hasText: 'gpg --armor --encrypt --recipient <fingerprint>' })).toBeVisible();
+  await expect(shipping).toContainText('no plaintext file is written');
+  await expect(shipping).toContainText('the market cannot delete their copy.');
   await expect(page.getByRole('button', { name: 'Send order message' })).toBeVisible();
   await expect(page.locator('script')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);

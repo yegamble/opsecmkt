@@ -84,6 +84,11 @@ Reusable automatic-delivery templates and distinct-unit inventory remain server-
 existing deadline and reader permissions. The upgrade does not rewrite or erase those historical copies.
 XMPP forwards only eligible encrypted contents after separate global permission and recipient consent; deleting
 a notification also removes its delivery receipt, but cannot recall copies retained by an XMPP provider or client.
+A finished XMPP receipt (sent, cancelled or failed) keeps its notification reference, outcome, attempt count and times,
+but no address or key fingerprint (A-717). A pending row holds both until it finishes, and the delivery worker's next
+pass cancels and clears a pending row whose address has since changed or been removed. Without retention enabled,
+receipts stay with their notifications. Backups taken before migration 154 still hold the address and fingerprint of
+rows finished by then, until those backups are removed.
 
 With retention enabled, support-ticket bodies expire 90 days after creation, or earlier when their opener or
 message sender is closed or erased. A relevant account preservation hold retains the related ticket and bodies:

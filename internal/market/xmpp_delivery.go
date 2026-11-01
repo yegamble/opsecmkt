@@ -10,6 +10,10 @@ import (
 
 const xmppMaxAttempts = 12
 
+// xmppFinishSet ends a queued row with outcome $1. The receipt keeps its outcome and
+// time; the address and key fingerprint serve only a delivery still to be made.
+const xmppFinishSet = `outcome=$1,finished_at=now(),destination='',recipient_fingerprint=''`
+
 type xmppSender func(context.Context, xmppConfig, string, string, string) error
 
 func init() { registerBackground(xmppDeliveryWorker) }
@@ -23,21 +27,39 @@ func xmppDeliveryWorker(ctx context.Context, a *App) {
 			return
 		case <-timer.C:
 		}
-		// Each transaction handles one receipt. SKIP LOCKED permits multiple app
-		// instances without concurrent sends of the same notification.
-		for range 20 {
-			worked, err := a.deliverXMPPNotification(ctx, sendXMPP)
-			if err != nil {
-				if ctx.Err() == nil {
-					log.Print("XMPP delivery: queue processing failed; will retry")
-				}
-				break
-			}
-			if !worked {
-				break
-			}
-		}
+		a.xmppDeliveryPass(ctx, sendXMPP)
 		timer.Reset(5 * time.Second)
+	}
+}
+
+// xmppDeliveryPass is one worker pass over the queue. It first cancels every queued
+// row whose address is no longer the account's, without waiting for a row's retry
+// delay or for its turn in the bounded loop below, so a changed or removed address
+// does not stay in the outbox. The final check in deliverXMPPNotification would
+// cancel these rows anyway. A row locked by an in-flight send waits for a later pass.
+func (a *App) xmppDeliveryPass(ctx context.Context, send xmppSender) {
+	sweepCtx, stopSweep := context.WithTimeout(ctx, 12*time.Second)
+	_, err := a.db.ExecContext(sweepCtx, `UPDATE xmpp_outbox SET `+xmppFinishSet+`
+		WHERE notification_id IN (SELECT q.notification_id FROM xmpp_outbox q
+			JOIN notifications n ON n.id=q.notification_id JOIN users u ON u.id=n.user_id
+			WHERE q.finished_at IS NULL AND q.destination<>u.xmpp FOR UPDATE OF q SKIP LOCKED)`, "cancelled")
+	stopSweep()
+	if err != nil && ctx.Err() == nil {
+		log.Print("XMPP delivery: address cleanup failed; will retry")
+	}
+	// Each transaction handles one receipt. SKIP LOCKED permits multiple app
+	// instances without concurrent sends of the same notification.
+	for range 20 {
+		worked, err := a.deliverXMPPNotification(ctx, send)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Print("XMPP delivery: queue processing failed; will retry")
+			}
+			break
+		}
+		if !worked {
+			break
+		}
 	}
 }
 
@@ -74,7 +96,7 @@ func (a *App) deliverXMPPNotification(ctx context.Context, send xmppSender) (boo
 		return false, err
 	}
 	finish := func(outcome string) (bool, error) {
-		_, err := tx.ExecContext(ctx, `UPDATE xmpp_outbox SET outcome=$2,finished_at=now() WHERE notification_id=$1`, id, outcome)
+		_, err := tx.ExecContext(ctx, `UPDATE xmpp_outbox SET `+xmppFinishSet+` WHERE notification_id=$2`, outcome, id)
 		if err != nil {
 			return false, err
 		}

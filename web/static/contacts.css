@@ -39,3 +39,6 @@
 .shipping-prompt {
   border-color:var(--amber)
 }
+.shipping-steps code {
+  overflow-wrap:anywhere
+}

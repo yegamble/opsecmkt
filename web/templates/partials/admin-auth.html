@@ -58,7 +58,7 @@
 <label>Replacement PGP public key<textarea name="replacement_pgp" rows="6" maxlength="16384" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea></label>
 <label>Verification note<input name="recovery_note" minlength="10" maxlength="500" autocomplete="off" aria-describedby="recovery-note-help">
 </label>
-<span class="help" id="recovery-note-help">Required with a replacement key: 10–500 characters on one line saying how you checked the request, for example which text was signed and how you verified it. It is your attestation, which the market cannot check, recorded with the old and new fingerprints and your administrator handle in the audit trail of both accounts. Do not include anything you would not want in the audit export.</span>
+<span class="help" id="recovery-note-help">Required with a replacement key: 10–500 characters on one line saying how you checked the request, for example which text was signed and how you verified it. It is your attestation, which the market cannot check, recorded with the old and new fingerprints and your administrator handle in the audit trail of both accounts. The note goes into the audit trail and the signed audit export. Do not put the holder's real-world identity, contact details or other private evidence in it.</span>
 <p class="help">Supply a usable public encryption key only. Never paste or upload a private key.</p>
 </details>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
