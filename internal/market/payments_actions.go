@@ -20,6 +20,8 @@ func paymentsGlobalLoader(_ context.Context, a *App, _ *http.Request, d *PageDat
 	d.DispatchOn = !physicalEscrowOff(a)
 	d.XMREscrowOn, d.XMREscrowAvailable, d.XMRCustody, d.XMREscrowNet = a.escrowXMR != nil, a.xmrEscrowReady(), xmrCustody, a.xmrEscrowNetwork()
 	d.XMREscrowNetKnown = a.escrowXMR != nil && a.escrowXMR.formNet() != ""
+	intake := d.Settings[paymentIntakeKey("XMR")]
+	d.XMRIntakePaused = d.XMREscrowOn && intake != "" && intake != intakeEscrow
 	return nil
 }
 

@@ -75,6 +75,11 @@ func signInNextLoader(_ context.Context, a *App, r *http.Request, d *PageData) e
 	if d.Next = a.signInNext(raw); d.Next != "" {
 		d.NextTitle = nextTitle(d.Next)
 	}
+	// A refused registration keeps its pasted key (A-722), as a refused post's other long text does (mayEcho). It is
+	// filled here so the wrong-CAPTCHA re-render (captchaRetry) and refuse both keep it.
+	if d.Page == "register" && a.mayEcho(r) && !strings.Contains(r.PostForm.Get("pgp"), privateKeyHeader) {
+		d.FormPGP = typedText(r.PostForm.Get("pgp"), maxPGPKeyText)
+	}
 	return nil
 }
 
@@ -171,7 +176,7 @@ func (a *App) confirmPasswordHash(ctx context.Context, userID, password string) 
 		err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	}
 	if err != nil {
-		return "", fail(401, "Password incorrect")
+		return "", fail(401, passwordIncorrectText)
 	}
 	a.refund(key)
 	return hash, nil

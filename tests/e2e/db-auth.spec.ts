@@ -106,6 +106,31 @@ test('enroll TOTP, sign in through the challenge and spend a recovery code once'
 
 // A-126: an anonymous buyer's "Review order draft" leads to sign-in and back to that checkout, through registration
 // and through the TOTP challenge, with JavaScript disabled.
+test('a refused registration keeps the pasted PGP key and the handle, never the password', async ({ browser, baseURL }) => {
+  const taken = uniqueHandle('taken');
+  const password = `${taken}-long-enough`;
+  const key = '-----BEGIN PGP PUBLIC KEY BLOCK-----\nnot really a key <b>\n-----END PGP PUBLIC KEY BLOCK-----';
+  const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.goto('/register');
+  await page.getByLabel('Handle', { exact: true }).fill(taken);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.locator('.account-name')).toHaveText(taken);
+  await context.clearCookies();
+
+  await page.goto('/register');
+  await page.getByLabel('Handle', { exact: true }).fill(taken);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByLabel('PGP public key').fill(key);
+  await submitAndLoad(page, page.getByRole('button', { name: 'Create account' }));
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByLabel('PGP public key')).toHaveValue(key);
+  await expect(page.getByLabel('Handle', { exact: true })).toHaveValue(taken);
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
+  await context.close();
+});
+
 test('anonymous checkout returns to the checkout after registering and after the TOTP challenge', async ({ browser, baseURL }) => {
   const handle = uniqueHandle('next');
   const passphrase = `${handle}-long-enough`;
