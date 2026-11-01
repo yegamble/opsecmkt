@@ -509,3 +509,129 @@ func TestXMROutageEarlyCheckFailureKeepsPass(t *testing.T) {
 		t.Fatalf("the next pass: order %s, deadline %s", x.state(order), x.releaseAt(order))
 	}
 }
+
+// PAY101-9: at the longest PAYMENT_POLL_INTERVAL every step is over an hour after the last, which is no outage: repeated
+// passes ask for nothing, tell nobody and renew no grace, and a due order completes. A gap longer than the interval's
+// allowance still counts.
+func TestXMROutageNotFromPollInterval(t *testing.T) {
+	for interval, want := range map[string]time.Duration{"": time.Hour, "1s": time.Hour, "25m": time.Hour, "26m": 62 * time.Minute, "1h": 130 * time.Minute, "nonsense": time.Hour} {
+		t.Setenv("PAYMENT_POLL_INTERVAL", interval)
+		if got := xmrOutageGap(); got != want {
+			t.Fatalf("the gap at an interval of %q: %s, want %s", interval, got, want)
+		}
+	}
+	t.Setenv("PAYMENT_POLL_INTERVAL", "1h")
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	physical := x.physical(x.vendor)
+	near, _, _ := x.shippedXMR(physical)
+	x.forceDeadline(near, "release_at=now()+interval '24 hours'")
+	nearAt := x.releaseAt(near)
+	for cycle := range 3 {
+		due, _, _ := x.shippedXMR(physical)
+		x.forceDeadline(due, "release_at=now()-interval '1 minute'")
+		x.setLastDeadlineStep("1 hour 5 minutes")
+		x.mustPoll()
+		if x.recheckKey() != "" || x.state(due) != stateCompleted || !x.releaseAt(near).Equal(nearAt) {
+			t.Fatalf("cycle %d: request %q, due order %s, near deadline %s (was %s)", cycle, x.recheckKey(), x.state(due), x.releaseAt(near), nearAt)
+		}
+		if anyContains(x.noticesOf(x.partyOf(near, roleBuyer), near), "an outage") || agInt(x.testEnv, "SELECT count(*) FROM settings WHERE key=$1", xmrCancelWaitKey) != 0 {
+			t.Fatalf("cycle %d: a false outage: %q", cycle, x.noticesOf(x.partyOf(near, roleBuyer), near))
+		}
+	}
+	x.setLastDeadlineStep("3 hours")
+	x.mustPoll()
+	if x.releaseAt(near).Before(x.dbNow().Add(71*time.Hour)) || countContaining(x.noticesOf(x.partyOf(near, roleBuyer), near), "an outage") != 1 {
+		t.Fatalf("a real gap at this interval: deadline %s, notices %q", x.releaseAt(near), x.noticesOf(x.partyOf(near, roleBuyer), near))
+	}
+}
+
+// PAY101-10: the request by hand cannot undo a completion. With public access down and the watcher running, a deadline
+// that passes completes on that pass, and its release goes ahead; a later request moves nothing and tells nobody of it.
+// It does move a deadline still ahead, and that notice is true of an outage the watcher did not see.
+func TestXMROutageManualRequestAfterCompletion(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	physical := x.physical(x.vendor)
+	shipped, _, _ := x.shippedXMR(physical)
+	delivered, _ := x.deliveredXMR(x.product)
+	near, _, _ := x.shippedXMR(physical)
+	for _, o := range []string{shipped, delivered} {
+		x.forceDeadline(o, "release_at=now()-interval '1 minute'")
+	}
+	x.forceDeadline(near, "release_at=now()+interval '24 hours'")
+	x.mustPoll()
+	if x.state(shipped) != stateCompleted || x.state(delivered) != stateCompleted {
+		t.Fatalf("before the request: %s %s", x.state(shipped), x.state(delivered))
+	}
+	shippedAt, deliveredAt := x.releaseAt(shipped), x.releaseAt(delivered)
+	releases := len(x.xmrSettlements(shipped))
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO NOTHING", xmrReleaseRecheckKey, xmrRecheckOutage)
+	x.mustPoll()
+	if x.recheckKey() != "" || x.state(shipped) != stateCompleted || x.state(delivered) != stateCompleted ||
+		!x.releaseAt(shipped).Equal(shippedAt) || !x.releaseAt(delivered).Equal(deliveredAt) || len(x.xmrSettlements(shipped)) != releases {
+		t.Fatalf("after the request: %s %s, deadlines %s %s, settlements %q", x.state(shipped), x.state(delivered), x.releaseAt(shipped), x.releaseAt(delivered), x.xmrSettlements(shipped))
+	}
+	for _, o := range []string{shipped, delivered} {
+		if anyContains(x.noticesOf(x.partyOf(o, roleBuyer), o), "an outage") || len(x.movedNotes(o)) != 0 {
+			t.Fatalf("a completed order was told of an outage: %q %q", x.noticesOf(x.partyOf(o, roleBuyer), o), x.movedNotes(o))
+		}
+	}
+	notices := x.noticesOf(x.partyOf(near, roleBuyer), near)
+	if x.releaseAt(near).Before(x.dbNow().Add(71*time.Hour)) || !anyContains(notices, "an outage", "unavailable") || anyContains(notices, "escrow service") {
+		t.Fatalf("the order still open: deadline %s, notices %q", x.releaseAt(near), notices)
+	}
+}
+
+// PAY101-11: the check does not wait for the watcher's lock. With another process holding it the pass does no work, yet
+// the request is set, so a dispute is accepted and a cancel refused. Processes checking at once ask once: the second
+// waits on the row and then reads the first's new time.
+func TestXMROutageCheckedWithLockHeld(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	physical := x.physical(x.vendor)
+	order, sess, _ := x.shippedXMR(physical)
+	paid, paidSess := x.paidXMRPhysical(physical)
+	x.forceDeadline(order, "release_at=now()-interval '1 hour'")
+	x.forceDeadline(paid, "ship_by=now()-interval '1 hour'")
+	x.setLastDeadlineStep("2 hours")
+
+	conn, err := x.DB.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var locked bool
+	if err = conn.QueryRowContext(context.Background(), "SELECT pg_try_advisory_lock($1)", xmrEscrowWatcherLock).Scan(&locked); err != nil || !locked {
+		t.Fatalf("the lock: %v %v", locked, err)
+	}
+	calls := x.fake.count()
+	if err = x.A.xmrEscrowPollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if x.fake.count() != calls || x.recheckKey() != xmrRecheckOutage {
+		t.Fatalf("with the lock held: %d calls, request %q", x.fake.count()-calls, x.recheckKey())
+	}
+	if code, body := x.xmrBuyerCancel(paid, paidSess); code != 409 || !strings.Contains(body, "an outage") {
+		t.Fatalf("a no-ship cancel with the lock held: %d %s", code, body)
+	}
+	if code, body := x.xmrDispute(order, sess); code != 303 {
+		t.Fatalf("a dispute with the lock held: %d %s", code, body)
+	}
+
+	// Many at once: one request.
+	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrReleaseRecheckKey)
+	x.setLastDeadlineStep("2 hours")
+	agExec(x.testEnv, "CREATE TABLE a730_asks(n int)")
+	agExec(x.testEnv, `CREATE FUNCTION a730_count_ask() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO a730_asks VALUES(1); RETURN NEW; END $$`)
+	agExec(x.testEnv, "CREATE TRIGGER a730_count_ask BEFORE INSERT ON settings FOR EACH ROW WHEN (NEW.key='"+xmrReleaseRecheckKey+"') EXECUTE FUNCTION a730_count_ask()")
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Add(1)
+		go func() { defer wg.Done(); x.A.xmrEscrowPollOnce(context.Background()) }()
+	}
+	wg.Wait()
+	if asks := agInt(x.testEnv, "SELECT count(*) FROM a730_asks"); asks != 1 || x.recheckKey() != xmrRecheckOutage {
+		t.Fatalf("%d asks, request %q", asks, x.recheckKey())
+	}
+}

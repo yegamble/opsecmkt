@@ -213,6 +213,7 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 	if a.db == nil || x == nil {
 		return nil
 	}
+	a.xmrNoteDeadlineStepEarly(ctx) // before any node or wallet call, and whoever holds the lock (A-730, PAY101-11)
 	conn, err := a.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -229,7 +230,6 @@ func (a *App) xmrEscrowPollOnce(ctx context.Context) (outcome error) {
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
-	a.xmrNoteDeadlineStepEarly(ctx) // before any node or wallet call (A-730)
 	providerSynced, providerUnread := false, false
 	defer func() {
 		cause := a.xmrPassCause(providerSynced, providerUnread, outcome) // "" exactly when the provider is good

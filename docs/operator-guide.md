@@ -1716,17 +1716,35 @@ watcher never runs: the recheck stays pending, that cancel is refused with "try 
 and the 72 hours start on the first pass after Monero escrow is back on; do not delete the setting by hand.
 Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
 
-**After an outage** (A-730). A Monero escrow watcher pass that finds over an hour since the last pass's deadline step, because
+**After an outage** (A-730). A Monero escrow watcher pass that finds more than an hour, or twice `PAYMENT_POLL_INTERVAL` plus the 10-minute pass timeout if that is longer (2 hours 10 minutes at the 1-hour maximum) since the last deadline step, because
 the market or its database was down or `ESCROW_XMR` was off, takes the recheck above without a restore: orders near their
 deadline get 72 hours, each buyer gets a notice naming the outage, and the same 72-hour vendor grace applies to a buyer's
-no-ship cancel. A restored database stays a restore. The watcher sees only that its own step did not run. It cannot see public
-ingress down while the process runs (a stopped Tor gateway or proxy, a network failure): handle that by hand once ingress is
-back, with `db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
-which the next pass consumes. The check runs at the very start of each pass, before any daemon or wallet call, and the watcher
-starts just before the server begins accepting requests. The window after a restart in which a dispute on a deadline that passed
-in the outage is refused as late and a no-ship cancel past its time accepted is that one database transaction: normally
-milliseconds, at most 30 seconds, or until the check at the end of the same pass if that transaction fails. Tested against a database and a simulated
-wallet RPC, with no public network and no real outage.
+no-ship cancel. A restored database stays a restore.
+
+What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
+Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
+releases go ahead. Ask for the recheck yourself as soon as ingress fails, with
+`db_sql -c "INSERT INTO settings(key,value) VALUES ('escrow_xmr_release_recheck','outage') ON CONFLICT (key) DO NOTHING"`,
+which the next pass consumes, and repeat it within every 72 hours until ingress returns, since each request moves only deadlines
+within 72 hours of it. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
+and its buyer is told nothing.
+
+The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
+starts just before the server begins accepting requests. A dispute on a deadline that passed in the outage is refused as late,
+and a no-ship cancel past its time accepted, only in these cases:
+
+- After a restart, during that first check's one database transaction: normally milliseconds, at most 30 seconds including any
+  wait for a database connection. If it fails or runs out of time, until the check at the end of the same pass, or the next tick
+  if another process holds the lock.
+- When the database comes back with the process still up, until the next tick: up to the poll interval, or up to 10 minutes for
+  a pass already in flight.
+- For the whole time `ESCROW_XMR=off`: the watcher does not run, a dispute is refused, a cancel is accepted, and marking an order
+  shipped answers 404. The recheck runs on the first pass after it is on again.
+
+Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
+than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved.
+
+Tested against a database and a simulated wallet RPC, with no public network and no real outage.
 
 **What staff see while a restore pauses Monero escrow** (A-559). While the restore gate or the sweep is set and
 `ESCROW_XMR` is on (with it off a restore pauses nothing here and none of this shows), the staff
