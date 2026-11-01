@@ -85,12 +85,12 @@ How to run it: use a fresh Tor Browser profile, set the security level to **Safe
 | Security level | Safest |
 | Install mode (local `--local` / onion `init --tor`) | |
 | Instance commit or tag | |
-| CAPTCHA enabled (yes/no) | |
+| Human check mode (off, only under attack, always the image) | |
 
 | # | Step | Result (pass / fail / not run) | Notes |
 |---|---|---|---|
 | 1 | Open the catalog | not run | |
-| 2 | Register a buyer, including solving the CAPTCHA if it is on | not run | |
+| 2 | Register a buyer, including answering the human check if it is on | not run | |
 | 3 | Sign in | not run | |
 | 4 | Open the account page | not run | |
 | 5 | Vendor: sign in as a vendor and create a listing | not run | |

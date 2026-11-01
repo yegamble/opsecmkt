@@ -55,7 +55,7 @@ the setup below.
    [production backup procedure](production.md#7-establish-backups-and-recovery).
    A managed database backup alone does not preserve these keys and state.
 5. Choose [browsing, registration and branding](#choose-browsing-registration-and-branding),
-   then configure roles, users, CAPTCHA, staff visibility, canary and audit exports
+   then configure roles, users, the human check, staff visibility, canary and audit exports
    through the intended administrator ingress. Complete the
    [production checklist](production-checklist.md) before inviting users, and
    use the [native app upgrade procedure](production.md#upgrade-the-application)
@@ -159,7 +159,7 @@ retain any imported source identity too. A database dump does not include them.
 
 ### Step 5: Configure
 
-Open `/admin` for the setup checklist and the administration sections: Users (roles, second-factor resets, suspension), Payments, Security & access (site access, registration, CAPTCHA), Site & branding, Transparency (staff list, canary, audit exports) and System & audit. See [Administration sections](../operator-guide.md#administration-sections).
+Open `/admin` for the setup checklist and the administration sections: Users (roles, second-factor resets, suspension), Payments, Security & access (site access, registration, human check), Site & branding, Transparency (staff list, canary, audit exports) and System & audit. See [Administration sections](../operator-guide.md#administration-sections).
 Details: [Feature configuration](../operator-guide.md#feature-configuration).
 
 Use [the shared access and branding steps](#choose-browsing-registration-and-branding)

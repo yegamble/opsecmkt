@@ -19,23 +19,20 @@ test('TOTP enrollment shows a manual-entry secret, no QR code and no scripts', a
 });
 
 for (const path of ['/login', '/register']) {
-  test(`${path} shows a same-origin PNG CAPTCHA without audio claims`, async ({ page, baseURL }) => {
+  test(`${path} in the default mode shows no image`, async ({ page }) => {
     await page.goto(path);
-    const image = page.locator('img.captcha-image');
-    await expect(image).toBeVisible();
-    const src = await image.getAttribute('src');
-    expect(new URL(src!, baseURL).origin).toBe(new URL(baseURL!).origin);
-    const png = await page.request.get(src!);
-    expect(png.status()).toBe(200);
-    expect(png.headers()['content-type']).toBe('image/png');
-    expect(png.headers()['cache-control']).toBe('no-store');
-    expect(await image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(200);
-    await expect(page.getByLabel('Characters in the image')).toBeVisible();
-    await expect(page.locator('.captcha')).toContainText('There is no audio or text alternative.');
-    // A-119: the preview has no staff contact, so the help points to the operator, not an in-app channel.
-    await expect(page.locator('.captcha .staff-contact')).toHaveText('Can’t read the image? Ask the operator of this market.');
-    // A-517: with no staff contact the fallback says honestly that there is no way in without the image.
-    await expect(page.locator('.captcha .captcha-fallback')).toHaveText('This market lists no contact that works without an account, so there is no way to get one without the image. Only the operator of this market can turn the CAPTCHA off.');
+    // A-725: the preview is the default mode with no attack signal. Sign-in has no human check; registration asks a
+    // written question. The image itself is covered by TestCaptchaPreviewImage, db-setup.spec.ts and the Go suite.
+    await expect(page.locator('img.captcha-image')).toHaveCount(0);
+    if (path === '/register') {
+      await expect(page.getByRole('textbox', { name: 'What is seven plus five?' })).toBeVisible();
+      await expect(page.locator('.captcha')).toContainText('a wrong answer gets a new one');
+      // A-119: the preview has no staff contact, so the help points to the operator, not an in-app channel.
+      await expect(page.locator('.captcha .staff-contact')).toHaveText('Can’t answer it? Ask the operator of this market.');
+      await expect(page.locator('.captcha .captcha-fallback')).toHaveCount(0);
+    } else {
+      await expect(page.locator('.captcha')).toHaveCount(0);
+    }
     if (path === '/login') {
       // A-549: the code typed with the password completes the second step. A-571: it also signs any account with TOTP
       // in while its handle is paused; without TOTP, the pause explanation is shown only with this field blank (S-2).
@@ -46,8 +43,8 @@ for (const path of ['/login', '/register']) {
     }
     // A-703: no one, including the staff, can reset a lost password; said on /login, and before /register's button.
     await expect(page.locator(path === '/login' ? '#signin-password-help' : '#password-help')).toContainText('There is no password reset. No one, including the market staff, can reset a lost password');
-    // With the CAPTCHA image shown, the contact is named once, in its help.
-    await expect(page.getByText('Locked out or reporting a stolen account?')).toHaveCount(0);
+    // A-703: with no image, /login names the contact below the form.
+    await expect(page.getByText('Locked out or reporting a stolen account?')).toHaveCount(path === '/login' ? 1 : 0);
     if (path === '/register') {
       // A-512, A-544: selling needs an approved vendor application.
       await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an approved vendor application. Ask the operator of this market.');
@@ -82,6 +79,9 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   await page.goto('/admin/security');
   await expect(page.locator('.admin-auth')).toContainText('Sign-in protection');
   await expect(page.locator('.admin-auth')).toContainText('no audio or text alternative');
+  // A-725: the default mode is selected, and the question's weakness is stated to the operator.
+  await expect(page.locator('.admin-auth').getByRole('radio', { name: 'Only under attack' })).toBeChecked();
+  await expect(page.locator('.admin-auth')).toContainText('The question on registration stops only simple bots');
   await noScriptsNoOverflow(page);
 });
 

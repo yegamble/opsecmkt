@@ -11,6 +11,7 @@ import (
 	"image/color"
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,11 @@ import (
 // HMAC(a.captchaIDKey, expiry ‖ nonce ‖ session hash) truncated to 128 bits, so issuing one writes nothing
 // and only the issuing browser session can use it until it expires. Single use is enforced when an answer is
 // posted, by inserting the id into captcha_spent (captcha_actions.go).
+//
+// Written question (A-725): the same ids carry a question in plain words instead, for registration in the default
+// mode. It derives from HMAC(a.key, "captcha-text:"+id) and is printed in the form's label, so a screen reader can read
+// it. It stops only a bot that does not read the page: a script written for this market answers every question, and
+// even a constant guess that never reads the page succeeds about one time in twenty.
 
 const (
 	captchaLen    = 6
@@ -117,6 +123,94 @@ func normalizeCaptcha(s string) string {
 // captchaMatches compares answer with id's text in constant time (case and spaces ignored).
 func (a *App) captchaMatches(id, answer string) bool {
 	return subtle.ConstantTimeCompare([]byte(normalizeCaptcha(answer)), []byte(a.captchaAnswer(id))) == 1
+}
+
+// captchaTextMaxLen bounds an answer to a written question; a longer one is wrong without being compared.
+const captchaTextMaxLen = 16
+
+// textChallenge is a written question and the normalized answers it accepts.
+type textChallenge struct {
+	Question string
+	Answers  []string
+}
+
+// captchaNumberWords spell every number a sum can be, so "twelve" and "12" both answer.
+var captchaNumberWords = [...]string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+	"eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen"}
+
+var captchaDays = [...]string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+
+// captchaWordKinds are the kinds of word a question picks one of. No word is in two kinds or could fairly be read as
+// another kind, so the other kinds' words are always wrong.
+var captchaWordKinds = map[string][]string{
+	"a colour":  {"red", "green", "blue", "yellow", "white", "purple", "brown", "black"},
+	"an animal": {"horse", "cow", "sheep", "fish", "lion", "mouse", "rabbit", "duck"},
+	"a fruit":   {"apple", "banana", "pear", "mango", "grape", "melon", "pineapple", "coconut"},
+	"a tool":    {"hammer", "saw", "spade", "drill", "wrench", "chisel", "rake", "pliers"},
+}
+
+// captchaWordKindNames fixes the order of captchaWordKinds, which seed bytes index.
+var captchaWordKindNames = [...]string{"a colour", "an animal", "a fruit", "a tool"}
+
+func (a *App) captchaTextSeed(id string) [32]byte {
+	m := hmac.New(sha256.New, a.key)
+	m.Write([]byte("captcha-text:" + id))
+	var seed [32]byte
+	copy(seed[:], m.Sum(nil))
+	return seed
+}
+
+// captchaTextChallenge is the written question for id.
+func (a *App) captchaTextChallenge(id string) textChallenge {
+	seed := a.captchaTextSeed(id)
+	switch seed[0] % 3 {
+	case 0:
+		x, y := int(seed[1]%9)+1, int(seed[2]%9)+1 // both 1-9: a sum is at most 18, a difference at least 0
+		op, result := "plus", x+y
+		if seed[3]%2 == 0 {
+			if x < y {
+				x, y = y, x
+			}
+			op, result = "minus", x-y
+		}
+		return textChallenge{
+			Question: "What is " + captchaNumberWords[x] + " " + op + " " + captchaNumberWords[y] + "?",
+			Answers:  []string{strconv.Itoa(result), captchaNumberWords[result]},
+		}
+	case 1:
+		i := int(seed[1]) % len(captchaDays)
+		return textChallenge{
+			Question: "What is the day after " + captchaDays[i] + "?",
+			Answers:  []string{strings.ToLower(captchaDays[(i+1)%len(captchaDays)])},
+		}
+	}
+	right := int(seed[1]) % len(captchaWordKindNames)
+	// Four words, one from each kind, in an order the seed turns, so the right word can be at any position.
+	words := make([]string, len(captchaWordKindNames))
+	for i, name := range captchaWordKindNames {
+		list := captchaWordKinds[name]
+		words[(i+int(seed[2]))%len(words)] = list[int(seed[3+i])%len(list)]
+	}
+	return textChallenge{
+		Question: "Which of these words is " + captchaWordKindNames[right] + ": " + strings.Join(words, ", ") + "?",
+		Answers:  []string{words[(right+int(seed[2]))%len(words)]},
+	}
+}
+
+// accepts compares answer with each accepted answer (case, surrounding space and a closing full stop ignored; an
+// over-long one is wrong).
+func (c textChallenge) accepts(answer string) bool {
+	answer = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(answer), ".")))
+	if len(answer) > captchaTextMaxLen {
+		return false
+	}
+	ok := false
+	for _, want := range c.Answers {
+		if subtle.ConstantTimeCompare([]byte(answer), []byte(want)) == 1 {
+			ok = true
+		}
+	}
+	return ok
 }
 
 var captchaPalette = color.Palette{

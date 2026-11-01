@@ -168,7 +168,7 @@ jobs:
 
           opsecmkt-linux-amd64 and opsecmkt-linux-arm64 are standalone application and deployment CLI binaries with embedded UI assets and migrations. Copy the matching binary to the server, verify SHA256SUMS, and run --help; version prints the release tag and commit, as the image's version command and /admin/system do. Native serve uses an external PostgreSQL service; deploy manages explicit pinned Docker images without requiring a source checkout or Go compiler. See docs/install/binary.md for initialization, key import and production layer separation. Deployment infrastructure and remote-service readiness still require operator verification.
 
-          The default image CAPTCHA has no audio or text alternative.
+          The image CAPTCHA has no audio or text alternative; by default it appears only on sign-in under the attack signal.
 
           Reproducibility: the OCI archive is for inspection and registry import. scripts/install.sh builds the application from source on your host and is not bit-reproducible, so the archive is not what the installer runs.
 
