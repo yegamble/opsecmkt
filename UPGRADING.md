@@ -201,10 +201,13 @@ the acting account has neither an authenticator (TOTP) nor PGP sign-in turned on
 buyers and vendors can also post (support-ticket replies, listings, messages, order steps) are not gated, even for
 staff.
 
-Before or right after upgrading, have each administrator and moderator enrol (`/totp`, or verify a key and turn on
-PGP sign-in on `/pgp`). The staff roster (*Admin → Users*) now has a *Second factor* column, the overview's
+Have each administrator and moderator enrol (`/totp`, or verify a key and turn on PGP sign-in on `/pgp`): right after
+upgrading from `v0.1.0-alpha.1`, because alpha.1 has no second factor to enrol beforehand, and before or right after
+upgrading from a later build. The staff roster (*Admin → Users*) now has a *Second factor* column, the overview's
 *Users* link and checklist say how many staff lack one and whether you do, and `-status` prints the count on
 stderr (`warning: N active staff account(s) have no second factor ...`); its stdout line is unchanged.
+`./scripts/install.sh upgrade` and `status` print the same warning, `upgrade` before it says it is complete. The
+native `deploy status` and `deploy redeploy` do not: read the count on the overview.
 
 The change adds no lockout: enrolment, `/account`, the password change, sign-out and every page stay available
 without a factor, and so do the host commands (`-set-role`, `-bootstrap-admin`, `-reset-admin-password`,
@@ -1455,8 +1458,9 @@ a recovery procedure for a compromised host.
   that records a migration it does not include ([section 5](#5-rolling-back)).
 - **The optional local Monero node** is pruned ([section 7](#7-local-nodes-are-now-pruned)), pinned to a release tag
   ([section 8](#8-node-images-are-pinned-to-release-tags)) and runs stagenet unless `.env` selects mainnet.
-- Also new: signed audit exports, listing photos and avatars (uploads stay off until a ClamAV scanner is set up), the
-  native `opsecmkt` binary and the other changes described above this heading.
+- Also new: signed audit exports, listing photos and avatars (uploads stay off until a ClamAV scanner is set up) and the
+  native `opsecmkt` binary. The sections above this heading describe the other changes; "After you upgrade" below
+  names the ones that need you to act.
 
 **Migrations:** `001_foundation` to the last file in `internal/market/migrations` at the tag. The server applies them
 once, in order, at startup. They are one-way: there are no down-migrations. Migrations that created the historical
@@ -1472,9 +1476,31 @@ Bitcoin escrow tables still run, as every migration does; those tables stay unus
 3. With a local node from alpha.1, its volumes hold mainnet data: section 3 says what to do with them.
 4. With an external PostgreSQL, check that `SHOW server_encoding` says `UTF8` (section 42).
 5. With a hand-written `.env`, replace a placeholder `SETUP_TOKEN` (section 2).
+6. With an external database behind PgBouncer or another pooler, allow the session settings the app now sends, or
+   startup stops before any migration ([the pooler steps](#staff-pages-no-longer-wait-for-postgresqls-jit-compiler-mod72-8),
+   [section 4](#4-deploy)).
 
 A database holding pooled payment history is refused by migration 108; keep the release it runs on (section 59).
 An alpha.1 database holds none. Then follow [Upgrade with the installer](#upgrade-with-the-installer).
+
+**After you upgrade**
+
+1. **Enrol staff in a second factor, first.** alpha.1 has neither an authenticator nor PGP sign-in, so every upgraded
+   moderator and administrator starts with no factor, and staff-only forms answer 403 until they enrol. From alpha.1,
+   enrol after upgrading, not before. `./scripts/install.sh upgrade` and `status` print how many accounts are left. An
+   account with no factor and no PGP key stays in a password-only window until it enrols: whoever has its password can
+   enrol their own authenticator and hold its staff powers. See
+   [Staff need a second factor](#staff-need-a-second-factor-before-staff-actions-a-706), which also says what to do
+   if a password may be known.
+2. **Check the CAPTCHA setting.** A market that kept the seeded image CAPTCHA moves to a default that is weaker against
+   bots; choose the image again if you want it
+   ([The image CAPTCHA](#the-image-captcha-now-appears-only-under-attack-migration-155-a-725)).
+3. **Tell vendors of digital listings** that payment now follows a dispute window, and buyers how long they have to
+   check a delivery ([Digital escrow orders](#digital-escrow-orders-get-a-delivery-deadline-and-a-dispute-window-migration-153-a-709)).
+4. **Tell users about PGP.** Buying and messaging need a key and a decryption proof in the current session, and a
+   keyless vendor adds a key before trading ([Required PGP access](#required-pgp-access-and-vendor-privacy)).
+5. **Review the new administrator pages:** [site access and registration](#site-access-and-registration),
+   [vendor applications](#vendor-onboarding) and [the market's name and logo](#market-branding).
 
 **Rollback rule:** rolling back is not an image swap. Stop the app, restore the pre-upgrade backup into a new
 database and rebuild the previous tag against it; everything written after the upgrade is lost from the rolled-back

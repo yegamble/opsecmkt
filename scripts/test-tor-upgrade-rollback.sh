@@ -335,6 +335,21 @@ if ! (cd "$deploy" && AGE_RECIPIENT="$recipient" A144_APP_IMAGE="$current_app_im
   cat "$work/upgrade.log" >&2
   exit 1
 fi
+# A-742: the installer tells the operator about alpha.1's factorless administrator, before "Upgrade complete."
+warning_line=$(grep -n '^warning: 1 active staff account(s) have no second factor' "$work/upgrade.log" | head -n1 | cut -d: -f1)
+complete_line=$(grep -n '^Upgrade complete\.' "$work/upgrade.log" | head -n1 | cut -d: -f1)
+if [[ -z $warning_line || -z $complete_line ]] || ((warning_line >= complete_line)); then
+  echo 'install.sh upgrade did not warn about staff without a second factor before "Upgrade complete."' >&2
+  cat "$work/upgrade.log" >&2
+  exit 1
+fi
+(cd "$deploy" && A144_APP_IMAGE="$current_app_image_ref" scripts/install.sh status) \
+  >"$work/status-after-upgrade.out" 2>"$work/status-after-upgrade.err" ||
+  { cat "$work/status-after-upgrade.err" >&2; echo 'install.sh status failed after the upgrade' >&2; exit 1; }
+grep -q '^Setup: complete$' "$work/status-after-upgrade.out" ||
+  { echo 'install.sh status could not parse the status line beside the warning' >&2; exit 1; }
+grep -q '^warning: 1 active staff account(s) have no second factor' "$work/status-after-upgrade.err" ||
+  { echo 'install.sh status did not warn about staff without a second factor' >&2; exit 1; }
 refresh_base
 wait_http
 upgraded_app_image_id=$(app_image_id)

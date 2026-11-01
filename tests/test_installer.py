@@ -29,6 +29,7 @@ UP = 'compose up -d --build --wait'
 STATUS = 'compose exec -T app /app/server -status'
 # The one-off -status container: init reads an external database with it before starting anything.
 PROBE = 'compose run --rm -T --no-deps app -status'
+STAFF_WARNING = 'warning: 2 active staff account(s) have no second factor'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
                'BITCOIN_RPC_PASSWORD', 'BITCOIN_RPC_AUTH', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
@@ -325,7 +326,11 @@ def keyroot():
 def print_status():
     if flag('INSTALLER_TEST_STATUS_FAIL'):
         sys.exit('status: database connection failed')
-    print(f'installed={installed()} schema=021{keyroot()}')
+    print(f'installed={installed()} schema=021{keyroot()}', flush=True)
+    # Like -status (A-706): the count goes to stderr, next to whatever else Compose says there.
+    if os.environ.get('INSTALLER_TEST_STAFF_WITHOUT_FACTOR'):
+        print('compose chatter on stderr', file=sys.stderr)
+        print(f"warning: {os.environ['INSTALLER_TEST_STAFF_WITHOUT_FACTOR']} active staff account(s) have no second factor", file=sys.stderr)
     sys.exit(0)
 if args == ['compose', 'version']:
     sys.exit(0)
@@ -564,7 +569,7 @@ echo "/dev/test 4000000000 1000 ${INSTALLER_TEST_DF_KB:-3000000000} 1% /"
         path.chmod(0o700)
 
     def run_installer(self, answers, bad_config=False, openssl_empty_call=None, arguments=None, extra_env=None, timeout=30,
-                      file_size_limit=None):
+                      file_size_limit=None, merge_stderr=False):
         # Do not source or copy the user's environment file. Compose is a stub;
         # all writes and generated credentials stay inside this temporary repo.
         env = {
@@ -594,7 +599,8 @@ echo "/dev/test 4000000000 1000 ${INSTALLER_TEST_DF_KB:-3000000000} 1% /"
             ['/bin/bash', str(self.root / 'scripts' / 'install.sh'), *(arguments or [])],
             cwd=self.root, env=env, stdin=subprocess.PIPE,
             # surrogateescape: an answer can carry bytes that are not UTF-8 ('\udce9' is the byte 0xe9).
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='surrogateescape',
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE, text=True,
+            encoding='utf-8', errors='surrogateescape',
             start_new_session=True, preexec_fn=limit_file_size if file_size_limit else None,
         )
         try:
@@ -617,12 +623,12 @@ echo "/dev/test 4000000000 1000 ${INSTALLER_TEST_DF_KB:-3000000000} 1% /"
             raise expired
         return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
-    def command(self, *arguments, extra_env=None, answers=None, file_size_limit=None, timeout=30):
+    def command(self, *arguments, extra_env=None, answers=None, file_size_limit=None, timeout=30, merge_stderr=False):
         """Run a subcommand on an existing .env, with this checkout's containers present."""
         self.log.unlink(missing_ok=True)
         env = {'INSTALLER_TEST_CONTAINERS': str(self.root), **(extra_env or {})}
         return self.run_installer(answers, arguments=list(arguments), extra_env=env, file_size_limit=file_size_limit,
-                                  timeout=timeout)
+                                  timeout=timeout, merge_stderr=merge_stderr)
 
     def write_env(self, values_or_text, mode=0o600):
         path = self.root / '.env'
@@ -2112,6 +2118,71 @@ time.sleep(60)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertNotIn('SETUP_TOKEN', self.config())
                 self.assertIn('Removed SETUP_TOKEN from .env', result.stdout)
+
+    def staff_warning_env(self, **extra):
+        return {'INSTALLER_TEST_STAFF_WITHOUT_FACTOR': '2', **extra}
+
+    def test_app_status_prints_only_the_status_line_on_stdout_with_a_staff_warning(self):
+        # A-742: the caller parses stdout, so the warning stays on stderr, and the rest of stderr stays dropped.
+        self.write_env(installed_env())
+        self.set_installed(True)
+        env = {'PATH': str(self.bin) + os.pathsep + os.defpath, 'HOME': str(self.root), 'PYTHONDONTWRITEBYTECODE': '1',
+               'INSTALLER_TEST_LOG': str(self.log), 'INSTALLER_TEST_STATE': str(self.state), **self.staff_warning_env()}
+        for shell in sorted({'/bin/bash', shutil.which('bash') or '/bin/bash'}):
+            with self.subTest(shell=shell):
+                result = subprocess.run([shell, '-c', 'source scripts/install.sh && app_status'], cwd=self.root, env=env,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, 'installed=true schema=021 keyroot=app_secret_key')
+                self.assertEqual(result.stderr, STAFF_WARNING + '\n')
+
+    def test_upgrade_and_status_print_the_staff_warning(self):
+        values = installed_env()
+        self.set_installed(True)
+        self.write_env(values)
+        result = self.command('status', extra_env=self.staff_warning_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(STAFF_WARNING, result.stderr)
+        self.assertNotIn('warning:', result.stdout)
+        self.assertNotIn('compose chatter', result.stderr)
+        self.assertIn('Setup: complete', result.stdout)
+        self.assertIn('Schema: 021', result.stdout)
+        self.assert_no_secret_printed(result, values)
+        # The app is not running: the one-off container's stderr reaches the terminal, as it always did.
+        result = self.command('status', extra_env=self.staff_warning_env(INSTALLER_TEST_APP_DOWN='1'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(STAFF_WARNING, result.stderr)
+        self.assertIn('Setup: complete', result.stdout)
+        # upgrade says so before it says it is complete, and still reads the state: the token is retired.
+        self.write_env(values)
+        result = self.command('upgrade', '--no-backup', extra_env=self.staff_warning_env(), merge_stderr=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertLess(result.stdout.index(STAFF_WARNING), result.stdout.index('Upgrade complete.'))
+        self.assertEqual(result.stdout.count(STAFF_WARNING), 1)
+        self.assertIn('Removed SETUP_TOKEN from .env', result.stdout)
+        self.assertNotIn('SETUP_TOKEN', self.config())
+        self.assertNotIn(values['SETUP_TOKEN'], result.stdout)
+        # No factorless staff, no warning.
+        self.write_env(values)
+        result = self.command('upgrade', '--no-backup')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('active staff', result.stdout + result.stderr)
+
+    def test_every_app_status_caller_still_parses_with_a_staff_warning(self):
+        values = installed_env()
+        self.set_installed(False)
+        self.write_env(values)
+        result = self.command('setup-token', extra_env=self.staff_warning_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(values['SETUP_TOKEN'], result.stdout)
+        self.assertNotIn(values['SETUP_TOKEN'], result.stderr)
+        self.set_installed(True)
+        result = self.command('setup-token', extra_env=self.staff_warning_env())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Setup is complete', result.stderr)
+        result = self.command('add-mirror', extra_env=self.staff_warning_env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('SETUP_TOKEN', self.config())
 
     def test_status_lists_all_addresses(self):
         self.write_env(installed_env(COMPOSE_PROFILES='internal-db,mirror'))
