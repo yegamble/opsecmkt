@@ -104,6 +104,10 @@ func (d PageData) AdminSectionAlert(slug string) string {
 		if d.CaptchaNoContact {
 			alerts = append(alerts, "The CAPTCHA is on without a staff contact that works without an account.")
 		}
+	case "site":
+		for _, w := range d.StaffContactWarnings { // A-734
+			alerts = append(alerts, w.Name)
+		}
 	case "system":
 		if d.DependencyStatus != nil && d.DependencyStatus.NeedsAttention {
 			alerts = append(alerts, "Review required: service isolation or dependency status needs attention.")
