@@ -265,7 +265,18 @@ acceptance requirements, not a declaration of deployed verification:
   (`TestModerationAdminQueueFiltersAndOrder`, `TestModerationAdminHoldLabel`,
   `TestModerationAdminUploadTargetLinks`, `TestModerationAdminReviewTargetLink`,
   `TestModerationTargetURLAllowlist`, `TestModerationAdminConfidenceLabel`, A-685). The page is served only on the
-  private administrator socket, so no browser test covers it.
+  private administrator socket; `tests/e2e/db-moderation.spec.ts` reaches it through a loopback bridge to a real
+  `ADMIN_SOCKET`, not through Tor.
+- On private administrator ingress `/admin` shows "N unreviewed, M escalations, K past deadline" above the checklist
+  with a link, counts only, and the section navigation has a Moderation review entry; the public listener and moderators see
+  neither. A recorded review or budget raise confirms itself in the title and its section and returns to its validated
+  filter and page, at the section. The queue is within two tab stops of main; capacity and budget stay behind details
+  until the capture alert applies. No offered filter contradicts its rows, an empty filtered view names and clears the
+  filter, each control's accessible name identifies its item, and staff read labels rather than stored values
+  (`TestOverviewCountsUnreviewedProposals`, `TestReviewKeepsFilterAndConfirms`,
+  `TestModerationBudgetRaiseKeepsFilterAndConfirms`, `TestModerationQueueWithinTwoTabStops`,
+  `TestModerationFilterMatchesWhatItShows`, `TestModerationItemControlsNameTheirItem`,
+  `TestModerationLabelsCoverAllowedValues`, A-723).
 - Administrator diagnostics expose only bounded review metadata and health
   classes, not runtime endpoints, credentials or raw transport errors. Verify
   no-JavaScript rendering and sensitive-data access on the deployed private path.

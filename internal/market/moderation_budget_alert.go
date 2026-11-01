@@ -60,24 +60,33 @@ func loadModerationBudgetAlert(ctx context.Context, a *App, _ *http.Request, d *
 	if a.preview || a.db == nil || d.AdminSection != "" || d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
+	alert, err := moderationBudgetAlert(ctx, a.db)
+	if err != nil || alert == nil {
+		return err
+	}
+	// The condition that sets PrivateModerationAccess (moderation_admin.go): the counts stay on the private connection.
+	alert.Private = a.adminSocket != "" && privateAdminIngress(ctx)
+	d.ModerationBudget = alert
+	return nil
+}
+
+// moderationBudgetAlert is the alert while it applies, nil otherwise; the caller decides Private.
+func moderationBudgetAlert(ctx context.Context, db *sql.DB) (*ModerationBudgetView, error) {
 	var used, maxRecords, usedBytes, maxBytes, share, waiting, rescans int64
 	var overflow bool
-	err := a.db.QueryRowContext(ctx, moderationBudgetAlertSQL).Scan(&used, &maxRecords, &usedBytes, &maxBytes, &share, &waiting, &rescans, &overflow)
+	err := db.QueryRowContext(ctx, moderationBudgetAlertSQL).Scan(&used, &maxRecords, &usedBytes, &maxBytes, &share, &waiting, &rescans, &overflow)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Admission refuses a new allocation once either budget lacks a whole one (moderation_admit_job).
 	remaining := max(0, min(maxRecords-used, (maxBytes-usedBytes)/moderationAllocationBytes))
 	if remaining > 2*share && !overflow { // overflow implies an active marker waits
-		return nil
+		return nil, nil
 	}
-	d.ModerationBudget = &ModerationBudgetView{Used: used, Limit: used + remaining, Waiting: waiting, Rescans: rescans,
-		// The condition that sets PrivateModerationAccess (moderation_admin.go): the counts stay on the private connection.
-		Private: a.adminSocket != "" && privateAdminIngress(ctx)}
-	return nil
+	return &ModerationBudgetView{Used: used, Limit: used + remaining, Waiting: waiting, Rescans: rescans}, nil
 }
 
 // Text is the alert's fixed wording.

@@ -192,6 +192,7 @@ type PageData struct {
 	Moderation              *ModerationAdminView  // Private administrator moderation proposals and bounded status.
 	PrivateModerationAccess bool                  // Navigation only; authority still comes from the private listener and current role.
 	ModerationBudget        *ModerationBudgetView // Overview alert while moderation capture needs the operator (A-648).
+	ModerationQueue         *ModerationQueueView  // Overview counts of the private queue, private ingress only (A-723).
 	ModerationWorkerStale   string                // Overview warning, private ingress only, while capture is on and no recent worker pass (A-683).
 
 	ServerStarted string

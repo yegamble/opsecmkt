@@ -206,6 +206,8 @@ func TestNoticeCodesKnown(t *testing.T) {
 		for _, page := range strings.Fields(n.pages) { // A-291: the pages that render the section exist
 			if page == "admin/user" { // A-545: an account's page in the user directory, on page:admin's Users section
 				page = "admin"
+			} else if page == "admin/moderation" { // A-723: its own page, not a section of page:admin
+				page = "moderation"
 			} else if base, section := adminSectionPage(page); section != "" { // A-542: admin/<slug> is a section of page:admin
 				page = base
 			} else if strings.HasPrefix(page, "admin/") {

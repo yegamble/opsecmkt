@@ -715,18 +715,29 @@ The review queue has three views. **Unreviewed** (the default) lists proposals
 without a review whose deadline is still ahead: `ESCALATE_ADMIN` proposals (such as
 disputes, payment flags and injection suspicions) first, then the soonest
 deadline, 50 per page. **Deadline passed** (`?state=expired`) lists unreviewed
-proposals past their deadline, shown as `HOLD` with the disposition they proposed;
+proposals past their deadline, shown as on hold with the disposition they proposed;
 they no longer appear under Unreviewed. **Review and classification history**
 (`?state=reviewed`) lists recorded reviews and `AUTO_APPLY` classifications, newest
 first. A plain GET form filters any view by kind (`listing`, `upload`, `dispute`,
-`review`, `payment_flag`) and stored disposition; paging links keep the view and
-filters, and an unknown or repeated value is refused (400), never interpolated into SQL.
+`review`, `payment_flag`, shown as Listing, Image upload, Dispute, Buyer review and
+Payment flag) and **Proposed**, the stored disposition (`ESCALATE_ADMIN`, `QUEUE_HUMAN`,
+`HOLD`, `AUTO_APPLY`, shown as Escalate to an administrator, Human review, Hold and
+Automatic classification). Proposed matches what a proposal proposed even once it is on
+hold, and the unreviewed views do not offer Automatic classification, which only the
+history can hold. Paging links keep the view and filters; an unknown or repeated value
+is refused (400), never interpolated into SQL; an empty filtered view names the filter
+and links to clear it. A recorded review confirms itself in the page title and at the
+queue ("Review recorded; marketplace state unchanged.") and returns to the same view and
+page. The queue comes first on the page: *Capture capacity* and *Moderation budget* sit
+below it behind details, opened when the overview's capture alert applies (a link above
+the queue then leads to them) or, for capacity, once any overflow is recorded.
 The summary above the queue links its counts to these views: unreviewed with a
 deadline ahead, escalations among them, and those past their deadline. The review
 form preselects nothing; **Hold: keep marketplace state, close this proposal**
 records a hold and moves the proposal to history like the other choices, so open
 the source to act on the marketplace. Each choice needs the password (and
-authenticator code when enrolled). An upload proposal links to where its image is
+authenticator code when enrolled); each control's accessible name identifies its
+proposal, such as "Record review for Listing proposal 1a2b3c4d". An upload proposal links to where its image is
 shown: the listing for a photo, the order for dispute evidence, the account page
 for an avatar, and nothing once the image is deleted. Confidence is labelled
 model-stated and uncalibrated: it is the model's own figure (0 when no model was

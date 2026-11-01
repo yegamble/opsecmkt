@@ -683,7 +683,7 @@ current one is marked for screen readers). Where this guide says
 
 | Section | Address | Panels |
 |---|---|---|
-| Overview | `/admin` | Staff attention, *Get your marketplace ready*, section links |
+| Overview | `/admin` | Staff attention, on private administrator ingress the moderation queue's counts, *Get your marketplace ready*, section links |
 | Users | `/admin/users` | *User directory* (each account's page at `/admin/users?handle=`), *Assign an account role*, *Reset a user's second factors*, *Suspend or restore an account*, *Ban or unban an account* (and, on a banned account's page, *Orders of this banned account*), *Staff roster* |
 | Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
 | Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Held releases of banned vendors* (the held-release refund period, A-652f), *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
@@ -691,7 +691,7 @@ current one is marked for screen readers). Where this guide says
 | Site & branding | `/admin/site` | *Market name and logo*, *Staff contact*, *Outgoing XMPP* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
 | System & audit | `/admin/system` | Schema version and server start, *Service isolation and updates*, *Application host*, *Image scanner*, *Retention and preservation*, *Recent server errors*, *Audit trail* |
-| Optional moderation | `/admin/moderation` | Private-ingress-only proposal queue, bounded worker status, confirmed review annotations and encrypted escalation downloads |
+| Optional moderation (**Moderation review** in the section navigation, on private administrator ingress only) | `/admin/moderation` | Private-ingress-only proposal queue first, then bounded worker status, *Capture capacity* and *Moderation budget* (each closed until the capture alert applies), confirmed review annotations and encrypted escalation downloads |
 
 Every form keeps its address (`POST /admin`, `/admin/suspend`, `/admin/access`
 and so on); a successful change returns to the section holding its form, at the
@@ -704,8 +704,11 @@ the private administrator ingress when one is configured. Bookmarks to an old
 ### Moderation proposals
 
 The optional [moderation controller](moderation-agent.md) and local model are
-off by default. The Admin overview on private administrator ingress links to `/admin/moderation`, available only
-on the private administrator connection; it shows **Capture: on** or **Capture: off**,
+off by default. The Admin overview on private administrator ingress shows "N unreviewed, M escalations, K past
+deadline" above the checklist, counts only, with a link to `/admin/moderation`, available only
+on the private administrator connection. The public listener and moderators see neither the line nor the section
+navigation's **Moderation review** entry. A recorded review or budget raise says so in the page title and its section and
+returns to the filter and page it was submitted from. The panel shows **Capture: on** or **Capture: off**,
 job/review/escalation counts, injection-suspicion counts, prompt/weights pins,
 last pass, pass interval, the last database outage the worker recovered from and
 bounded failure classes. These are worker observations, not proof of model or host integrity.

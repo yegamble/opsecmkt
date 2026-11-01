@@ -219,6 +219,25 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 .admin-section-list li {
   margin:6px 0
 }
+/* A-723: the moderation queue's items read as separate boxes at any width; capacity and budget open from their heading. */
+.moderation-item {
+  min-width:0;
+  margin:18px 0;
+  padding:14px;
+  border:1px solid var(--line)
+}
+.moderation-item h3 {
+  margin-top:0;
+  overflow-wrap:anywhere
+}
+.moderation-panel > summary {
+  min-height:44px;
+  cursor:pointer
+}
+.moderation-panel > summary h2 {
+  display:inline;
+  margin:0
+}
 /* A-545: the user directory's search and filters, one column on a phone and side by side when there is room. */
 .user-directory-search {
   display:grid;

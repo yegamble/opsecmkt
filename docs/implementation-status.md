@@ -148,8 +148,16 @@ who is not a party hides or restores it (staff cannot open a completed order;
 A-711), and labels confidence as model-stated and uncalibrated
 (`TestModerationAdminQueueFiltersAndOrder`, `TestModerationAdminHoldLabel`,
 `TestModerationAdminUploadTargetLinks`, `TestModerationAdminReviewTargetLink`,
-`TestModerationTargetURLAllowlist`, `TestModerationAdminConfidenceLabel`). No browser test reaches this page: it is
-served only on the private administrator socket.
+`TestModerationTargetURLAllowlist`, `TestModerationAdminConfidenceLabel`). A-723: the private `/admin` overview
+counts unreviewed proposals, escalations and those past their deadline, counts only, and the section navigation has
+a **Moderation review** entry there (`TestOverviewCountsUnreviewedProposals`); a recorded review or budget raise confirms
+itself and keeps its filter and page (`TestReviewKeepsFilterAndConfirms`,
+`TestModerationBudgetRaiseKeepsFilterAndConfirms`); the queue comes first, with capacity and budget behind details
+until the capture alert applies (`TestModerationQueueWithinTwoTabStops`); a filter offers only what can match, on the
+stored disposition, labelled Proposed (`TestModerationFilterMatchesWhatItShows`); and each control names its item
+(`TestModerationItemControlsNameTheirItem`). `tests/e2e/db-moderation.spec.ts` reaches the page in Chromium on a
+real `ADMIN_SOCKET` of a second app process, through a loopback bridge standing in for the client-authorized Tor
+service (`tests/e2e/fixtures/private-admin-server.py`); the Tor service itself is not exercised.
 While capture is on, the `/admin` overview also warns when the lifetime pool has
 at most two daily actor shares of allocations left, or when active (not parked)
 markers wait and a `retained_capacity` or `backfill_capacity` overflow was

@@ -153,6 +153,10 @@ func (d PageData) AdminNav() []AdminNavLink {
 	for i, s := range adminSections {
 		links[i] = AdminNavLink{URL: s.URL(), Name: s.Name, Current: d.Page == "admin" && d.AdminSection == s.Slug}
 	}
+	// The queue has no section page: it exists only on the private connection, so only there is it an entry (A-723).
+	if d.PrivateModerationAccess {
+		links = append(links, AdminNavLink{URL: "/admin/moderation", Name: "Moderation review", Current: d.Page == "admin/moderation"})
+	}
 	return links
 }
 
