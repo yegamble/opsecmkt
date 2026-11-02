@@ -3,61 +3,109 @@ package market
 import (
 	"context"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// SEC725-1: the rule for a new password, as a table. A passphrase passes; a listed password, or a pattern, does not.
-func TestNewPasswordRule(t *testing.T) {
-	for _, tc := range []struct {
-		name, handle, password string
-		refused                bool
-	}{
-		{"listed", "someone", "password1234", true},
-		{"listed, any case", "someone", "PassWord1234", true},
-		{"listed by this project", "someone", "correcthorsebatterystaple", true},
-		{"one repeated character", "someone", "aaaaaaaaaaaa", true},
-		{"one repeated symbol", "someone", "!!!!!!!!!!!!!!", true},
-		{"short repeated unit", "someone", "abcxabcxabcx", true},
-		{"numeric run", "someone", "123456789012", true},
-		{"numeric run backwards", "someone", "987654321098", true},
-		{"numeric run with one break", "someone", "123456712345", true},
-		{"keyboard run", "someone", "qwertyuiopas", true},
-		{"keyboard run backwards", "someone", "poiuytrewqlk", true},
-		{"second keyboard row", "someone", "asdfghjklzxc", true},
-		{"alphabet run", "someone", "abcdefghijklm", true},
-		{"runs joined", "someone", "asdf1234qwer", true},
-		{"doubled run", "someone", "112233445566", true},
-		{"handle inside", "river_otter", "my-river_otter-password", true},
-		{"handle inside, any case", "River_Otter", "my-RIVER_otter-password", true},
-		{"three-letter handle inside", "bob", "stone-bob-lantern-field", true},
+// newPasswordRuleCases is the rule for a new password, as a table (SEC725-1). A passphrase passes; a listed password, or
+// a pattern, does not. TestNewPasswordRule checks weakPassword against it and TestInstallerPasswordRuleMatches checks
+// the installer's copy of the rule against weakPassword.
+var newPasswordRuleCases = []struct {
+	name, handle, password string
+	refused                bool
+}{
+	{"listed", "someone", "password1234", true},
+	{"listed, any case", "someone", "PassWord1234", true},
+	{"listed by this project", "someone", "correcthorsebatterystaple", true},
+	{"one repeated character", "someone", "aaaaaaaaaaaa", true},
+	{"one repeated symbol", "someone", "!!!!!!!!!!!!!!", true},
+	{"short repeated unit", "someone", "abcxabcxabcx", true},
+	{"numeric run", "someone", "123456789012", true},
+	{"numeric run backwards", "someone", "987654321098", true},
+	{"numeric run with one break", "someone", "123456712345", true},
+	{"keyboard run", "someone", "qwertyuiopas", true},
+	{"keyboard run backwards", "someone", "poiuytrewqlk", true},
+	{"second keyboard row", "someone", "asdfghjklzxc", true},
+	{"alphabet run", "someone", "abcdefghijklm", true},
+	{"runs joined", "someone", "asdf1234qwer", true},
+	{"doubled run", "someone", "112233445566", true},
+	{"handle inside", "river_otter", "my-river_otter-password", true},
+	{"handle inside, any case", "River_Otter", "my-RIVER_otter-password", true},
+	{"three-letter handle inside", "bob", "stone-bob-lantern-field", true},
 
-		// SEC725-7: a common word padded with digits or punctuation, leet undone.
-		{"padded word", "someone", "letmein12345", true},
-		{"padded word 2", "someone", "monkey123456", true},
-		{"padded word 3", "someone", "dragon123456", true},
-		{"padded word 4", "someone", "football1234", true},
-		{"padded word 5", "someone", "admin1234567", true},
-		{"leet and padding", "someone", "P@ssw0rd1234", true},
-		{"1 read as i", "someone", "l3tm31n12345", true},
-		{"1 read as l", "someone", "ki11er12345!", true},
-		{"dollar read as s", "someone", "pa$$word!2026", true},
-		{"punctuation padding", "someone", "sunshine!!!!", true},
-		{"padding in front", "someone", "123456monkey", true},
-		{"four-word passphrase", "someone", "lantern orbit velvet quarry", false},
-		{"common words among others", "someone", "monkey dragon football 1234", false},
-		{"a word that only holds a common word", "someone", "monkeypuzzletree1", false},
-		{"passphrase with hyphens", "someone", "maple-torch-gravel-nimbus", false},
-		{"a run inside something longer", "someone", "12345 lantern orbit quarry", false},
-		{"non-ASCII passphrase", "someone", "Passwörd-Sonne-Birke-Kiesel", false},
-		{"the test fixture", "someone", testPassword, false},
-		{"handle not inside", "river_otter", "maple-torch-gravel-nimbus", false},
-	} {
+	// SEC725-7: a common word padded with digits or punctuation, leet undone.
+	{"padded word", "someone", "letmein12345", true},
+	{"padded word 2", "someone", "monkey123456", true},
+	{"padded word 3", "someone", "dragon123456", true},
+	{"padded word 4", "someone", "football1234", true},
+	{"padded word 5", "someone", "admin1234567", true},
+	{"leet and padding", "someone", "P@ssw0rd1234", true},
+	{"1 read as i", "someone", "l3tm31n12345", true},
+	{"1 read as l", "someone", "ki11er12345!", true},
+	{"dollar read as s", "someone", "pa$$word!2026", true},
+	{"punctuation padding", "someone", "sunshine!!!!", true},
+	{"padding in front", "someone", "123456monkey", true},
+	{"four-word passphrase", "someone", "lantern orbit velvet quarry", false},
+	{"common words among others", "someone", "monkey dragon football 1234", false},
+	{"a word that only holds a common word", "someone", "monkeypuzzletree1", false},
+	{"passphrase with hyphens", "someone", "maple-torch-gravel-nimbus", false},
+	{"a run inside something longer", "someone", "12345 lantern orbit quarry", false},
+	{"non-ASCII passphrase", "someone", "Passwörd-Sonne-Birke-Kiesel", false},
+	{"the test fixture", "someone", testPassword, false},
+	{"handle not inside", "river_otter", "maple-torch-gravel-nimbus", false},
+	{"one break too many for a pattern", "someone", "asdf1234qwerzxcv", false},
+}
+
+func TestNewPasswordRule(t *testing.T) {
+	for _, tc := range newPasswordRuleCases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := weakPassword(tc.handle, tc.password); got != tc.refused {
 				t.Fatalf("weakPassword(%q, %q) = %v, want %v", tc.handle, tc.password, got, tc.refused)
 			}
 		})
+	}
+}
+
+// PM-7, QA112-3: scripts/install.sh's admin_password_weak is a second copy of weakPassword, in the shell, so that --admin
+// refuses before anything starts. This runs the real function over the real table against the real Go rule, under each
+// Bash here (macOS's is 3.2). Each password goes on stdin, as no password may reach a command's arguments.
+func TestInstallerPasswordRuleMatches(t *testing.T) {
+	var shells []string
+	if path, err := exec.LookPath("bash"); err == nil {
+		shells = append(shells, path)
+	}
+	if _, err := os.Stat("/bin/bash"); err == nil && !slices.Contains(shells, "/bin/bash") {
+		shells = append(shells, "/bin/bash")
+	}
+	if len(shells) == 0 {
+		t.Skip("no bash on this host, so scripts/install.sh's password check cannot be compared with weakPassword")
+	}
+	installer, err := filepath.Abs("scripts/install.sh") // the tests run from the repository root
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exit codes of their own: a script that fails to source must not read as a password that passes.
+	const script, weak, notWeak = `source "$1" || exit 12; IFS= read -r handle; IFS= read -r p; if admin_password_weak "$handle" "$p"; then exit 10; else exit 11; fi`, 10, 11
+	for _, shell := range shells {
+		for _, tc := range newPasswordRuleCases {
+			t.Run(shell+"/"+tc.name, func(t *testing.T) {
+				cmd := exec.Command(shell, "-c", script, "test", installer)
+				cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+				cmd.Stdin = strings.NewReader(tc.handle + "\n" + tc.password + "\n")
+				out, _ := cmd.CombinedOutput()
+				want := notWeak
+				if weakPassword(tc.handle, tc.password) {
+					want = weak
+				}
+				if got := cmd.ProcessState.ExitCode(); got != want || len(out) != 0 {
+					t.Fatalf("admin_password_weak(%q, %q) exited %d, want %d as weakPassword decides (%d is weak, %d is not); output %q", tc.handle, tc.password, got, want, weak, notWeak, out)
+				}
+			})
+		}
 	}
 }
 

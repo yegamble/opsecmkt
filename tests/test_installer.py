@@ -1722,8 +1722,9 @@ time.sleep(60)
                 self.assertNotIn(weak, calls.read_text())  # no command is given it as an argument
 
     def test_admin_password_weak_matches_the_server_rule(self):
-        # PM-7: internal/market/password_policy_test.go's TestNewPasswordRule table, so the shell check cannot drift from
-        # weakPassword unnoticed. Each Bash on this host runs it: macOS's 3.2 has no ${p,,}.
+        # PM-7: a copy of internal/market/password_policy_test.go's table, pinning the shell function on each Bash here
+        # (macOS's 3.2 has no ${p,,}). It never runs Go: TestInstallerPasswordRuleMatches is what catches drift from
+        # weakPassword.
         cases = (('someone', 'password1234', True), ('someone', 'PassWord1234', True),
                  ('someone', 'correcthorsebatterystaple', True), ('someone', 'aaaaaaaaaaaa', True),
                  ('someone', '!!!!!!!!!!!!!!', True), ('someone', 'abcxabcxabcx', True),

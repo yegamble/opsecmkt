@@ -12,7 +12,7 @@ import (
 // /account/password, -bootstrap-admin, -reset-admin-password), never at sign-in, so an account that already has such a
 // password still signs in. It looks nothing up over a network. It is a floor, not a strength meter: it stops the guesses
 // a script tries first. scripts/install.sh's admin_password_weak applies the same rule before an install starts (PM-7): a
-// change here changes it, and tests/test_installer.py holds the table below's copy.
+// change here changes it, and TestInstallerPasswordRuleMatches fails until it does.
 
 // commonPasswordList is the embedded list; its source and licence are in the file's header.
 //

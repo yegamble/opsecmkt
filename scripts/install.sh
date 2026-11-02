@@ -196,7 +196,7 @@ password_run_step() {
 
 # admin_password_weak HANDLE PASSWORD: whether password_policy.go's weakPassword refuses PASSWORD for HANDLE, so --admin
 # refuses it before anything is written and not with the market already running (PM-7). Keep the two in step:
-# test_admin_password_weak_matches_the_server_rule runs the server's table here. The server still decides: only ASCII is
+# TestInstallerPasswordRuleMatches compares this function with weakPassword over the Go table. The server still decides: only ASCII is
 # lowered here, so a repeat that differs only in the case of a non-ASCII letter is left to -bootstrap-admin, as are the
 # lists when a checkout lacks them. The password never reaches a command's arguments: tr has it on a pipe from a builtin,
 # and the rest is the shell's own. A subshell, in the C locale, so a length and an offset count bytes as Go's do.
