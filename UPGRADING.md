@@ -30,7 +30,8 @@ No migration or configuration. With Monero escrow on, a buyer's no-ship cancel p
 relayed, and a dispute on a passed deadline refused as late, between an outage and the watcher's next check. Now the action itself
 reads the stored time of the last deadline step: older than the outage threshold, it refuses that cancel, creating no refund, and
 accepts that dispute, as with a recheck pending, and the refusal names an outage. With `ESCROW_XMR=off`, a fresh step, or no stored
-step, nothing changes; a restore's request still says a restore. The cases that remain are listed under
+step or one that cannot be read, nothing changes; a restore's request still says a restore. The stored time is read in Go, so these
+actions no longer call a function PostgreSQL 16 added (A-769). The cases that remain are listed under
 [An outage gives orders near their deadline 72 hours](#an-outage-gives-orders-near-their-deadline-72-hours-a-730-a-732).
 
 An order due within 72 hours is no longer reminded while a recheck is pending, which named a date about to be replaced: each party
