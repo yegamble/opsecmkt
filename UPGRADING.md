@@ -15,6 +15,18 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A stale deadline step holds a buyer's cancel before the first pass; no reminder while a recheck is pending (A-763, A-762)
+
+No migration or configuration. With Monero escrow on, a buyer's no-ship cancel past its time could be accepted, and its refund
+relayed, and a dispute on a passed deadline refused as late, between an outage and the watcher's next check. Now the action itself
+reads the stored time of the last deadline step: older than the outage threshold, it refuses that cancel, creating no refund, and
+accepts that dispute, as with a recheck pending, and the refusal names an outage. With `ESCROW_XMR=off`, a fresh step, or no stored
+step, nothing changes; a restore's request still says a restore. The cases that remain are listed under
+[An outage gives orders near their deadline 72 hours](#an-outage-gives-orders-near-their-deadline-72-hours-a-730-a-732).
+
+An order due within 72 hours is no longer reminded while a recheck is pending, which named a date about to be replaced: each party
+gets one notice, the moved one.
+
 ## Stage A now defines its reason codes (moderation-v7, A-745)
 
 No migration. The moderation protocol is now `moderation-v7`, and the controller refuses v1–v6 pins. **If you start
@@ -92,14 +104,15 @@ and its buyer is told nothing. **Admin → Payments** shows a recheck pending, a
 order deadlines it moved.
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
-starts just before the server begins accepting requests. A dispute on a deadline that passed in the outage is refused as late,
-and a no-ship cancel past its time accepted, only in these cases:
+starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
+of the last step is older than the threshold, the action itself refuses a no-ship cancel past its time, creating no refund, and
+accepts a dispute on a passed deadline, by the database's clock (A-763). The order page does not read that time, so until the check
+has run it can still offer that cancel, which is then refused with its reason, and not offer that dispute. A dispute on a deadline
+that passed in the outage is refused as late, and a no-ship cancel past its time accepted, only in these cases, and that cancel
+requests a refund, which relays once a watcher runs:
 
-- After a restart, during that first check's one database transaction: normally milliseconds, at most 30 seconds including any
-  wait for a database connection. If it fails or runs out of time, until the check at the end of the same pass, or the next tick
-  if another process holds the lock.
-- When the database comes back with the process still up, until the next tick: up to the poll interval, or up to 10 minutes for
-  a pass already in flight.
+- The gap is no longer than the threshold, which is no outage: no recheck follows either.
+- There is no stored time, or one that cannot be read: the first step after the upgrade that added it, or a hand's work.
 - For the whole time `ESCROW_XMR=off`: the watcher does not run, and marking an order shipped answers 404. While no recheck is
   pending a dispute is refused. A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has
   not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter

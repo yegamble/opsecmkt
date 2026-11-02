@@ -529,6 +529,134 @@ func TestXMROutageRecheckRetries(t *testing.T) {
 	}
 }
 
+// A-763: between a gap and the next check nothing has asked for the recheck yet, so a stale stored step holds the cancel
+// and opens the dispute by itself, with no pass: a refund cannot relay on a clock that has not been looked at. A fresh,
+// missing or unreadable step, Monero escrow off, and a poll interval that allows the gap all behave as before, and a
+// restore's request still says a restore.
+func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
+	setup := func(t *testing.T) (x *xmrEscrowEnv, paid, paidSess, shipped, shippedSess string) {
+		x = newXMREscrowEnv(t)
+		x.mustPoll()
+		physical := x.physical(x.vendor)
+		paid, paidSess = x.paidXMRPhysical(physical)
+		shipped, shippedSess, _ = x.shippedXMR(physical)
+		x.forceDeadline(paid, "ship_by=now()-interval '1 hour'")
+		x.forceDeadline(shipped, "release_at=now()-interval '1 hour'")
+		return x, paid, paidSess, shipped, shippedSess
+	}
+	// wantAsToday fails unless the past-time cancel is accepted, requesting the refund, and the late dispute refused.
+	wantAsToday := func(t *testing.T, x *xmrEscrowEnv, paid, paidSess, shipped, shippedSess string) {
+		t.Helper()
+		if code, body := x.xmrDispute(shipped, shippedSess); code != 409 || !strings.Contains(body, "a dispute can no longer be opened") || x.state(shipped) != stateShipped {
+			t.Fatalf("a late dispute: %d %s, order %s", code, body, x.state(shipped))
+		}
+		if code, body := x.xmrBuyerCancel(paid, paidSess); code != 303 || x.state(paid) != stateCancelled {
+			t.Fatalf("a cancel past its time: %d %s, order %s", code, body, x.state(paid))
+		}
+		if x.A.escrowXMR != nil && len(x.xmrSettlements(paid)) != 1 {
+			t.Fatalf("the cancel's refund: %q", x.xmrSettlements(paid))
+		}
+		if x.recheckKey() != "" {
+			t.Fatalf("a request: %q", x.recheckKey())
+		}
+	}
+
+	t.Run("stale", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		physical := x.physical(x.vendor)
+		paid, paidSess := x.paidXMRPhysical(physical)
+		notYet, notYetSess := x.paidXMRPhysical(physical)
+		shipped, shippedSess, _ := x.shippedXMR(physical)
+		window, windowSess := x.deliveredXMR(x.product)
+		x.forceDeadline(paid, "ship_by=now()-interval '1 hour'")
+		x.forceDeadline(shipped, "release_at=now()-interval '1 hour'")
+		x.forceDeadline(window, "release_at=now()-interval '1 hour'")
+		x.setLastDeadlineStep("2 hours")
+		step := x.lastDeadlineStep()
+
+		code, body := x.xmrBuyerCancel(paid, paidSess)
+		if code != 409 || !containsAll(body, "cannot be cancelled yet", "an outage", "Nothing was changed") || strings.Contains(body, "restore") {
+			t.Fatalf("a cancel past its time on a stale step: %d %s", code, body)
+		}
+		if x.state(paid) != statePaid || len(x.xmrSettlements(paid)) != 0 {
+			t.Fatalf("after the refused cancel: order %s, settlements %q", x.state(paid), x.xmrSettlements(paid))
+		}
+		if code, body = x.xmrBuyerCancel(notYet, notYetSess); code != 409 || !strings.Contains(body, "if the vendor has not marked it shipped by then") {
+			t.Fatalf("a cancel before its time on a stale step: %d %s", code, body)
+		}
+		if code, body = x.xmrDispute(shipped, shippedSess); code != 303 || x.state(shipped) != stateDisputed {
+			t.Fatalf("a dispute on a stale step: %d %s, order %s", code, body, x.state(shipped))
+		}
+		if code, body = x.xmrDispute(window, windowSess); code != 303 || x.state(window) != stateDisputed {
+			t.Fatalf("a dispute in a digital window on a stale step: %d %s, order %s", code, body, x.state(window))
+		}
+		// No pass ran: neither action asked for the recheck or recorded a time.
+		if x.recheckKey() != "" || x.lastDeadlineStep() != step {
+			t.Fatalf("an action wrote: request %q, step %q (was %q)", x.recheckKey(), x.lastDeadlineStep(), step)
+		}
+		// The next pass takes over, and the cancel still waits, now for the vendor's grace.
+		x.mustPoll()
+		if code, body = x.xmrBuyerCancel(paid, paidSess); code != 409 || !containsAll(body, "You can cancel this order from "+utcFrom(x.cancelWaitUntil()), "an outage") || x.state(paid) != statePaid {
+			t.Fatalf("a cancel after the pass: %d %s, order %s", code, body, x.state(paid))
+		}
+	})
+	t.Run("fresh", func(t *testing.T) {
+		x, paid, paidSess, shipped, shippedSess := setup(t)
+		x.setLastDeadlineStep("59 minutes")
+		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
+	})
+	t.Run("missing", func(t *testing.T) {
+		x, paid, paidSess, shipped, shippedSess := setup(t)
+		agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrLastDeadlineStepKey)
+		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
+	})
+	t.Run("unreadable", func(t *testing.T) { // as xmrNoteDeadlineStep treats one
+		x, paid, paidSess, shipped, shippedSess := setup(t)
+		agExec(x.testEnv, "UPDATE settings SET value='not a time' WHERE key=$1", xmrLastDeadlineStepKey)
+		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
+	})
+	t.Run("escrow off", func(t *testing.T) { // DA104-3 stays true: no watcher runs, so no pass could end a hold
+		x, paid, paidSess, shipped, shippedSess := setup(t)
+		x.setLastDeadlineStep("2 hours")
+		on := x.A.escrowXMR
+		x.A.escrowXMR = nil
+		defer func() { x.A.escrowXMR = on }()
+		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
+	})
+	t.Run("the gap follows the poll interval", func(t *testing.T) { // the threshold is xmrOutageGap's, not a fixed hour
+		t.Setenv("PAYMENT_POLL_INTERVAL", "1h")
+		x, paid, paidSess, shipped, shippedSess := setup(t)
+		x.setLastDeadlineStep("2 hours")
+		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
+	})
+	t.Run("a restore's request", func(t *testing.T) { // a restored database carries an old time
+		x, paid, paidSess, shipped, shippedSess := setup(t)
+		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+		x.setLastDeadlineStep("30 days")
+		code, body := x.xmrBuyerCancel(paid, paidSess)
+		if code != 409 || !strings.Contains(body, "after a restore from backup") || strings.Contains(body, "an outage") {
+			t.Fatalf("a cancel with a restore's request: %d %s", code, body)
+		}
+		if code, body = x.xmrDispute(shipped, shippedSess); code != 303 {
+			t.Fatalf("a dispute with a restore's request: %d %s", code, body)
+		}
+	})
+	t.Run("only a Monero escrow", func(t *testing.T) { // noShipCancel and lateDispute also serve what remains of Bitcoin escrow
+		x, _, _, _, _ := setup(t)
+		x.setLastDeadlineStep("2 hours")
+		for coin, want := range map[string]bool{"XMR": true, "BTC": false} {
+			var stale bool
+			if err := x.DB.QueryRow(`SELECT `+xmrStaleStepSQL+` FROM (SELECT $1::text AS coin,$2::text AS unused) es`, coin, "", x.A.xmrStaleStepGap()).Scan(&stale); err != nil {
+				t.Fatal(err)
+			}
+			if stale != want {
+				t.Fatalf("the stale step for %s: %v", coin, stale)
+			}
+		}
+	})
+}
+
 // A-730: a pending outage's request says so on every line a paid order's parties read, as a restore's does.
 func TestXMROutagePendingCancelWording(t *testing.T) {
 	x := newXMREscrowEnv(t)
