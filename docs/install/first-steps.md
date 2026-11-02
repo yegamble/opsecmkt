@@ -31,7 +31,7 @@ the setup below.
    Read the token locally from `INSTALL_DIR/secrets/setup-token` and keep it out
    of chat, logs and reports. Create a marketplace name of at most 80 characters,
    a permanent 3–32 character handle using letters, digits or underscores, and
-   a password of 12–72 bytes that is not a common password or simple pattern and does not contain the handle. Select **Initialize marketplace**. If the host
+   a password of 12–72 bytes that is not a common password or simple pattern and does not contain the handle. Select **Initialize marketplace**. A refusal shows the form again with the name and handle kept: enter the token and password again. If the host
    bootstrap command already completed setup, sign in instead.
 2. Enroll an authenticator app immediately and store the recovery codes offline.
    Until then every staff action is refused (A-706), and anyone who has the
