@@ -173,7 +173,7 @@ it is on again, and a buyer's no-ship cancel past its time waits until then. Rep
 since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
 come back with minutes left of the last request's 72 hours. Each repeat that moves a deadline notifies that order's buyer and vendor again, and any deadline inside 72 hours moves every time, so four rounds are four notices to each party: repeat near the end of the 72 hours, not more often. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
-order deadlines it moved.
+order deadlines it moved. The `/admin` overview flags **Payments** while one is pending, and each recheck sends every active administrator one notice naming its cause and no order (PM-3).
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
