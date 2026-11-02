@@ -26,10 +26,12 @@ var recoveryCheckPersistent = checkRecoveryPersistent
 const recoveryLimit = 2 << 20
 const recoveryHelp = `usage: opsecmkt deploy recovery COMMAND [flags]
   export --dir DIR --recipient-public-key FILE --out NEW_DIR
-  restore --dir NEW_DIR [--old-host-fenced]
+  restore --dir NEW_DIR [--old-host-fenced] [--app-bind IP:PORT] [--backend-bind IP:PORT]
 Restore reads only an offline-decrypted recovery JSON document from stdin.
 Production restore requires explicit --old-host-fenced attestation, verified
 persistent encrypted storage, and later explicit deploy storage bind.
+--app-bind and --backend-bind give a replacement host its own private listener
+addresses; an omitted flag keeps the retained value. --backend-bind is production only.
 This recovers application configuration and managed identities only; database,
 retention data, wallets, Docker volumes and host boot readiness are excluded.
 No services start, no keys rotate, and existing destinations are refused.
@@ -46,6 +48,8 @@ Decrypt on a trusted offline machine, then transfer the plaintext only as a
 protected stream to: opsecmkt deploy recovery restore --dir NEW_DIR
 For production add --old-host-fenced only after ensuring the old host cannot
 run the application or its Tor identities. Never run duplicate onion identities.
+A replacement host with another address also needs --app-bind IP:PORT and
+--backend-bind IP:PORT; omitted, each keeps the old host's listener address.
 The plaintext must be the complete exported recovery document, not a secrets
 pack document. No plaintext file or private decryption key flag is accepted.
 
@@ -130,6 +134,8 @@ func runRecovery(ctx context.Context, args []string, in io.Reader, out, errOut i
 		f.StringVar(&destination, "out", "", "new private archive directory")
 	} else {
 		f.BoolVar(&fenced, "old-host-fenced", false, "attest the old host cannot run application or onion identities")
+		f.String("app-bind", "", "replacement host app listener, loopback or private IP:port; omitted keeps the retained value")
+		f.String("backend-bind", "", "replacement host upload backend listener, loopback or private IP:port; omitted keeps the retained value")
 	}
 	if err := f.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -154,7 +160,22 @@ func runRecovery(ctx context.Context, args []string, in io.Reader, out, errOut i
 		}
 		return exportRecovery(ctx, dir, recipient, destination, out)
 	}
-	return restoreRecovery(ctx, dir, in, fenced, out)
+	// Only a flag actually given counts, so an explicit empty value refuses rather than keeping the retained one.
+	binds := map[string]string{}
+	var bindErr error
+	f.Visit(func(set *flag.Flag) {
+		if set.Name != "app-bind" && set.Name != "backend-bind" {
+			return
+		}
+		binds[set.Name] = set.Value.String()
+		if err := privateBind(set.Value.String()); err != nil && bindErr == nil {
+			bindErr = fmt.Errorf("recovery restore: --%s: %w; nothing was written", set.Name, err)
+		}
+	})
+	if bindErr != nil {
+		return bindErr
+	}
+	return restoreRecovery(ctx, dir, in, fenced, binds, out)
 }
 
 func recoveryRealPath(path string) error {
@@ -267,7 +288,7 @@ func exportRecovery(ctx context.Context, dir, recipient, destination string, out
 	return err
 }
 
-func restoreRecovery(ctx context.Context, dir string, in io.Reader, fenced bool, out io.Writer) error {
+func restoreRecovery(ctx context.Context, dir string, in io.Reader, fenced bool, binds map[string]string, out io.Writer) error {
 	if err := recoveryNewPath(dir); err != nil {
 		return err
 	}
@@ -316,6 +337,19 @@ func restoreRecovery(ctx context.Context, dir string, in io.Reader, fenced bool,
 	}
 	if doc.Deployment != recoveryMetadata(c) {
 		return errors.New("recovery restore: deployment metadata does not match configuration")
+	}
+	if addr, ok := binds["app-bind"]; ok {
+		c.AppBind = addr
+	}
+	if addr, ok := binds["backend-bind"]; ok {
+		if c.Mode != "prod" {
+			return errors.New("recovery restore: --backend-bind applies only to production, which publishes the upload backend; nothing was written")
+		}
+		c.BackendBind = addr
+	}
+	// A listener cannot be amended after restore, and install would be the first to notice.
+	if len(binds) != 0 && c.AppBind == c.BackendBind {
+		return errors.New("recovery restore: the app and upload backend listeners cannot use the same address; nothing was written")
 	}
 	if c.Mode == "prod" {
 		if !fenced {

@@ -42,7 +42,7 @@ import (
 //     An outage takes the same path (A-730, owner decision): each step records the database's time, and one that finds
 //     more than xmrOutageGap since the last asks for the recheck, with its notices naming the outage, so downtime
 //     consumes neither a buyer's deadline nor a vendor's time. The check also runs first in a pass (xmrNoteDeadlineStepEarly),
-//     and until it has, a stored time past that gap holds a buyer's cancel and opens a late dispute (xmrStaleStepSQL, A-763).
+//     and until it has, a stored time past that gap holds a buyer's cancel and opens a late dispute (xmrStaleStep, A-763).
 //     The check sees only that this step did not run: public access down while the watcher runs is not visible here, and the
 //     operator asks for the recheck with the host command -request-deadline-recheck (RequestDeadlineRecheck). Each recheck
 //     records itself in its own transaction: when, its cause and how many deadlines moved (xmrLastRecheckKey, shown on
@@ -114,21 +114,32 @@ const outageWhy = "an outage made this market unavailable"
 // completes no order whose restored deadline has passed before the buyer was given 72 hours (A-393, A-714).
 const xmrNoRecheckSQL = "NOT EXISTS (SELECT 1 FROM settings WHERE key='" + xmrReleaseRecheckKey + "')"
 
-// xmrStaleStepSQL: the last deadline step of the Monero escrow es is older than the gap, $3 in seconds (xmrStaleStepGap), so
-// the next check will ask for the recheck: the buyer's cancel and a late dispute treat it as asked for already (noShipCancel,
-// lateDispute; A-763). It closes the time between a gap and that check. It reads the settings row in a statement after the
-// order row lock and writes nothing. No stored step, one that cannot be read and a NULL gap are false, as xmrNoteDeadlineStep
-// asks for nothing on the first two; the CASE keeps the cast from a value it would fail on.
-const xmrStaleStepSQL = `(es.coin='XMR' AND COALESCE((SELECT CASE WHEN pg_input_is_valid(value,'timestamptz') THEN now()-value::timestamptz>make_interval(secs => $3::float8) END
-	FROM settings WHERE key='` + xmrLastDeadlineStepKey + `'),false))`
+// xmrLastStepSQL is the stored time of the last deadline step for the Monero escrow es, and NULL for any other coin or with
+// none stored, for xmrStaleStep. It is selected with now() in the statement after the order row lock that reads the recheck's
+// request, so one snapshot shows both: a check that commits the request and a new time cannot fall between them. It writes
+// nothing, and Go reads the value (A-769): a cast here would need a guard against a value it fails on.
+const xmrLastStepSQL = `(SELECT value FROM settings WHERE es.coin='XMR' AND key='` + xmrLastDeadlineStepKey + `')`
 
-// xmrStaleStepGap is xmrStaleStepSQL's $3: xmrOutageGap in seconds, or NULL with Monero escrow off, when no watcher runs to
-// end the hold and a cancel and a dispute keep the rules UPGRADING.md gives for that time (DA104-3).
-func (a *App) xmrStaleStepGap() sql.NullFloat64 {
-	if a.escrowXMR == nil {
-		return sql.NullFloat64{}
+// xmrStaleStep is whether step, from xmrLastStepSQL, is older than the gap at the database's time now, so the next check will
+// ask for the recheck: the buyer's cancel and a late dispute treat it as asked for already (noShipCancel, lateDispute; A-763).
+// It closes the time between a gap and that check. No stored step, one that cannot be read and no gap are false, as
+// xmrNoteDeadlineStep asks for nothing on the first two.
+func (a *App) xmrStaleStep(step sql.NullString, now time.Time) bool {
+	gap, ok := a.xmrStaleStepGap()
+	if !ok || !step.Valid {
+		return false
 	}
-	return sql.NullFloat64{Float64: xmrOutageGap().Seconds(), Valid: true}
+	at, err := time.Parse(time.RFC3339Nano, step.String)
+	return err == nil && now.Sub(at) > gap
+}
+
+// xmrStaleStepGap is xmrOutageGap, or none with Monero escrow off, when no watcher runs to end the hold and a cancel and a
+// dispute keep the rules UPGRADING.md gives for that time (DA104-3).
+func (a *App) xmrStaleStepGap() (time.Duration, bool) {
+	if a.escrowXMR == nil {
+		return 0, false
+	}
+	return xmrOutageGap(), true
 }
 
 // xmrCancelWaitSQL is the end of the vendor's grace after a restore (step 4, A-720) for the escrow es, or NULL when none
@@ -252,7 +263,7 @@ func (a *App) xmrDeadlines(pass context.Context) error {
 // deadline step runs last, and a first pass after an outage can spend minutes on its wallets, in which a dispute would be
 // refused as late and a no-ship cancel accepted. The server accepts requests from just after the watcher starts
 // (cmd/server's app.Start, then serveAll), and until a check succeeds the stale time itself holds those actions
-// (xmrStaleStepSQL, A-763). A failure does not touch the pass: the check in xmrDeadlines runs anyway and reports it. Under
+// (xmrStaleStep, A-763). A failure does not touch the pass: the check in xmrDeadlines runs anyway and reports it. Under
 // the restore gate it writes nothing, as there. It needs neither the pass's connection nor the watcher's lock (PAY101-11): another process's check waits on the row, then reads
 // the new time, so two at once ask once.
 func (a *App) xmrNoteDeadlineStepEarly(ctx context.Context) {
@@ -347,6 +358,10 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 		lead = digitalWindowNote
 	}
 	note := lead + " (" + utcUntil(at) + "): no dispute was opened by then, so the order is completed (Monero escrow). "
+	zero, live, err := xmrCountedZero(ctx, tx, orderID)
+	if err != nil {
+		return false, err
+	}
 	if banned, err := orderVendorBanned(ctx, tx, orderID); err != nil {
 		return false, err
 	} else if banned {
@@ -355,6 +370,8 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 			return false, err
 		}
 		note += xmrHeldNote + " " + holdRefundLater(days) // PAY90-3, A-652f
+	} else if zero { // A-770
+		note += xmrZeroNotice("release", live)
 	} else if state == stateDelivered {
 		note += "The vendor claims the escrowed coins from the order page."
 		ctx = withNoticeDetail(ctx, orderID, stateCompleted, xmrClaimCue) // A-710's cue: the vendor has to claim

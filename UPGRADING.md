@@ -15,6 +15,20 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A replacement host takes its address at restore; replace a leaf after the storage bind (A-771)
+
+No migration or configuration, and nothing changes for an installation that is not being restored. `deploy recovery restore`
+accepts `--app-bind IP:PORT` and `--backend-bind IP:PORT`, so a replacement application host can publish its own private
+address; before, nothing could set them after `init`. An omitted flag keeps the retained value, as today. A bad value, or one
+address for both, refuses and writes nothing. `deploy plan` now also prints the upload backend listener.
+
+The written order on a replacement host is now restore with those flags, `deploy storage bind`, `deploy tls replace` if a name
+in a leaf changed, `plan`, `doctor`, `install`. `tls replace` refuses before the storage bind, and `doctor --start-check` before
+the first `install`, as they always did; the guides no longer ask for either there. A saved dependency-report directory must
+be back at its path before the bind. The guides now run `install -d -m 700` before key commands that write into a subdirectory,
+which refuse a missing parent. This order has run only on a fake encrypted host, not on a real one
+([the leg](docs/testnet-runbook.md#leg-replacement-application-host-a-698)).
+
 ## Run the deadline recheck once more when access returns; a false recheck's true bound (A-761)
 
 No migration or configuration. **After a public-access outage, run `-request-deadline-recheck` once more when access returns**: the
@@ -30,7 +44,8 @@ No migration or configuration. With Monero escrow on, a buyer's no-ship cancel p
 relayed, and a dispute on a passed deadline refused as late, between an outage and the watcher's next check. Now the action itself
 reads the stored time of the last deadline step: older than the outage threshold, it refuses that cancel, creating no refund, and
 accepts that dispute, as with a recheck pending, and the refusal names an outage. With `ESCROW_XMR=off`, a fresh step, or no stored
-step, nothing changes; a restore's request still says a restore. The cases that remain are listed under
+step or one that cannot be read, nothing changes; a restore's request still says a restore. The stored time is read in Go, so these
+actions no longer call a function PostgreSQL 16 added (A-769). The cases that remain are listed under
 [An outage gives orders near their deadline 72 hours](#an-outage-gives-orders-near-their-deadline-72-hours-a-730-a-732).
 
 An order due within 72 hours is no longer reminded while a recheck is pending, which named a date about to be replaced: each party

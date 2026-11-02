@@ -1,19 +1,30 @@
 """The owner's rehearsal procedure stays runnable (A-743; DA104-1, DA104-E1).
 
 docs/testnet-runbook.md "Fresh stagenet market and rehearsals" is what the owner follows on real hosts, where a wrong
-flag is found only after the destructive part. No host is touched here. The checks read the section as text:
+flag is found only after the destructive part. No host is touched here. The checks read the section as text, and ask
+the built binary only for help and, in an empty temporary directory, to generate keys:
 
 * it is linked from the runbook's top, and it names A-562, A-698, A-699 and PM-3;
 * its parts come in the order the steps must be done: retired, approval, preserved, re-init, legs;
-* every `opsecmkt` command in its code blocks uses subcommands and flags that exist in the Go sources cmd/server runs;
+* every `opsecmkt` command in its code blocks uses subcommands and flags that exist in the Go sources cmd/server runs,
+  and each flag is one the built binary's help lists for that subcommand (DA110-3);
+* every guide makes the parent directory of a key command's output first, and the key blocks run (DA110-4);
 * every script it runs exists, every relative link resolves, and no command carries a private value or mainnet;
 * each A-698 acceptance line is quoted by its text and that text is still in docs/acceptance.md (line numbers go stale).
 """
+import functools
+import itertools
+import os
 from pathlib import Path
 import re
 import shlex
+import shutil
+import stat
+import subprocess
+import tempfile
 import unittest
 
+BINARY_DIR = None
 REPOSITORY = Path(__file__).resolve().parents[1]
 RUNBOOK_PATH = REPOSITORY / 'docs' / 'testnet-runbook.md'
 RUNBOOK = RUNBOOK_PATH.read_text()
@@ -61,6 +72,49 @@ def opsecmkt_arguments(line):
     if not match:
         return None
     return shlex.split(match.group(1))
+
+
+def runbook_arguments(line):
+    """opsecmkt_arguments for a command that runs the program: a repository path such as OWNER/opsecmkt does not."""
+    return None if line.startswith('gh ') else opsecmkt_arguments(line)
+
+
+def built_binary():
+    """Build cmd/server once. CI's Python job has Go and fails on any skip, so this skip cannot hide there."""
+    global BINARY_DIR
+    if shutil.which('go') is None:
+        raise unittest.SkipTest('this check runs the built binary and needs Go')
+    if BINARY_DIR is None:
+        BINARY_DIR = tempfile.TemporaryDirectory()
+        output = os.path.join(BINARY_DIR.name, 'opsecmkt')
+        subprocess.run(['go', 'build', '-o', output, './cmd/server'], cwd=REPOSITORY, check=True, capture_output=True, text=True)
+    return os.path.join(BINARY_DIR.name, 'opsecmkt')
+
+
+@functools.lru_cache(maxsize=None)
+def help_text(*arguments):
+    # Only help is asked for. The program writes usage to either stream, and -help on the legacy flags exits nonzero.
+    result = subprocess.run([built_binary(), *arguments], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    return result.stdout + result.stderr
+
+
+def subcommand_flags(path):
+    """The flags the built binary's own help lists for this subcommand; path is a list such as ['deploy', 'plan']."""
+    if path[:1] == ['keys']:
+        # Each key command takes its flags from the one usage text, which has a line per action and type.
+        action, kind = path[1], path[2]
+        lines = re.findall(r'(?m)^keys (\S+) (\S+) (.*)$', help_text('keys', 'help'))
+        return {flag for a, k, rest in lines if a == action and kind in k.split('|') for flag in re.findall(r'--([a-z-]+)', rest)}
+    if path[:2] == ['deploy', 'recovery']:
+        # One help text for both commands, with a line each.
+        line = re.search(r'(?m)^\s+%s (.*)$' % path[2], help_text('deploy', 'recovery', 'help')).group(1)
+        return set(re.findall(r'--([a-z-]+)', line))
+    text = help_text(*path, '-h') if path else help_text('-help')
+    return set(re.findall(r'(?m)^\s+-([a-z][a-z0-9-]*)', text))
+
+
+def replacement_leg():
+    return re.search(r'^### Leg: replacement application host.*?(?=^### )', section(), re.M | re.S).group(0)
 
 
 def go_sources():
@@ -265,6 +319,114 @@ class RehearsalSectionTest(unittest.TestCase):
         for words in ('never overwrite', 'populated identity', 'storage-check drop-in'):
             self.assertIn(words, text)
         self.assertNotIn('keys import onion', text, 'a fresh market imports no retired identity')
+
+    def test_replacement_leg_gives_the_host_its_address_before_anything_reads_it(self):
+        # DA110-1, DA110-2. TestRecoveryLegRestoreBindTLSReplaceRunsInWrittenOrder runs these same lines on the fake host.
+        leg = replacement_leg()
+        flat = ' '.join(leg.split())
+        self.assertRegex(leg, r'(?m)^\d+\. \*\*Restore with the spare host\'s own address\.\*\*')
+        lines = commands(leg)
+        order = [next(i for i, line in enumerate(lines) if needle in line)
+                 for needle in ('deploy down', 'install -d -m 700 /srv/opsecmkt', 'deploy recovery restore', 'deploy storage bind',
+                                'deploy tls replace', 'deploy plan', 'deploy doctor', 'deploy install')]
+        self.assertEqual(order, sorted(order), lines)
+        restore = next(line for line in lines if 'deploy recovery restore' in line)
+        for words in ('--old-host-fenced', '--app-bind 10.20.0.20:8080', '--backend-bind 10.20.0.20:8443'):
+            self.assertIn(words, restore)
+        init = next(line for line in commands(section()) if ' deploy init ' in line + ' ')
+        self.assertNotIn('10.20.0.20', init, 'the spare host keeps its own address')
+        # compose.json is excluded from the archive, so this refuses until install writes it.
+        self.assertFalse([line for line in lines if '--start-check' in line])
+        self.assertIn('`--start-check` needs the Compose file `install` writes', flat)
+        # validate refuses a missing report directory at the first command that loads the configuration.
+        self.assertLess(flat.index('dependency-report directory'), flat.index('--app-bind 10.20.0.20'))
+        self.assertIn('never been run on a host', flat)
+
+    def test_replacement_leg_says_what_the_isolated_restore_needs(self):
+        first = re.search(r'(?m)^1\. .*$', replacement_leg()).group(0)
+        for words in ('loopback', 'no address of this host', '`--old-host-fenced`'):
+            self.assertIn(words, first)
+
+    def test_replacement_leg_names_how_the_gateway_moves(self):
+        flat = ' '.join(replacement_leg().split())
+        for words in ('`--app-url`', '`--backend-url`', 'resolve to the spare host', 'restart'):
+            self.assertIn(words, flat)
+        self.assertNotIn('Point the gateway at the new private address', flat)
+
+    def test_each_flag_belongs_to_its_subcommand(self):
+        # DA110-3: test_opsecmkt_commands_exist accepts a flag that any command has, anywhere in the sources.
+        problems, seen = [], 0
+        for line in commands(section()):
+            arguments = runbook_arguments(line)
+            if arguments is None:
+                continue
+            path = list(itertools.takewhile(lambda word: not word.startswith('-'), arguments))
+            used = [word.lstrip('-').split('=')[0] for word in arguments if word.startswith('-')]
+            if not used:
+                continue
+            known = subcommand_flags(path)
+            seen += 1
+            problems.extend('%s has no --%s: %s' % (' '.join(path) or 'opsecmkt', flag, line) for flag in used if flag not in known)
+        self.assertEqual(problems, [], '\n'.join(problems))
+        self.assertGreater(seen, 15)
+
+    def test_the_flag_check_can_fail(self):
+        # The mutations DA110-3 made, which the older check let through.
+        self.assertNotIn('monero-seed-key', subcommand_flags(['deploy', 'plan']))
+        self.assertNotIn('cookie-secure', subcommand_flags(['deploy', 'plan']))
+        self.assertNotIn('old-host-fenced', subcommand_flags(['deploy', 'status']))
+        self.assertIn('monero-seed-key', subcommand_flags(['deploy', 'init']))
+        self.assertIn('cookie-secure', subcommand_flags(['serve']))
+        self.assertIn('old-host-fenced', subcommand_flags(['deploy', 'recovery', 'restore']))
+        self.assertIn('app-bind', subcommand_flags(['deploy', 'recovery', 'restore']))
+        self.assertNotIn('app-bind', subcommand_flags(['deploy', 'recovery', 'export']))
+        self.assertIn('out-dir', subcommand_flags(['keys', 'generate', 'onion']))
+        self.assertNotIn('out-dir', subcommand_flags(['keys', 'generate', 'tor-client']))
+        self.assertIn('out', subcommand_flags(['keys', 'import', 'audit']))
+        self.assertIn('clear-restore-gate', subcommand_flags([]))
+        self.assertIsNone(runbook_arguments('gh release download T --repo OWNER/opsecmkt --dir d'))
+
+
+class KeyCommandParentsTest(unittest.TestCase):
+    """DA110-4: key commands refuse a missing parent directory, so a guide that shows one also shows the directory made."""
+
+    OUTPUTS = ('--out', '--out-dir', '--public-out', '--private-out', '--cert-out', '--key-out')
+
+    def test_every_guide_creates_the_parents_of_its_key_outputs(self):
+        problems, seen = [], 0
+        guides = [REPOSITORY / 'README.md'] + sorted((REPOSITORY / 'docs').glob('*.md')) + sorted((REPOSITORY / 'docs' / 'install').glob('*.md'))
+        for guide in guides:
+            made = set()
+            for line in commands(guide.read_text()):
+                match = re.match(r'install -d\b(.*)$', line)
+                if match:
+                    made.update(os.path.normpath(word) for word in shlex.split(match.group(1)) if not re.fullmatch(r'-m|\d{3,4}', word))
+                arguments = opsecmkt_arguments(line) if re.search(r'opsecmkt keys\b', line) else None
+                if not arguments:
+                    continue
+                seen += 1
+                for flag, value in zip(arguments, arguments[1:]):
+                    parent = os.path.dirname(os.path.normpath(value))
+                    if flag in self.OUTPUTS and parent and parent not in made:
+                        problems.append('%s: %s is not created before: %s' % (guide.name, parent, line))
+        self.assertEqual(problems, [], '\n'.join(problems))
+        self.assertGreater(seen, 20)
+
+    def test_key_blocks_run_in_an_empty_directory(self):
+        binary = built_binary()
+        cases = ((RUNBOOK_PATH, './identities-stagenet/storefront'), (REPOSITORY / 'docs/install/tor.md', './identities/administrator'),
+                 (REPOSITORY / 'docs/install/tor.md', './admin-private/operator.key'),
+                 (REPOSITORY / 'docs/install/cli-reference.md', './identities/administrator'),
+                 (REPOSITORY / 'docs/install/cli-reference.md', './private/operator.key'))
+        for guide, output in cases:
+            with self.subTest(guide=guide.name, output=output), tempfile.TemporaryDirectory() as work:
+                block = next(b for b in code_blocks(guide.read_text()) if 'keys generate' in b and output in b)
+                os.symlink(binary, os.path.join(work, 'opsecmkt'))
+                result = subprocess.run(['sh', '-e', '-c', block], cwd=work, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(os.path.exists(os.path.join(work, output)), output)
+                parent = os.path.dirname(os.path.join(work, output))
+                self.assertEqual(stat.S_IMODE(os.stat(parent).st_mode), 0o700)
 
 
 if __name__ == '__main__':

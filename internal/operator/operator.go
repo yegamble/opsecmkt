@@ -662,7 +662,11 @@ func printPlan(out io.Writer, c Config) error {
 	if registrations == "" {
 		registrations = "open"
 	}
-	_, err := fmt.Fprintf(out, "mode: %s\nproject: %s\nDocker context: %s\nservices: %s\napp listener: %s\nMonero network: %s; escrow: %s\ninitial visitor access: %s; new registrations: %s (saved administrator settings take precedence)\nsecret values: private files, omitted\n", mode, c.Project, c.DockerContext, strings.Join(services, ", "), c.AppBind, c.Settings["MONERO_NETWORK"], c.Settings["ESCROW_XMR"], siteAccess, registrations)
+	listeners := "app listener: " + c.AppBind
+	if c.BackendBind != "" {
+		listeners += "\nupload backend listener: " + c.BackendBind
+	}
+	_, err := fmt.Fprintf(out, "mode: %s\nproject: %s\nDocker context: %s\nservices: %s\n%s\nMonero network: %s; escrow: %s\ninitial visitor access: %s; new registrations: %s (saved administrator settings take precedence)\nsecret values: private files, omitted\n", mode, c.Project, c.DockerContext, strings.Join(services, ", "), listeners, c.Settings["MONERO_NETWORK"], c.Settings["ESCROW_XMR"], siteAccess, registrations)
 	if err != nil {
 		return err
 	}

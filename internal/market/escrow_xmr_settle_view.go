@@ -66,6 +66,7 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 		}
 		if s.stored = s.TxHash != ""; s.stored {
 			s.Fee, s.InputTotal = amount(fee, 12), amount(total, 12)
+			v.NothingCounted, v.ShortCounted = false, false // A-770: a transaction exists, so "nothing is sent" would be false
 		}
 		out = append(out, s)
 	}
@@ -178,14 +179,20 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 	case "requested":
 		s.Status = "Requested: the market builds this transaction from this order's escrow account and sends it on its next pass. Reload in a minute."
 		switch {
+		case !settlementFits(s.kind, o.State, outcome) && v.NothingCounted: // A-770
+			s.Status = "Requested: the market builds and sends this release only once the order is completed or its dispute is decided for the vendor, and no deposit to this escrow counts now, so nothing is sent now. It is built and sent then only if the network lists the deposit again and it has confirmed."
 		case !settlementFits(s.kind, o.State, outcome):
 			s.Status = "Requested: the market builds and sends this release only once the order is completed or its dispute is decided for the vendor. Nothing is sent before."
 		case v.RestorePaused:
 			s.Status = "Paused: " + restoreWhy + ", so the market builds and sends no settlement until the operator has finished. The escrow is still watched."
 		case !v.Available:
 			s.Status = "Waiting: Monero escrow is unavailable on this market right now, so the market builds this settlement once it is available again."
+		case why != "" && v.NothingCounted && s.kind != "stray_refund": // A-770
+			s.Status = "Not built yet. " + why + " No deposit to this escrow counts now, so nothing is sent now."
 		case why != "":
 			s.Status = "Not built yet. " + why
+		case v.NothingCounted && s.kind != "stray_refund": // A-770
+			s.Status = "Requested: no deposit to this escrow counts now, so the market sends nothing now. It builds this transaction and sends it once the network lists the deposit again and it has confirmed."
 		}
 	case "built":
 		s.Status = "Built, checked and stored; the market sends it on its next pass. Nothing has been sent yet."

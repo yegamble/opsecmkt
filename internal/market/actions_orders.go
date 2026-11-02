@@ -398,6 +398,13 @@ func resolveAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
+		zero, live, err := xmrAtZero(ctx, c.Tx, orderID, seen)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if zero { // A-770: the notice's "refund to buyer" or "release to vendor" sends nothing now
+			ctx = withNoticeDetail(ctx, orderID, stateResolved, xmrZeroNotice(outcome, live))
+		}
 		_, err = c.A.transition(ctx, c.Tx, orderID, stateDisputed, stateResolved, c.User, status)
 		if err == errReleaseFinal && coin == "XMR" {
 			return actionResult{}, errXMRReleaseFinal // escrowSettleTerminal: the release requested at shipment has its transaction

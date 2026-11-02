@@ -73,13 +73,23 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 	return confirmedTx(c, true, func(c *actionCtx) (actionResult, error) {
 		ctx := c.Ctx()
 		var orderID string
-		err := c.Tx.QueryRowContext(ctx, `UPDATE disputes SET status=$1,outcome=$2,resolution=$3
-			WHERE id=$4 AND status='Open' AND outcome='' RETURNING order_id`, status, c.Form.Get("outcome"),
-			"The "+party+" conceded the dispute. The "+map[string]string{"release": "vendor receives the release", "refund": "buyer receives the refund"}[c.Form.Get("outcome")]+".", c.Form.Get("id")).Scan(&orderID)
+		err := c.Tx.QueryRowContext(ctx, `SELECT order_id FROM disputes WHERE id=$1 AND status='Open' AND outcome='' FOR NO KEY UPDATE`, c.Form.Get("id")).Scan(&orderID)
 		if err == sql.ErrNoRows {
 			return actionResult{}, fail(409, "Open dispute not found")
 		}
 		if err != nil {
+			return actionResult{}, err
+		}
+		zero, live, err := xmrAtZero(ctx, c.Tx, orderID, seen)
+		if err != nil {
+			return actionResult{}, err
+		}
+		resolution := "The " + party + " conceded the dispute. The " + map[string]string{"release": "vendor receives the release", "refund": "buyer receives the refund"}[c.Form.Get("outcome")] + "."
+		if zero { // A-770: no one receives a release or refund now, so the record says so
+			resolution = "The " + party + " conceded the dispute. " + xmrZeroNotice(c.Form.Get("outcome"), live)
+		}
+		// One write: the moderation trigger on disputes captures each (QA-A770-2).
+		if _, err = c.Tx.ExecContext(ctx, `UPDATE disputes SET status=$1,outcome=$2,resolution=$3 WHERE id=$4`, status, c.Form.Get("outcome"), resolution, c.Form.Get("id")); err != nil {
 			return actionResult{}, err
 		}
 		// The current party is checked again by transition's locked order row.
@@ -88,6 +98,9 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 			if tctx, err = xmrClaimCueCtx(tctx, c.Tx, orderID, to); err != nil {
 				return actionResult{}, err
 			}
+		}
+		if zero { // A-770: so does the notice
+			tctx = withNoticeDetail(tctx, orderID, to, xmrZeroNotice(c.Form.Get("outcome"), live))
 		}
 		if _, err = c.A.transition(tctx, c.Tx, orderID, stateDisputed, to, c.User, status); err != nil {
 			return actionResult{}, err

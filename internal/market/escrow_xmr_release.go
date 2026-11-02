@@ -56,6 +56,7 @@ var (
 	errXMRReleaseFinal   = fail(409, "The release to the vendor already has its transaction, built by the market from this order's escrow account, so the escrow pays the vendor and the dispute cannot be decided for the buyer. Decide it for the vendor. Nothing was changed.")
 	xmrShippedNote       = "Release requested at shipment (Monero escrow): the vendor gave the address the release pays. Nothing is built or sent before the order is completed: when the buyer confirms receipt, or at the release deadline if the buyer has neither confirmed receipt nor opened a dispute, the market builds the release from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it."
 	xmrClaimNote         = "Vendor requested the escrow claim (Monero escrow): the market builds the release from this order's escrow account (less the market fee and the network fee; " + escrowExcessRule("XMR") + ") and sends it. Nothing is sent yet."
+	xmrClaimWaitsNote    = "Vendor requested the escrow claim (Monero escrow), but " + xmrNothingCounts + ": if the network lists the deposit again, the market builds the release from this order's escrow account and sends it once it has confirmed."
 	xmrConfirmedNote     = "Receipt confirmed by the buyer (Monero escrow): the order is completed, and the market builds the release of the escrowed coins to the address the vendor gave when marking it shipped, and sends it. This cannot be undone."
 	xmrConfirmedDigital  = "Receipt confirmed by the buyer (Monero escrow): the order is completed, and the vendor claims the escrowed coins from the order page. This cannot be undone."
 )
@@ -164,10 +165,21 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 		if err = insertXMRRelease(c, o.ID, dest); err != nil {
 			return actionResult{}, err
 		}
-		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, xmrClaimNote); err != nil {
+		// A-770: a claim at zero counted is accepted and waits (xmrCreditedHold); it says so.
+		zero, _, err := xmrCountedZero(ctx, c.Tx, o.ID)
+		if err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: orderPage(o.ID), Notice: "escrow-xmr-claim",
+		note := xmrClaimNote
+		notice := "escrow-xmr-claim"
+		if zero {
+			note = xmrClaimWaitsNote
+			notice = "escrow-xmr-claim-waits"
+		}
+		if _, err = c.Tx.ExecContext(ctx, "INSERT INTO order_events(order_id,from_state,to_state,actor_id,note) VALUES($1,$2,$2,$3,$4)", o.ID, o.State, c.User.ID, note); err != nil {
+			return actionResult{}, err
+		}
+		return actionResult{Redirect: orderPage(o.ID), Notice: notice,
 			Audit: "Requested the escrow claim of order " + shortID(o.ID) + " (Monero escrow, " + c.A.xmrEscrowNetwork() + ")"}, nil
 	})
 }
@@ -207,8 +219,16 @@ func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		ctx = withNoticeDetail(ctx, o.ID, stateShipped, "Release deadline: "+utcUntil(deadline)+". Confirm receipt on the order page once the goods have arrived; if they have not arrived, open a dispute before then. "+
-			"If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor: if you cannot confirm receipt, you need do nothing.")
+		detail := "Release deadline: " + utcUntil(deadline) + ". Confirm receipt on the order page once the goods have arrived; if they have not arrived, open a dispute before then. " +
+			"If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor: if you cannot confirm receipt, you need do nothing."
+		zero, _, err := xmrCountedZero(ctx, c.Tx, o.ID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if zero { // A-770
+			detail += " No deposit to this escrow counts now, so nothing is sent then unless the network lists the deposit again and it has confirmed."
+		}
+		ctx = withNoticeDetail(ctx, o.ID, stateShipped, detail)
 		if _, err = c.A.transition(ctx, c.Tx, o.ID, statePaid, stateShipped, c.User, note); err == errConflict {
 			return actionResult{}, shipConflict(c, o.ID) // P2-R5: the buyer's no-ship cancel took the order row first
 		} else if err != nil {
@@ -237,7 +257,8 @@ func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 const xmrResolveConfirm = "I checked the amount and who receives it for the outcome I chose. The market sends these coins on its next pass; this cannot be undone."
 
 // xmrDisputePreview is escrowDisputePreview for a Monero escrow order (A-405): the counted escrowed amount in XMR, the
-// transaction each outcome has the market build from the order's account, and the release requested at shipment.
+// transaction each outcome has the market build from the order's account, and the release requested at shipment. At
+// zero counted (A-740) no settlement is requested (escrowSettleTerminal), so it says nothing is sent now (A-770).
 func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, error) {
 	var sum, left int64
 	var release, final bool
@@ -260,6 +281,19 @@ func (a *App) xmrDisputePreview(ctx context.Context, o *Order) (PayoutPreview, e
 	case release:
 		p.Release = "Release to " + o.Vendor + ": the release to the vendor requested when the order was shipped pays the escrowed " + escrowed + " to the address the vendor gave then " + fees
 		p.Refund += "; the release to the vendor requested when the order was shipped is cancelled"
+	}
+	if sum == 0 && !final {
+		again := xmrListedAgainClaim
+		if release {
+			again = xmrListedAgainLive
+		}
+		p.Release = "Release to " + o.Vendor + ": " + xmrNothingSent + "; " + again + " " + fees
+		p.Refund = "Refund to " + o.Buyer + ": " + xmrNothingSent + "; " + xmrListedAgainRefund
+		if release {
+			p.Refund += "; the release to the vendor requested when the order was shipped is cancelled"
+		}
+		p.Confirm = "I checked that no coins are counted, and who receives a deposit the network lists again, for the outcome I chose. The market sends nothing now; this cannot be undone."
+		p.Escrow = "This is a Monero escrow order (" + a.xmrEscrowNetShort() + "): its coins are " + xmrCustody + ". No coins are counted now, so this decision sends nothing now. If the network lists the deposit again, it goes by the outcome you choose: to the buyer's refund address by a stray refund, or to the vendor. This cannot be undone, and the decision cannot be changed once it is made."
 	}
 	return p, nil
 }
@@ -295,6 +329,18 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 		if state == stateDelivered { // A-709: a digital order has no release yet; its vendor claims
 			notice = "escrow-xmr-received"
 			detail, note = "The buyer confirmed receipt (Monero escrow): claim the escrowed coins on the order page with a fresh address.", xmrConfirmedDigital
+		}
+		zero, live, err := xmrCountedZero(ctx, c.Tx, o.ID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if zero { // A-770: the order completes, and its release waits for a deposit the network lists again (xmrCreditedHold)
+			notice = "escrow-xmr-confirm-waits"
+			if state == stateDelivered {
+				notice = "escrow-xmr-receive-waits"
+			}
+			detail = "The buyer confirmed receipt (Monero escrow). " + xmrZeroNotice("release", live)
+			note = "Receipt confirmed by the buyer (Monero escrow): the order is completed. " + xmrZeroNotice("release", live) + " This cannot be undone."
 		}
 		// A-652d: while the vendor is banned the release is held (xmrReleaseHeld), so the notes say so. A ban committed
 		// after this read leaves the usual wording; the order page then shows the hold.
