@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { check, context, password, pressSubmit, register, reloadUntil, settlementStatus, shot, tabTo, typeInto } from './escrow-helpers';
 import { pgpFixture, seedPGPAccess, seedStaffFactor } from './db-helpers';
@@ -29,6 +29,7 @@ const price = 500_000_000_000; // 0.5 XMR, the listings' price
 const marketFee = 12_500_000_000; // 2.5% (ESCROW_XMR_FEE_BPS=250)
 const xmr = (pico: number) => (pico / 1e12).toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
 const moneroAddress = /^[48][1-9A-HJ-NP-Za-km-z]{94}$/;
+const xmrWatcherLock = 782496; // internal/market/escrow_watch.go's xmrEscrowWatcherLock
 
 async function simPost(request: APIRequestContext, path: string, data: object): Promise<any> {
   const r = await request.post(`${sim}${path}`, { data });
@@ -129,14 +130,14 @@ async function checkout(buyer: Page, request: APIRequestContext) {
 async function funded(buyer: Page, request: APIRequestContext, title: string) {
   await draft(buyer, title);
   const order = await checkout(buyer, request);
-  await deposit(request, order.escrow, price);
+  const { txid } = await deposit(request, order.escrow, price);
   await mine(request, 10);
   await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText(title === digitalTitle ? 'Delivered' : 'Paid', { timeout: 500 }); });
   if (title === digitalTitle) {
     moveClock(order.url, "release_at=now()-interval '1 minute'");
     await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });
   }
-  return order;
+  return { ...order, txid: txid as string };
 }
 // A-721: with 25 listings on the desk at 320x640, Waiting for you is near the top and its first next-step link a few
 // Tab stops away; at 320, 390 and 768 px each row's next step sits inside the table's wrapper unscrolled, the 64-hex id
@@ -772,6 +773,79 @@ test('Vendor bond in XMR (A-547): the non-refundable terms before the one-time a
 // through SQL) an administrator who is not a party refunds the order's escrow to the buyer's refund address from the
 // order page, with a reason and the password. The release is never built; the refund is sent. This bans xmr_vendor, so
 // it runs last.
+// A-764 QA108-5: the real host command beside the running server, read on the panel and the order page with no JavaScript. The
+// watcher would consume a request within a second, so another session holds its advisory lock until the pending state has been
+// read, which is what another process holding it does (TestXMROutageCheckedWithLockHeld). The waiting line is a hand-written
+// record: the browser tier reads its wording, and the comparison behind it is TestXMROutageRecheckWaitsForClocks's. Simulated RPC.
+test('Monero escrow outage recheck (A-764): the host command beside the running server, the panel and the order page', async ({ browser, baseURL, request }, info) => {
+  const admin = await signIn(browser, baseURL, 'xmr_admin', password);
+  const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);
+  const order = await funded(buyer, request, physicalTitle);
+  moveClock(order.url, "ship_by=now()-interval '1 minute'");
+  const section = admin.locator('main');
+  const holder = spawn('psql', ['-qtAc', `SELECT pg_advisory_lock(${xmrWatcherLock}); SELECT pg_sleep(280)`], { env: { ...psqlEnv, PGAPPNAME: 'e2e-watcher-lock' }, stdio: 'ignore' });
+  try {
+    await expect(() => {
+      expect(sql(`SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE l.locktype='advisory' AND l.objid=${xmrWatcherLock} AND l.granted AND a.application_name='e2e-watcher-lock'`)).toBe('1');
+    }).toPass({ timeout: 30_000 });
+    const out = execFileSync('go', ['run', './cmd/server', '-request-deadline-recheck'], { encoding: 'utf8', env: { ...process.env, DATABASE_URL: process.env.E2E_ESCROW_XMR_DATABASE_URL! } });
+    expect(out).toContain('Deadline recheck now pending (outage).');
+    await admin.goto('/admin/payments');
+    await expect(section).toContainText('Deadline recheck pending: an outage asked for it.');
+    await expect(section).toContainText("The Monero escrow watcher's next pass runs it");
+    await shot(admin, info, 'o01-recheck-pending');
+    await buyer.goto(order.url);
+    await expect(buyer.locator('main')).toContainText('You cannot cancel yet: an outage made this market unavailable');
+    await expect(buyer.locator('form[action="/orders/cancel"]')).toHaveCount(0);
+    await shot(buyer, info, 'o02-cancel-waits');
+    sql(`INSERT INTO settings(key,value) VALUES('escrow_xmr_recheck_wait','{"reason":"database","db":"2026-01-01T00:00:00Z","app":"2026-01-01T00:00:00Z"}')`);
+    await admin.reload();
+    await expect(section).toContainText("It is waiting because the application's clock and the database's clock differ by more than 5 minutes.");
+    await expect(section).not.toContainText("watcher's next pass runs it");
+    await shot(admin, info, 'o03-recheck-waiting');
+    sql(`DELETE FROM settings WHERE key='escrow_xmr_recheck_wait'`);
+  } finally {
+    // The session itself: psql's exit would leave its backend in pg_sleep, still holding the lock.
+    sql(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='e2e-watcher-lock'`);
+    holder.kill();
+  }
+  await reloadUntil(admin, async () => { await expect(section).toContainText('No deadline recheck is pending.', { timeout: 500 }); });
+  await expect(section).toContainText('after an outage; it moved 0 order deadline(s).');
+  await expect(section).toContainText("Buyers' no-ship cancels are held until");
+  await shot(admin, info, 'o04-recheck-ran');
+  await buyer.reload();
+  await expect(buyer.locator('main')).toContainText('an outage made this market unavailable');
+  await expect(buyer.locator('main')).toContainText('You can cancel from');
+  await expect(buyer.locator('form[action="/orders/cancel"]')).toHaveCount(0);
+  // The hold ended: the later tests cancel nothing past its time, and this one's order can be closed.
+  sql(`DELETE FROM settings WHERE key IN ('escrow_xmr_cancel_wait_until','escrow_xmr_cancel_wait_cause','escrow_xmr_cancel_wait_from')`);
+  await buyer.reload();
+  await expect(buyer.locator('form[action="/orders/cancel"]')).toHaveCount(1);
+});
+
+// A-764 QA108-5, A-737: a paid order whose only deposit the wallet no longer lists counts no coins. Its cancel form says nothing is
+// refunded, carries the confirmation the action asks for, and closes the order from the keyboard with no settlement. It used to
+// answer 400 for lack of a field it did not show. The simulator forgets the transaction; no reorganisation happens.
+test('Monero escrow zero-amount cancel form (A-737): a paid order with no counted deposit, cancelled with no JavaScript', async ({ browser, baseURL, request }, info) => {
+  const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);
+  const vendor = await signIn(browser, baseURL, 'xmr_vendor', vendorPassword);
+  const order = await funded(buyer, request, physicalTitle);
+  await simPost(request, '/test/xmr/forget-tx', { txid: order.txid });
+  await vendor.goto(order.url);
+  const form = vendor.locator('form[action="/orders/cancel"]');
+  await reloadUntil(vendor, async () => { await expect(form).toContainText('No counted coins are in this escrow, so cancelling refunds nothing now', { timeout: 500 }); });
+  await expect(form.locator('input[name="amount_seen"]')).toHaveValue('0');
+  await shot(vendor, info, 'z01-zero-cancel-form');
+  await check(vendor, form.locator('input[name="payout_confirmed"]'));
+  expect(await pressSubmit(vendor, form.getByRole('button'))).toBe(303);
+  await expect(badge(vendor)).toHaveText('Cancelled');
+  await buyer.reload();
+  await expect(badge(buyer)).toHaveText('Cancelled');
+  await expect(buyer.locator('main')).toContainText('Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded.');
+  await expect(buyer.locator('section.escrow-settlement')).toHaveCount(0);
+  await shot(buyer, info, 'z02-zero-cancelled');
+});
+
 test('Monero escrow held release of a banned vendor (A-652f): refunded to the buyer from the order page after the period', async ({ browser, baseURL, request }, info) => {
   const admin = await signIn(browser, baseURL, 'xmr_admin', password);
   const buyer = await signIn(browser, baseURL, 'xmr_buyer', buyerPassword);

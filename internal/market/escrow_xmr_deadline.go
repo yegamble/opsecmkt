@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,8 +56,14 @@ import (
 //     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
 //     banned, steps 2 and 3 and the buyer's confirmation say the release is then held (xmrReleaseHeld, A-652c).
 //
-// No step makes an RPC, and none runs while the restore gate is set: the recheck then runs in the first pass after the
-// gate is cleared, before the release. Step 5 runs with the ban whatever the gate: it only moves deadlines later.
+//     An outage's request also compares the clocks first: while the database's clock disagrees with this process's or with
+//     the newest block of a daemon that says it is synced, it waits and stays pending, at most 72 hours on both clocks
+//     (xmrClocksApart, xmrRecheckWaits, PAY108-1). A clock step finds the same gap as a real outage, and the ends written then
+//     only move later.
+//
+// No step but that comparison makes an RPC, and it has its own short budget (xmrClockCheckBudget). None runs while the restore
+// gate is set: the recheck then runs in the first pass after the gate is cleared, before the release. Step 5 runs with the ban
+// whatever the gate: it only moves deadlines later.
 
 func init() { registerLoader("admin", xmrDeadlineRecheckLoader) }
 
@@ -114,6 +121,44 @@ const xmrOutageGapFromKey = "escrow_xmr_outage_gap_from"
 // xmrRecheckRequestedAudit is the audit row of a new host request for the recheck (PM-3). A recheck the request asked for
 // follows it; one the watcher asked for has none.
 const xmrRecheckRequestedAudit = "Monero deadline recheck requested from the host"
+
+// xmrRecheckWaitKey is the setting that holds, as JSON (xmrRecheckWait), why an outage's recheck is waiting for the clocks to
+// agree and when the wait began on each clock (PAY108-1). The recheck deletes it in the transaction that consumes the request.
+const xmrRecheckWaitKey = "escrow_xmr_recheck_wait"
+
+// The clocks an outage's recheck waits on (PAY108-1): how far apart counts as disagreeing, and the most it waits. A clock set
+// by NTP stays well within the tolerance, which is under xmrOutageThreshold, so a step large enough to look like an outage is
+// always seen. The wait is 72 hours, the time this market already gives an operator's attention (RequestDeadlineRecheck).
+const (
+	xmrClockTolerance = 5 * time.Minute
+	xmrRecheckWaitMax = 72 * time.Hour
+)
+
+// xmrClockCheckBudget bounds the read of the daemon's tip in xmrClocksApart. A variable so tests can shorten it.
+var xmrClockCheckBudget = 5 * time.Second
+
+// xmrClocksDatabase and xmrClocksDaemon are xmrRecheckWait.Reason: which comparison disagreed. Each has a fixed line, with no
+// time or difference in it, for the log and the panel (xmrClocksWhy).
+const (
+	xmrClocksDatabase = "database"
+	xmrClocksDaemon   = "daemon"
+)
+
+// xmrClocksWhy is the fixed line of a reason in xmrRecheckWait.
+func xmrClocksWhy(reason string) string {
+	if reason == xmrClocksDaemon {
+		return "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE"
+	}
+	return "the application's clock and the database's clock differ by more than 5 minutes"
+}
+
+// xmrRecheckWait is what xmrRecheckWaitKey holds: the reason and the time on the database's and the application's clock when
+// the wait began, so that a jump of one clock alone does not end it.
+type xmrRecheckWait struct {
+	Reason string    `json:"reason"`
+	DB     time.Time `json:"db"`
+	App    time.Time `json:"app"`
+}
 
 // xmrOutageCauseSQL: what the pages say of the recheck pending, or else of the vendor's grace, for the escrow es is an
 // outage rather than a restore (A-730).
@@ -507,7 +552,26 @@ func xmrMovedByOutage(ctx context.Context, q rowQuerier, orderID, state, until s
 // After an outage the order page must not say a restore moved the deadline: release_recheck is what it reads, so the
 // flag is reset again (the ban's way round migration 079's trigger, xmrBanDeadlines); the order's history says why, and
 // the page reads that note (xmrOutageMovedNote).
+//
+// An outage's request first compares the clocks (xmrClocksApart, PAY108-1): a forward step of the database's clock finds the
+// same gap as a month's outage, and a recheck on it writes ends that only move later. While they disagree it waits, the
+// request stays pending and every hold stays (xmrRecheckWaits): deferred, never treated as no outage. The comparison, with
+// its daemon read, runs before the transaction, so no RPC waits with the request's row locked. A restore's request runs as
+// it always did: a restored database's deadlines must not wait for a clock.
 func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
+	var seen string
+	var dbNow time.Time
+	err := a.db.QueryRowContext(ctx, "SELECT value,now() FROM settings WHERE key=$1", xmrReleaseRecheckKey).Scan(&seen, &dbNow)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	apart := ""
+	if seen == xmrRecheckOutage {
+		apart = a.xmrClocksApart(ctx, dbNow)
+	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -522,6 +586,14 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		return err
 	}
 	outage := requested == xmrRecheckOutage
+	ranApart := false
+	if outage && apart != "" {
+		waiting, err := xmrRecheckWaits(ctx, tx, apart)
+		if err != nil || waiting {
+			return err
+		}
+		ranApart = true // the wait is over and they still disagree: it runs, and says so
+	}
 	cause := "restore"
 	if outage {
 		cause = xmrRecheckOutage
@@ -621,29 +693,99 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=$1", xmrReleaseRecheckKey); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key IN ($1,$2)", xmrReleaseRecheckKey, xmrRecheckWaitKey); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,json_build_object('at',now(),'cause',$2::text,'moved',$3::int)::text)
-		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, xmrLastRecheckKey, cause, count); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,json_build_object('at',now(),'cause',$2::text,'moved',$3::int,'clocks_apart',$4::boolean)::text)
+		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, xmrLastRecheckKey, cause, count, ranApart); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES(NULL,$1)",
-		"Monero escrow deadline recheck (cause: "+cause+"): moved "+strconv.Itoa(count)+" order deadline(s)"); err != nil {
+	action := "Monero escrow deadline recheck (cause: " + cause + "): moved " + strconv.Itoa(count) + " order deadline(s)"
+	if ranApart {
+		action += ", with the clocks still apart after the wait"
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES(NULL,$1)", action); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	log.Printf("monero escrow deadline recheck: cause=%s moved=%d", cause, count)
+	if ranApart {
+		log.Printf("monero escrow deadline recheck: cause=%s moved=%d clocks_apart=true", cause, count)
+	} else {
+		log.Printf("monero escrow deadline recheck: cause=%s moved=%d", cause, count)
+	}
 	return nil
+}
+
+// xmrClocksApart compares the database's time dbNow with this process's clock and with the daemon's newest block, and returns
+// the reason they disagree, or "" (PAY108-1). The application's clock is time.Now, not the watcher's clock, which tests fix.
+// A check that cannot run proves nothing and stops nothing: a daemon that is off, unreachable or hung (xmrClockCheckBudget),
+// or that does not itself say it is synced (still catching up after the same outage, or with no peers), or the fakechain, whose
+// tip is old by design, leaves only the two clocks that could be read. Run with those two already apart, it asks no daemon.
+func (a *App) xmrClocksApart(ctx context.Context, dbNow time.Time) string {
+	if dbNow.Sub(time.Now()).Abs() > xmrClockTolerance {
+		return xmrClocksDatabase
+	}
+	x := a.escrowXMR
+	if x == nil || !x.ready.Load() {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, xmrClockCheckBudget)
+	defer cancel()
+	node, err := x.rpc.node(ctx)
+	if err != nil || node.NetType == "fakechain" || node.NetType != x.rpc.nettype() || node.notSynced(dbNow, math.MaxInt64) != "" {
+		return ""
+	}
+	if dbNow.Sub(time.Unix(node.TipTime, 0)).Abs() > moneroMaxTipAge() {
+		return xmrClocksDaemon
+	}
+	return ""
+}
+
+// xmrRecheckWaits decides, in the recheck's transaction, whether its request keeps waiting on clocks that disagree for
+// reason, and if so commits the record and reports true: no deadline has moved, and the setting that holds the request keeps
+// every hold in force. It logs and writes when the reason changes, so a pass adds nothing. The wait ends, with the clocks still
+// apart, once xmrRecheckWaitMax has passed on both clocks: it must not hold a market for good, and one clock's jump must not
+// end it. A clock that went back since the wait began says nothing of how long it has run, so the count starts again.
+func xmrRecheckWaits(ctx context.Context, tx *sql.Tx, reason string) (bool, error) {
+	var stored sql.NullString
+	var dbNow time.Time
+	if err := tx.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),now()", xmrRecheckWaitKey).Scan(&stored, &dbNow); err != nil {
+		return false, err
+	}
+	appNow := time.Now().UTC()
+	var wait xmrRecheckWait
+	fresh := !stored.Valid || json.Unmarshal([]byte(stored.String), &wait) != nil || wait.DB.IsZero() || wait.App.IsZero() || dbNow.Before(wait.DB) || appNow.Before(wait.App)
+	switch {
+	case fresh:
+		wait.DB, wait.App = dbNow, appNow
+	case dbNow.Sub(wait.DB) >= xmrRecheckWaitMax && appNow.Sub(wait.App) >= xmrRecheckWaitMax:
+		return false, nil
+	case wait.Reason == reason:
+		return true, nil
+	}
+	wait.Reason = reason
+	raw, err := json.Marshal(wait)
+	if err != nil {
+		return false, err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", xmrRecheckWaitKey, string(raw)); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	log.Printf("monero escrow recheck deferred: %s; its request stays pending and every hold stays in force", xmrClocksWhy(reason))
+	return true, nil
 }
 
 // xmrLastRecheck is what xmrLastRecheckKey holds.
 type xmrLastRecheck struct {
-	At    time.Time `json:"at"`
-	Cause string    `json:"cause"`
-	Moved int       `json:"moved"`
+	At          time.Time `json:"at"`
+	Cause       string    `json:"cause"`
+	Moved       int       `json:"moved"`
+	ClocksApart bool      `json:"clocks_apart,omitempty"`
 }
 
 // RequestDeadlineRecheck is the host command -request-deadline-recheck: public access failed while the watcher runs, which
@@ -676,7 +818,7 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 		return "", recheckRequestFailed(err)
 	}
 	const next = " With Monero escrow on, the watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. With ESCROW_XMR off the request stays pending until the first pass after it is on again, and a buyer's no-ship cancel past its time waits until then. Each recheck also holds a buyer's no-ship cancel for 72 hours, even if it moves no deadline: Admin > Payments states the hold and its end. "
-	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns, and run this once more when public access returns, so a buyer does not come back with minutes left. Each repeat notifies every buyer and vendor it moves again, so repeat no more often than that needs. Confirm on Admin > Payments that it shows pending or has just run, or by the operator guide's check if that panel shares the failed ingress: this command writes only to the database its URL names."
+	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns, and run this once more when public access returns, so a buyer does not come back with minutes left. Each repeat notifies every buyer and vendor it moves again, so repeat no more often than that needs. If this market's clocks disagree, the recheck waits for them, 72 hours at the most, and Admin > Payments says why: correct the clock. Confirm on Admin > Payments that it shows pending or has just run, or by the operator guide's check if that panel shares the failed ingress: this command writes only to the database its URL names."
 	if written > 0 {
 		return "Deadline recheck now pending (outage)." + next + limits, nil
 	}
@@ -709,6 +851,8 @@ type XMRDeadlineRecheckView struct {
 	Ran, RanOutage             bool
 	RanAt                      string
 	Moved                      int
+	RanClocksApart             bool   // the last one ran past the wait's bound with the clocks apart (PAY108-1)
+	WaitingWhy                 string // why an outage's pending recheck waits for the clocks (xmrClocksWhy, PAY108-1), fixed text
 	CancelHeldUntil            string // the end of the vendor's grace, while it runs (xmrCancelWaitKey, DA108-2)
 	CancelHeldFrom             string // the gap's start, when the grace has one (xmrCancelWaitFromKey, DA108-1)
 }
@@ -720,16 +864,20 @@ func xmrDeadlineRecheckLoader(ctx context.Context, a *App, _ *http.Request, d *P
 	if d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
-	var pending, last, waitUntil, waitFrom sql.NullString
+	var pending, last, waitUntil, waitFrom, waiting sql.NullString
 	var now time.Time
-	if err := a.db.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2),(SELECT value FROM settings WHERE key=$3),(SELECT value FROM settings WHERE key=$4),now()",
-		xmrReleaseRecheckKey, xmrLastRecheckKey, xmrCancelWaitKey, xmrCancelWaitFromKey).Scan(&pending, &last, &waitUntil, &waitFrom, &now); err != nil {
+	if err := a.db.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2),(SELECT value FROM settings WHERE key=$3),(SELECT value FROM settings WHERE key=$4),(SELECT value FROM settings WHERE key=$5),now()",
+		xmrReleaseRecheckKey, xmrLastRecheckKey, xmrCancelWaitKey, xmrCancelWaitFromKey, xmrRecheckWaitKey).Scan(&pending, &last, &waitUntil, &waitFrom, &waiting, &now); err != nil {
 		return err
 	}
 	v := &XMRDeadlineRecheckView{On: a.escrowXMR != nil, Pending: pending.Valid, PendingOutage: pending.String == xmrRecheckOutage}
 	var rec xmrLastRecheck
 	if last.Valid && json.Unmarshal([]byte(last.String), &rec) == nil && !rec.At.IsZero() {
-		v.Ran, v.RanOutage, v.RanAt, v.Moved = true, rec.Cause == xmrRecheckOutage, utcUntil(rec.At), rec.Moved
+		v.Ran, v.RanOutage, v.RanAt, v.Moved, v.RanClocksApart = true, rec.Cause == xmrRecheckOutage, utcUntil(rec.At), rec.Moved, rec.ClocksApart
+	}
+	var wait xmrRecheckWait
+	if v.PendingOutage && waiting.Valid && json.Unmarshal([]byte(waiting.String), &wait) == nil {
+		v.WaitingWhy = xmrClocksWhy(wait.Reason)
 	}
 	if until, err := time.Parse(time.RFC3339Nano, waitUntil.String); err == nil && until.After(now) {
 		v.CancelHeldUntil = utcFrom(until) // as the buyer's refusal names it

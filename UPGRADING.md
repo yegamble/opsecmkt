@@ -15,6 +15,27 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## An outage's recheck waits while the clocks disagree (A-764)
+
+No migration or configuration; one new `settings` row, `escrow_xmr_recheck_wait`, present only during a wait. A forward jump of the
+database's clock finds the same gap as a real outage, and the recheck on it wrote deadlines and an end to the buyer's cancel grace that no
+later recheck could bring back. **Keep the application host and the database host on NTP**: their clocks now matter to this one decision.
+
+Before an outage's recheck, whoever asked for it, the watcher compares the database's clock with the application's and with the newest
+block of a Monero daemon that says it is synced. If the first two differ by more than 5 minutes, or the database's clock and that block by
+more than `MONERO_MAX_TIP_AGE`, the request stays pending: no deadline moves, no order completes on a passed deadline, a no-ship cancel
+past its time waits and a dispute on a passed deadline is accepted. A log line, `monero escrow recheck deferred: …`, and **Admin →
+Payments** say which comparison disagreed. A real outage has the same gap, so this only defers: with the clocks agreeing, a month's outage
+moves deadlines as before. A restore's recheck does not wait. A daemon that is unreachable, hung (5 seconds), not synced or without peers
+stops nothing: the two clocks alone then decide.
+
+**How the wait ends.** The first pass after the clocks agree runs the recheck at the correct time. If they stay apart, compare `date -u` on
+the application host with `SELECT now()` over your protected database connection and correct the clock that is wrong; if those agree, check
+the daemon's peers and block time. The wait ends by itself once 72 hours have passed on both clocks, so a clock left wrong does not hold
+completions and cancels for good: the recheck then runs with the clocks still apart, and logs `clocks_apart=true`, and its audit row and
+**Admin → Payments** say so. That run can delay deadlines by the jump plus 72 hours, and no form undoes it. Tested against a database with
+a simulated clock and a simulated wallet RPC; no host's clock was stepped.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
@@ -180,9 +201,10 @@ requests a refund, which relays once a watcher runs:
   not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
   period runs none.
 
-Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
-than the threshold gives a false recheck. A jump delays every release deadline and dispute window it reaches, and the buyer's cancel
-grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. Each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order. Neither says that the outage was real: `cause=outage` reads the same for a true gap, a false one and an operator's request. A recheck a host request asked for follows a *Monero deadline recheck requested from the host* row in the audit trail; one the watcher asked for, on a true gap or a clock jump, has none.
+Repeated outages each extend these deadlines again, with no cap. Since A-764 an outage's recheck [waits while the clocks disagree](#an-outages-recheck-waits-while-the-clocks-disagree-a-764).
+That wait's end with the clocks still apart, and a jump of the application's and the database's clocks together while no synced daemon can contradict them, is the false recheck that remains.
+It delays every release deadline and dispute window it reaches, and the buyer's cancel
+grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. A VM pause of the whole host stops the market as an outage does, so its recheck is a true one. Each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order. Neither says that the outage was real: `cause=outage` reads the same for a true gap, a false one and an operator's request. A recheck a host request asked for follows a *Monero deadline recheck requested from the host* row in the audit trail; one the watcher asked for, on a true gap or a clock jump, has none.
 
 The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
 reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's
