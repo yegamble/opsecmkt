@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -352,6 +353,60 @@ func TestAdminSecurityShowsBusyCounts(t *testing.T) {
 	// The signal's own line hides its counts while it is on; these stay, since the registrations may still be going on.
 	tripSignInAttack(context.Background(), e.A)
 	mustContain(t, page(), "Attack signal: on.", counts(3, 2))
+}
+
+// PM109-6 (with A-760 PM-6): a refused registration left only a one-minute count. A since-process total and the last time
+// stay on /admin/security after the window ends, in memory, naming no one, and send no notice.
+func TestRegistrationRefusalsKeepASinceProcessTotal(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("total_admin", "admin")
+	_, moderator := e.user("total_moderator", "moderator")
+	_, buyer := e.user("total_buyer", "buyer")
+	setCaptchaMode(e, captchaModeUnderAttack)
+	page := func() string { return html.UnescapeString(e.body("GET", "/admin/security", admin, nil, 200)) }
+	total := func(n int) string {
+		return fmt.Sprintf("Since this process started: %d registrations refused because no slot was free", n)
+	}
+	mustContain(t, page(), total(0)+".")
+	mustNotContain(t, page(), "the last at")
+
+	session := randomToken()
+	id := e.captcha("/register", session)
+	release := holdSlots(t, registerWork)
+	defer release()
+	w := e.do("POST", "/register", session, signInForm("total_flood_handle", testPassword, "captcha_id", id, "captcha", e.A.captchaTextChallenge(id).Answers[0]))
+	if w.Code != 503 {
+		t.Fatalf("registration with no slot: %d", w.Code)
+	}
+	release()
+	var wg sync.WaitGroup
+	for range 40 {
+		wg.Go(func() { e.A.noteRegisterBusy(context.Background()) })
+	}
+	wg.Wait()
+	body := page()
+	mustContain(t, body, total(41)+", the last at ", "and 41 registrations refused")
+	mustContain(t, page(), total(41)) // after a reload
+	mustNotContain(t, body, "total_flood_handle")
+
+	// The one-minute window ends; the total and its time stay.
+	e.A.mu.Lock()
+	e.A.signInAttackPublic.registerFrom = time.Now().Add(-2 * signInAttackBusyWindow)
+	e.A.mu.Unlock()
+	body = page()
+	mustContain(t, body, "and 0 registrations refused", total(41)+", the last at "+time.Now().UTC().Format("2006-01-02 "))
+
+	// A count and a time alone: no notice, and non-administrators see neither.
+	if n := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", adminID); n != 0 {
+		t.Fatalf("%d notifications for refused registrations", n)
+	}
+	e.check(e.do("GET", "/admin/security", buyer, nil), 403)
+	e.check(e.do("GET", "/admin/security", moderator, nil), 403)
+
+	// It is this process's: a restart clears it, as the panel says.
+	mustContain(t, body, "a restart clears them")
+	e.restart()
+	mustContain(t, page(), total(0)+".")
 }
 
 // SEC102-2: a registration that can only be refused for its missing key is refused before the human check and the slot,

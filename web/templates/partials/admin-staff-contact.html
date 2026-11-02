@@ -9,7 +9,7 @@
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/staff-contact"}}">
 <label>Staff contact<input name="staff_contact" value="{{index .Settings "staff_contact"}}" maxlength="200" autocomplete="off" spellcheck="false" aria-describedby="staff-contact-help">
 </label>
-<span class="help" id="staff-contact-help">At most 200 characters on one line. Anyone can read it, including visitors who are not signed in. Save it empty to remove it. Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}; the old and new values are recorded in the audit trail.</span>
+<span class="help" id="staff-contact-help">At most 200 characters on one line. Anyone can read it, including visitors who are not signed in. Save it empty to remove it. Confirm with your own password{{if and $.Security $.Security.TOTPEnabled}} and authenticator code{{end}}; the old and new values are recorded in the audit trail, and a staff member it comes to name or stops naming is notified. A daily check notifies administrators when a warning above appears, changes or clears, including 30 days before a staff handle's key expires.</span>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save staff contact</button>
 </form>

@@ -36,6 +36,16 @@ completions and cancels for good: the recheck then runs with the clocks still ap
 **Admin → Payments** say so. That run can delay deadlines by the jump plus 72 hours, and no form undoes it. Tested against a database with
 a simulated clock and a simulated wallet RPC; no host's clock was stepped.
 
+## Identity notices: the attack signal's route, the staff contact and refused registrations (A-768)
+
+No migration or configuration. New `settings` rows, written when they first apply: `sign_in_attack_last_public` and `sign_in_attack_last_private` hold the count that last turned the attack signal on and when, with no handle, account or client. *Security & access* shows them, and the notification now names the count.
+
+A staff member named as the staff contact, or no longer named, now gets a notification, and the audit row says so. Nothing is sent for a contact saved before this version.
+
+Each process now checks the staff contact daily and at start, and notifies administrators when its warnings change, and 30 days before its key expires, which *Site & branding* and the overview also show. The state told is the new `staff_contact_health_notice` setting. A market whose contact has a warning at the first start gets that one notice.
+
+*Security & access* also shows the registrations refused since the process started and the time of the last; these are in memory, and a restart clears them.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
