@@ -113,6 +113,11 @@ case "${1:-help}" in
     bash scripts/quality.sh lint
     ;;
   vuln)
+    # A transient proxy failure is retried here, not left to fail the scan part way through (A-782). The tool's modules are the
+    # ones govulncheck builds from, not the whole manifest; one missing from this list only goes without the retry.
+    require_go
+    GO=$go_command sh scripts/go-fetch.sh
+    GO=$go_command sh scripts/go-fetch.sh -modfile=tools/go.mod golang.org/x/vuln golang.org/x/tools golang.org/x/mod golang.org/x/sync golang.org/x/telemetry
     tool govulncheck -test ./...
     ;;
   workflow-lint)

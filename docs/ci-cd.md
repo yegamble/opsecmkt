@@ -26,12 +26,21 @@ development-only dependencies to the application module. See
 installation. Hooks are bypassable, so CI enforces their quality checks too.
 
 The reusable [dependency security workflow](../.github/workflows/dependency-security.yaml)
-runs `make vuln` (`govulncheck -test ./...`), audits both npm lockfiles, and uses
+runs `make vuln` (`scripts/go-fetch.sh` for the application's modules and the
+scanner's, then `govulncheck -test ./...`), audits both npm lockfiles, and uses
 pip-audit on the complete hash-locked documentation and scanner requirements.
 These jobs are required on pull requests, pushes to `main`, manual CI and the
 release workflow. A vulnerability in test or documentation tooling is included
 even when it cannot affect the shipped server. GitGuardian remains the remote
 PR secret check; local Gitleaks hooks provide earlier feedback.
+
+`scripts/go-fetch.sh` is also the application Dockerfile's download step. It retries
+a transport failure (a stream error, a truncated body, a connection reset, a TLS
+or I/O timeout, a 502, 503 or 504, or a 3-minute attempt that finished no module)
+up to three attempts in all, with the failure in the log. A checksum refusal or
+any other error fails after one. CI's `GOPROXY` and `GOSUMDB` stay the defaults;
+`tests/test_ci_go_fetch.py` refuses a workflow or build file that adds a `|direct`
+fallback or turns checksum checking off.
 
 The built application and Tor images are scanned with pinned Trivy. Their builds
 apply Debian package updates between pinned base-image rebuilds. Full JSON
