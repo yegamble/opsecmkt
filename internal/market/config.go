@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log"
 	"path"
@@ -242,16 +243,17 @@ func isInstalled(ctx context.Context, db *sql.DB) (bool, error) {
 // Status reports, read-only, whether setup has completed, the highest applied migration (0 when none), how many
 // active staff accounts have no second factor, so are refused staff actions (A-706; 0 before the users table exists),
 // and whether an installed market never enrolled retention, so its backups cannot reopen without it (A-772; false
-// with a restore pending, when enrollment is refused anyway).
+// with a restore pending, when enrollment is refused anyway), and the fixed reason an outage's pending recheck waits
+// for the clocks, as Admin → Payments says it (A-764, A-782; "" when none waits).
 // Errors carry a class only, never DATABASE_URL or driver text (for -status).
-func Status(ctx context.Context, dsn string) (installed bool, schema, staffWithoutFactor int, retentionUnenrolled bool, err error) {
+func Status(ctx context.Context, dsn string) (installed bool, schema, staffWithoutFactor int, retentionUnenrolled bool, recheckWaitWhy string, err error) {
 	db, err := OpenDB(dsn)
 	if err != nil {
-		return false, 0, 0, false, err
+		return false, 0, 0, false, "", err
 	}
 	defer db.Close()
 	if err = db.PingContext(ctx); err != nil {
-		return false, 0, 0, false, errors.New("database connection failed: " + connectErrorClass(err))
+		return false, 0, 0, false, "", errors.New("database connection failed: " + connectErrorClass(err))
 	}
 	// A database that was never migrated has neither table: not installed, schema 0.
 	var settings, migrations bool
@@ -277,10 +279,22 @@ func Status(ctx context.Context, dsn string) (installed bool, schema, staffWitho
 			retentionUnenrolled = pin == "" && !restore
 		}
 	}
-	if err != nil {
-		return false, 0, 0, false, errors.New("database status query failed: " + connectErrorClass(err))
+	if err == nil && installed {
+		var waiting sql.NullString
+		err = db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1 AND EXISTS(SELECT 1 FROM settings WHERE key=$2 AND value=$3)",
+			xmrRecheckWaitKey, xmrReleaseRecheckKey, xmrRecheckOutage).Scan(&waiting)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = nil
+		}
+		var wait xmrRecheckWait
+		if waiting.Valid && json.Unmarshal([]byte(waiting.String), &wait) == nil {
+			recheckWaitWhy = xmrClocksWhy(wait.Reason)
+		}
 	}
-	return installed, schema, staffWithoutFactor, retentionUnenrolled, nil
+	if err != nil {
+		return false, 0, 0, false, "", errors.New("database status query failed: " + connectErrorClass(err))
+	}
+	return installed, schema, staffWithoutFactor, retentionUnenrolled, recheckWaitWhy, nil
 }
 
 // refuseBitcoinEnv fails before database migrations or node connections. Passive

@@ -225,7 +225,7 @@ class UpgradingAlpha2Test(unittest.TestCase):
             self.assertNotIn('./private/database.url ./opsecmkt -request-deadline-recheck', flat, name)
             # PM-3, DA108-3, SRE110-3, SRE110-N1, QA108-2, PAY109-2, DA108-1.
             for want in ('one audit row with no actor', 'Monero deadline recheck requested from the host',
-                         "docker compose logs app | grep 'deadline recheck'", 'monero escrow deadline recheck: cause=outage moved=N',
+                         "docker compose logs app | grep 'recheck'", 'monero escrow deadline recheck: cause=outage moved=N',
                          'keeps no application logs', '/srv/opsecmkt-inputs/database-restored.url',
                          'Each repeat that moves a deadline notifies', 'no request has been made',
                          'an order overdue before the gap began',
@@ -253,6 +253,24 @@ class UpgradingAlpha2Test(unittest.TestCase):
             self.assertIn('../operator-guide.md#after-an-outage', (REPOSITORY / 'docs' / 'install' / name).read_text(), name)
         self.assertNotIn('writes that request and nothing else', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
         self.assertRegex(guide, r'\| Payments \| `/admin/payments` \|[^\n]*\*Monero deadline recheck\*')
+
+    def test_recheck_fallback_finds_a_wait(self):
+        # A-782 SRE113-1: with the panel behind the failed ingress, each guide's fallback must see the wait as well as
+        # the run. The grep is read from the guide and tried on the log formats themselves, and the SQL names the third
+        # key; cmd/server/status_test.go TestStatusNamesRecheckWait runs that SQL against a wait row.
+        source = (REPOSITORY / 'internal' / 'market' / 'escrow_xmr_deadline.go').read_text()
+        lines = re.findall(r'log\.Printf\("(monero escrow [^"]*recheck[^"]*)"', source)
+        self.assertTrue(any(line.startswith('monero escrow recheck deferred: ') for line in lines), lines)
+        self.assertTrue(any(line.startswith('monero escrow deadline recheck: cause=') for line in lines), lines)
+        for name in ('UPGRADING.md', 'docs/operator-guide.md', 'docs/testnet-runbook.md'):
+            flat = ' '.join((REPOSITORY / name).read_text().split())
+            match = re.search(r"`docker compose logs app \| grep '([^']+)'` shows `monero escrow deadline recheck", flat)
+            self.assertTrue(match, name)
+            for line in lines:
+                self.assertIn(match.group(1), line, name)
+            self.assertIn('`monero escrow recheck deferred: …`', flat, name)
+            self.assertIn("'escrow_xmr_release_recheck','escrow_xmr_last_recheck','escrow_xmr_recheck_wait')`", flat, name)
+            self.assertIn('`-status`', flat, name)
 
     def test_smoke_runs_the_documented_recheck_request(self):
         # SRE110-4: the literal Compose form, its prefix and no URL, and the setting does not stay behind.
