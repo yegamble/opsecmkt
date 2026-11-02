@@ -239,17 +239,19 @@ func isInstalled(ctx context.Context, db *sql.DB) (bool, error) {
 	return installed, err
 }
 
-// Status reports, read-only, whether setup has completed, the highest applied migration (0 when none) and how many
-// active staff accounts have no second factor, so are refused staff actions (A-706; 0 before the users table exists).
+// Status reports, read-only, whether setup has completed, the highest applied migration (0 when none), how many
+// active staff accounts have no second factor, so are refused staff actions (A-706; 0 before the users table exists),
+// and whether an installed market never enrolled retention, so its backups cannot reopen without it (A-772; false
+// with a restore pending, when enrollment is refused anyway).
 // Errors carry a class only, never DATABASE_URL or driver text (for -status).
-func Status(ctx context.Context, dsn string) (installed bool, schema, staffWithoutFactor int, err error) {
+func Status(ctx context.Context, dsn string) (installed bool, schema, staffWithoutFactor int, retentionUnenrolled bool, err error) {
 	db, err := OpenDB(dsn)
 	if err != nil {
-		return false, 0, 0, err
+		return false, 0, 0, false, err
 	}
 	defer db.Close()
 	if err = db.PingContext(ctx); err != nil {
-		return false, 0, 0, errors.New("database connection failed: " + connectErrorClass(err))
+		return false, 0, 0, false, errors.New("database connection failed: " + connectErrorClass(err))
 	}
 	// A database that was never migrated has neither table: not installed, schema 0.
 	var settings, migrations bool
@@ -268,10 +270,17 @@ func Status(ctx context.Context, dsn string) (installed bool, schema, staffWitho
 	if err == nil && closedAt {
 		err = db.QueryRowContext(ctx, staffWithoutFactorSQL).Scan(&staffWithoutFactor)
 	}
-	if err != nil {
-		return false, 0, 0, errors.New("database status query failed: " + connectErrorClass(err))
+	if err == nil && installed {
+		var pin string
+		var restore bool
+		if pin, restore, err = retentionPin(ctx, db); err == nil {
+			retentionUnenrolled = pin == "" && !restore
+		}
 	}
-	return installed, schema, staffWithoutFactor, nil
+	if err != nil {
+		return false, 0, 0, false, errors.New("database status query failed: " + connectErrorClass(err))
+	}
+	return installed, schema, staffWithoutFactor, retentionUnenrolled, nil
 }
 
 // refuseBitcoinEnv fails before database migrations or node connections. Passive

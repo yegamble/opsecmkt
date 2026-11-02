@@ -1034,6 +1034,7 @@ A database from an older release with payment history this build does not suppor
 
 ## Retention maintenance
 
+- [x] A-772: `scripts/backup.sh` warns on every run against a database with no retention instance id, with the enrollment command, and the backup succeeds; `-status`, so `install.sh status`, warns for an installed market. An enrolled database gets no warning; an unreadable check says it could not check; no URL or secret is printed. Enrollment defaults are unchanged and no new recovery path exists (`scripts/test-backup-restore.sh`, `test_never_enrolled_warning_never_fails_the_backup_or_guesses`, `test_status_warns_about_a_never_enrolled_database_and_never_guesses`, `TestStatusFlagPrintsNoSecrets`, `scripts/test-install.py`).
 - [x] Opt-in enrollment gives legacy records notice/grace without inventing past account activity; individual clocks and bounded draining enforce database expiry (`TestRetentionEnrollmentDoesNotPurgeLegacyRows`, `TestRetentionExpiryDrainsBatchesAndKeepsRecentRows`, `TestRetentionLegacyEnrollmentIsBoundedToNinetyDays`).
 - [x] Account deletion is authenticated and confirmed, scoped holds survive restart, overdue holds remain protected, and release uses original deadlines (`retention_ui_test.go`, `TestRetentionOverdueHoldSurvivesAndReleaseUsesOriginalDeadline`).
 - [x] Current external state reapplies deletion to old snapshots and rejects missing, stale or ambiguous state; committed-operation evidence protects restore and reused audit IDs (`retention_engine_test.go`).

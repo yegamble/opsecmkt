@@ -718,7 +718,7 @@ One public stagenet digital claim is [recorded](evidence/public-testnet/2026-10-
 The [data retention and private information policy](data-retention-privacy-policy.md) defines required deadlines,
 preservation exceptions, recipient-encrypted private channels and the operator-access model.
 [Retention maintenance](retention.md) is implemented but off by default: it expires database records, preserves scoped duties,
-retires financially closed escrow mappings and reapplies deletion after restore. Operators must schedule backup/export expiry
+retires financially closed escrow mappings and reapplies deletion after restore. A backup of a database that never enrolled cannot reopen once the original database is lost, and no other path exists today; `scripts/backup.sh` and `-status` warn ([details](retention.md#backups-of-a-never-enrolled-database)). Operators must schedule backup/export expiry
 and track external wallet, log, snapshot and media cleanup. Recipient-encryption enforcement for remaining private fields is pending.
 The storage behavior below describes the current release. Privileged access reveals retained plaintext, metadata and
 ciphertext, but properly recipient-encrypted bodies still require a recipient private key to decrypt.

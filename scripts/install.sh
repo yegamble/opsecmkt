@@ -1747,6 +1747,7 @@ cmd_status() {
   else
     known=false
     echo 'Setup: unknown (the app could not read its database; see docker compose logs app)'
+    echo 'Retention enrollment: unknown, for the same reason (docs/retention.md#backups-of-a-never-enrolled-database)'
   fi
   if [[ $mode == tor ]]; then
     echo 'Onion addresses:'

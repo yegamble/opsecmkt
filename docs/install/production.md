@@ -485,6 +485,8 @@ above if the database needs it, then start with `deploy up`. To return to an old
 
 Confirm that the current original instance has enrolled retention state before relying on rollback backups. Step 4 enables it for a new instance. For an existing never-enrolled market, follow [retention enrollment](../retention.md#enabling-the-service) on its current original database first. An old restored database cannot initialize an empty ledger, even if its backup predates enrollment.
 
+**A backup of a never-enrolled database cannot reopen once the original database is lost**, whether it comes back through `scripts/restore.sh` or through a provider recovery with `-set-restore-gate`, and no other path exists today. `deploy init` leaves `RETENTION_ENABLED=off` without step 4's `--set RETENTION_ENABLED=on`. `scripts/backup.sh` warns on every run against such a database and still succeeds, and `./opsecmkt -status` warns; `deploy status` does not read the database, and native `deploy` takes no database backup. While the original exists, enroll it: set `RETENTION_ENABLED` to `on` in the `settings` of the private `operator.json`, run `deploy plan` and `deploy up`, or run `-enroll-retention` as the [CLI reference](cli-reference.md) shows. Then keep the retention directory safe. See [never-enrolled backups](../retention.md#backups-of-a-never-enrolled-database).
+
 From the matching source checkout on the approved backup host, use a private URL file containing that host's CA path:
 
 ```sh

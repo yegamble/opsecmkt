@@ -102,6 +102,18 @@ case $restore_required in
   true) echo 'Refusing to back up a restored database before current external retention state has been replayed. Start the isolated application with the current RETENTION_STATE_DIR and let it clear retention_restore_required first.' >&2; exit 1 ;;
   *) echo 'Invalid source retention restore gate; refusing to create a backup.' >&2; exit 1 ;;
 esac
+# A-772: restore.sh gates a restored market on the current external retention ledger, and a database that never
+# enrolled has none, so this archive could not reopen without the original. Only a warning: an unenrolled market still
+# wants its backup, and an unreadable answer is said as such, without psql's error, which can name the host.
+retention_enrollment=$(source_psql --file=- 2>/dev/null <<'SQL'
+SELECT to_regclass('settings') IS NOT NULL AS has_settings \gset
+\if :has_settings
+SELECT CASE WHEN EXISTS(SELECT 1 FROM settings WHERE key='retention_instance_id' AND value <> '') THEN 'enrolled' ELSE 'unenrolled' END;
+\else
+SELECT 'no-settings';
+\endif
+SQL
+) || retention_enrollment=unreadable
 database_bytes=$(source_psql -c 'SELECT pg_database_size(current_database())') || {
   echo 'Could not determine the source database size; refusing to create a backup.' >&2; exit 1; }
 database_bytes=${database_bytes//[$'\t\r\n ']/}
@@ -159,3 +171,8 @@ printf 'Copy %s.retention.json with every archive copy; its original 30-day expi
 if [[ -n ${BACKUP_RECOVERY_SOURCE:-} ]]; then
   printf 'Derived recovery copy: validated original archive creation and expiry were inherited; no new retention period.\n'
 fi
+case $retention_enrollment in
+  enrolled | no-settings) ;;
+  unenrolled) echo 'warning: this database has never enrolled retention, so a backup of it cannot reopen once the original database is lost: its restored copy refuses to start and no other path exists today. Enroll the current original database now, after reading docs/retention.md#before-enabling: set RETENTION_ENABLED=on in .env, run docker compose run --rm app -enroll-retention, then docker compose up -d, and keep the retention state apart from the database. Without Compose, see docs/retention.md#backups-of-a-never-enrolled-database.' >&2 ;;
+  *) echo 'warning: could not check whether this database has enrolled retention; a backup of one that has not will not reopen without the original. Check with ./scripts/install.sh status or -status, and see docs/retention.md#backups-of-a-never-enrolled-database.' >&2 ;;
+esac
