@@ -76,6 +76,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	var issued, windowFrom time.Time
 	var firstSeen sql.NullTime
 	var shipBy, destroyed, cancelWait sql.NullTime
+	var hold xmrCancelHold
 	// tooFew: the refund ended because its coins were too few, and they were left out for a stray refund (A-437).
 	if err := a.db.QueryRowContext(ctx, `SELECT es.address,es.refund_address,es.fee_bps,
 		es.created,GREATEST(es.created,(SELECT max(created) FROM payments WHERE order_id=es.order_id AND confirmations>=0 AND NOT locked AND NOT after_close AND NOT escrow_left_out AND NOT spent_outside)),
@@ -84,12 +85,15 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund' AND r.state='failed' AND r.send_error=$2),
 		EXISTS(SELECT 1 FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='refund'),
 		(SELECT count(*) FROM xmr_settlements r WHERE r.order_id=es.order_id AND r.kind='stray_refund' AND r.state IN ('requested','built','relayed')),
-		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`
+		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`,`+xmrCancelHoldSQL+`
 		FROM escrows es JOIN xmr_escrow_slots s ON s.id=es.xmr_slot_id JOIN xmr_escrow_wallets w ON w.id=s.wallet_id
 		LEFT JOIN LATERAL (SELECT x.state,x.send_error FROM xmr_settlements x WHERE x.order_id=es.order_id AND x.kind='stray_refund' ORDER BY x.id DESC LIMIT 1) x ON true
-		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &refundAsked, &openStrays, &recheck, &cancelWait, &outage); err != nil {
+		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(append([]any{&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &refundAsked, &openStrays, &recheck, &cancelWait, &outage}, hold.dest()...)...); err != nil {
 		return err
 	}
+	// noShipCancel's rule (A-763, PAY113-2), so the page offers the cancel the action takes. The panel's other lines keep the
+	// request as selected: the dispute side does not read the stale step here.
+	v.cancelHeld, v.cancelHeldOutage = a.xmrCancelRecheck(hold, shipBy, recheck, outage)
 	if destroyed.Valid {
 		v.Unrecoverable = xmrAfterDestroyText(destroyed.Time)
 	}
@@ -315,9 +319,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			continue
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipBy.Valid:
 			continue
-		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && recheck && (shipByOpen || cancelWait.Valid) && outage: // A-730: noShipCancel's refusal
+		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && v.cancelHeld && (shipByOpen || cancelWait.Valid) && v.cancelHeldOutage: // A-730: noShipCancel's refusal
 			t.Action, t.Label = "", "You cannot cancel yet: "+outageWhy+", and the vendor may not have been able to ship or deliver this order in that time. The cancel is offered 72 hours after the market has rechecked its escrow deadlines, if the order has not been shipped or delivered by then; reload this page later."
-		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && recheck && (shipByOpen || cancelWait.Valid): // A-714: noShipCancel's refusal
+		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && v.cancelHeld && (shipByOpen || cancelWait.Valid): // A-714: noShipCancel's refusal
 			t.Action, t.Label = "", "You cannot cancel yet: this market's records are being reconciled after a restore from backup, and the vendor may have shipped or delivered this order after that backup was taken. The cancel is offered 72 hours after the market has rechecked its escrow deadlines, if the order has not been shipped or delivered by then; reload this page later."
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && cancelWait.Valid: // A-720: noShipCancel's refusal
 			done := "shipped"
@@ -504,9 +508,9 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		return err
 	}
 	switch {
-	case o.State == statePaid && recheckAsked && (shipByOpen || cancelWait.Valid) && outage: // A-730
+	case o.State == statePaid && v.cancelHeld && (shipByOpen || cancelWait.Valid) && v.cancelHeldOutage: // A-730
 		v.NextStep += " The buyer's cancel waits: " + outageWhy + ", and the vendor may not have been able to ship or deliver this order in that time. It is offered 72 hours after the market has rechecked its escrow deadlines, if the order has not been shipped or delivered by then; reload this page later."
-	case o.State == statePaid && recheckAsked && (shipByOpen || cancelWait.Valid): // A-714: the buyer's cancel waits (noShipCancel)
+	case o.State == statePaid && v.cancelHeld && (shipByOpen || cancelWait.Valid): // A-714: the buyer's cancel waits (noShipCancel)
 		v.NextStep += " The buyer's cancel waits while this market's records are being reconciled after a restore from backup: the vendor may have shipped or delivered this order after that backup was taken. It is offered 72 hours after the market has rechecked its escrow deadlines, if the order has not been shipped or delivered by then; reload this page later."
 	case o.State == statePaid && cancelWait.Valid && outage: // A-730
 		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ": " + outageWhy + ", and the vendor may not have been able to ship or deliver this order in that time, so has until then to do so. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.ShortCounted, "the escrow is refunded") + " to the buyer's refund address."

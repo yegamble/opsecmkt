@@ -1086,6 +1086,8 @@ type XMREscrowOrderView struct {
 	// refund (A-770).
 	NothingCounted, ShortCounted bool
 	refundAsked, leftOut         bool
+	// cancelHeld: a recheck holds the buyer's no-ship cancel of this order; cancelHeldOutage: an outage is why (xmrCancelRecheck).
+	cancelHeld, cancelHeldOutage bool
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot

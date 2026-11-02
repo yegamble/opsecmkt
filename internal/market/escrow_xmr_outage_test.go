@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -587,14 +588,23 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		physical := x.physical(x.vendor)
 		paid, paidSess := x.paidXMRPhysical(physical)
 		notYet, notYetSess := x.paidXMRPhysical(physical)
+		preGap, preGapSess := x.paidXMRPhysical(physical)
 		shipped, shippedSess, _ := x.shippedXMR(physical)
 		window, windowSess := x.deliveredXMR(x.product)
 		x.forceDeadline(paid, "ship_by=now()-interval '1 hour'")
+		x.forceDeadline(preGap, "ship_by=now()-interval '3 hours'")
 		x.forceDeadline(shipped, "release_at=now()-interval '1 hour'")
 		x.forceDeadline(window, "release_at=now()-interval '1 hour'")
 		x.setLastDeadlineStep("2 hours")
 		step := x.lastDeadlineStep()
 
+		// PAY113-2: the page says what the action does on each side of the stored step, and the desk with it.
+		if p := html.UnescapeString(x.page("/order?id="+paid, paidSess)); !containsAll(p, "You cannot cancel yet: "+outageWhy, "The buyer's cancel waits: "+outageWhy) || strings.Contains(p, `action="/orders/cancel"`) {
+			t.Fatalf("the page of an order due in the gap, on a stale step:\n%s", p)
+		}
+		x.wantDeskLine(paid, "the buyer's cancel waits for this market's recheck after an outage")
+		x.wantDeskLine(preGap, "passed, so the buyer may cancel")
+		x.wantCancelAccepted(preGap, preGapSess)
 		code, body := x.xmrBuyerCancel(paid, paidSess)
 		if code != 409 || !containsAll(body, "cannot be cancelled yet", "an outage", "Nothing was changed") || strings.Contains(body, "restore") {
 			t.Fatalf("a cancel past its time on a stale step: %d %s", code, body)
@@ -667,6 +677,37 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		if code, body = x.xmrDispute(shipped, shippedSess); code != 303 {
 			t.Fatalf("a dispute with a restore's request: %d %s", code, body)
 		}
+		// PAY113-2: a restore's request holds them all, also an order overdue before the stored step, also with a gap row its
+		// overwrite left behind: restored records have no gap to go by.
+		x.forceDeadline(paid, "ship_by=now()-interval '40 days'")
+		x.wantCancelHeld(paid, paidSess, "after a restore from backup")
+		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2)", xmrOutageGapFromKey, x.lastDeadlineStep())
+		x.wantCancelHeld(paid, paidSess, "after a restore from backup")
+	})
+	// PAY113-2: a host's request has no start to go by, stale step or not: nothing recorded when ingress failed.
+	t.Run("a host's request", func(t *testing.T) {
+		x, paid, paidSess, _, _ := setup(t)
+		x.forceDeadline(paid, "ship_by=now()-interval '3 hours'")
+		if _, err := RequestDeadlineRecheck(context.Background(), x.DB); err != nil {
+			t.Fatal(err)
+		}
+		x.setLastDeadlineStep("2 hours")
+		x.wantCancelHeld(paid, paidSess, "cannot be cancelled yet", outageWhy)
+		x.wantDeskLine(paid, "the buyer's cancel waits for this market's recheck after an outage")
+	})
+	// PAY113-2: once the check has stored the gap's start the request is the watcher's, and the same two orders read the same.
+	t.Run("the request the check wrote", func(t *testing.T) {
+		x, paid, paidSess, _, _ := setup(t)
+		preGap, preGapSess := x.paidXMRPhysical(x.physical(x.vendor))
+		x.forceDeadline(preGap, "ship_by=now()-interval '3 hours'")
+		x.setLastDeadlineStep("2 hours")
+		x.A.xmrNoteDeadlineStepEarly(context.Background())
+		if x.recheckKey() != xmrRecheckOutage || len(x.settingsOf(xmrOutageGapFromKey)) != 1 {
+			t.Fatalf("the watcher's request: %q, gap %q", x.recheckKey(), x.settingsOf(xmrOutageGapFromKey))
+		}
+		x.wantCancelHeld(paid, paidSess, "cannot be cancelled yet", outageWhy)
+		x.wantDeskLine(preGap, "passed, so the buyer may cancel")
+		x.wantCancelAccepted(preGap, preGapSess)
 	})
 	t.Run("only a Monero escrow", func(t *testing.T) { // noShipCancel and lateDispute also serve what remains of Bitcoin escrow
 		x, _, _, _, _ := setup(t)
@@ -682,6 +723,51 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 			}
 		}
 	})
+}
+
+// PAY113-2: xmrCancelRecheck's rule, with no database. The hold while a round is to come is the one that round will leave.
+func TestXMRCancelRecheckReads(t *testing.T) {
+	t.Setenv("PAYMENT_POLL_INTERVAL", "")
+	a := &App{escrowXMR: &escrowXMR{}}
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	at := func(ago time.Duration) sql.NullTime { return sql.NullTime{Time: now.Add(-ago), Valid: true} }
+	text := func(ago time.Duration) sql.NullString {
+		return sql.NullString{String: now.Add(-ago).Format(time.RFC3339Nano), Valid: true}
+	}
+	none := sql.NullTime{}
+	for _, c := range []struct {
+		name               string
+		gap, step          sql.NullString
+		end, start, shipBy sql.NullTime
+		requested, outage  bool
+		holds, byOutage    bool
+	}{
+		{name: "nothing asked, fresh step", step: text(time.Minute), shipBy: at(time.Hour)},
+		{name: "a restore holds them all", gap: text(2 * time.Hour), shipBy: at(50 * time.Hour), requested: true, holds: true},
+		{name: "a restore on a stale step", step: text(50 * time.Hour), shipBy: at(60 * time.Hour), requested: true, holds: true},
+		{name: "a host's request holds them all", shipBy: at(50 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "a host's request on a stale step", step: text(2 * time.Hour), shipBy: at(50 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "before the gap", gap: text(2 * time.Hour), shipBy: at(3 * time.Hour), requested: true, outage: true, byOutage: true},
+		{name: "at the gap's start", gap: text(2 * time.Hour), shipBy: at(2 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "after the gap's start", gap: text(2 * time.Hour), shipBy: at(time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "an unreadable gap is no start", gap: sql.NullString{String: "not a time", Valid: true}, shipBy: at(3 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "stale, before the step", step: text(2 * time.Hour), shipBy: at(3 * time.Hour), byOutage: true},
+		{name: "stale, after the step", step: text(2 * time.Hour), shipBy: at(time.Hour), holds: true, byOutage: true},
+		{name: "a grace that ended before the gap narrows", gap: text(2 * time.Hour), end: at(3 * time.Hour), start: at(9 * time.Hour), shipBy: at(5 * time.Hour), requested: true, outage: true, byOutage: true},
+		{name: "a grace that ended as the gap began narrows", gap: text(2 * time.Hour), end: at(2 * time.Hour), start: at(9 * time.Hour), shipBy: at(5 * time.Hour), requested: true, outage: true, byOutage: true},
+		{name: "a grace that ended in the gap keeps its start", gap: text(2 * time.Hour), end: at(time.Hour), start: at(9 * time.Hour), shipBy: at(5 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "before that kept start", gap: text(2 * time.Hour), end: at(time.Hour), start: at(9 * time.Hour), shipBy: at(10 * time.Hour), requested: true, outage: true, byOutage: true},
+		{name: "a grace with no start keeps none", gap: text(2 * time.Hour), end: at(time.Hour), start: none, shipBy: at(50 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+		{name: "a running grace, stale", step: text(2 * time.Hour), end: at(-time.Hour), start: none, shipBy: at(50 * time.Hour), holds: true, byOutage: true},
+		{name: "no ship-by", gap: text(2 * time.Hour), requested: true, outage: true, holds: true, byOutage: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := xmrCancelHold{gapFrom: c.gap, step: c.step, graceEnd: c.end, graceFrom: c.start, now: now}
+			if holds, byOutage := a.xmrCancelRecheck(h, c.shipBy, c.requested, c.outage); holds != c.holds || byOutage != c.byOutage {
+				t.Fatalf("holds %v, by outage %v; want %v, %v", holds, byOutage, c.holds, c.byOutage)
+			}
+		})
+	}
 }
 
 // A-769: xmrStaleStep's comparison, with no database: what the SQL's interval comparison and null handling did.
@@ -1136,6 +1222,140 @@ func TestXMROutageRecheckOnReturnRestoresFullGrace(t *testing.T) {
 	}
 }
 
+// wantCancelHeld fails unless the buyer's page offers no cancel for order and the action refuses it (409) with says, changing
+// nothing.
+func (x *xmrEscrowEnv) wantCancelHeld(order, sess string, says ...string) {
+	x.t.Helper()
+	if p := x.page("/order?id="+order, sess); strings.Contains(p, `action="/orders/cancel"`) {
+		x.t.Fatalf("the page offers a cancel the action refuses:\n%s", html.UnescapeString(p))
+	}
+	code, body := x.xmrBuyerCancel(order, sess)
+	if code != 409 || !containsAll(html.UnescapeString(body), says...) || x.state(order) != statePaid || len(x.xmrSettlements(order)) != 0 {
+		x.t.Fatalf("a held cancel: %d %s, order %s, settlements %q", code, body, x.state(order), x.xmrSettlements(order))
+	}
+}
+
+// wantCancelAccepted fails unless the buyer's page offers the cancel and states no hold, and the action takes it: 303, the
+// order cancelled and one refund requested.
+func (x *xmrEscrowEnv) wantCancelAccepted(order, sess string) {
+	x.t.Helper()
+	p := html.UnescapeString(x.page("/order?id="+order, sess))
+	if !strings.Contains(p, `action="/orders/cancel"`) || strings.Contains(p, "The buyer's cancel waits") || strings.Contains(p, outageWhy) {
+		x.t.Fatalf("the page of an order with no hold:\n%s", p)
+	}
+	code, body := x.xmrBuyerCancel(order, sess)
+	if code != 303 || x.state(order) != stateCancelled || len(x.xmrSettlements(order)) != 1 {
+		x.t.Fatalf("a cancel with no hold: %d %s, order %s, settlements %q", code, body, x.state(order), x.xmrSettlements(order))
+	}
+}
+
+// wantDeskLine fails unless the vendor desk's row of order says says.
+func (x *xmrEscrowEnv) wantDeskLine(order, says string) {
+	x.t.Helper()
+	page := html.UnescapeString(x.page("/vendor-dashboard", x.vendorSess))
+	_, after, found := strings.Cut(page, "/order?id="+order)
+	if !found {
+		x.t.Fatalf("no desk row of %s:\n%s", order, page)
+	}
+	row, _, _ := strings.Cut(after, "</tr>")
+	if !strings.Contains(row, says) {
+		x.t.Fatalf("the desk row of %s does not say %q:\n%s", order, says, row)
+	}
+}
+
+// settingAgo sets a stored time to age before now, in the format the application writes.
+func (x *xmrEscrowEnv) settingAgo(key, age string) {
+	x.t.Helper()
+	agExec(x.testEnv, `INSERT INTO settings(key,value) VALUES($1,to_char((now()-$2::interval) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
+		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, age)
+}
+
+// PAY113-1: a grace whose end falls after a second gap began belongs to that outage: the market was down when it ended, so the
+// vendor had no use of its end, and the round keeps what the grace has, its start or none. One that ended before the gap began
+// narrows as today. The hold while the round is still to come, on a stale step and with its request pending, goes by what the
+// round will do (PAY113-2), so a buyer's cancel does not refund an order the round is about to hold.
+func TestXMROutageGraceEndedInsideSecondGap(t *testing.T) {
+	for _, origin := range []string{"outage", "restore"} {
+		for _, c := range []struct {
+			name, ended string
+			kept        bool
+		}{{"ended in the gap", "12 hours", true}, {"ended before the gap", "73 hours", false}} {
+			t.Run(origin+" grace "+c.name, func(t *testing.T) {
+				x := newXMREscrowEnv(t)
+				x.mustPoll()
+				type paid struct{ order, sess string }
+				newPaid := func(ago string) paid {
+					order, sess := x.paidXMRPhysical(x.physical(x.vendor))
+					x.forceDeadline(order, "ship_by=now()-interval '"+ago+"'")
+					return paid{order, sess}
+				}
+				// One order per stage where the cancel may go through: on the stale step, with the request pending, after the round.
+				inFirst := []paid{newPaid("86 hours"), newPaid("86 hours"), newPaid("86 hours")} // in the first outage's gap
+				before := []paid{newPaid("100 hours"), newPaid("100 hours"), newPaid("100 hours")}
+				inSecond := newPaid("1 hour")
+
+				// The first round, 84 hours ago as the settings below read.
+				if origin == "outage" {
+					x.setLastDeadlineStep("2 hours")
+				} else {
+					agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+				}
+				x.mustPoll()
+				if got := len(x.settingsOf(xmrCancelWaitFromKey)); got != map[string]int{"outage": 1, "restore": 0}[origin] {
+					t.Fatalf("the first grace's start: %d rows", got)
+				}
+				x.settingAgo(xmrCancelWaitKey, c.ended)
+				if origin == "outage" {
+					x.settingAgo(xmrCancelWaitFromKey, "88 hours")
+				}
+				firstFrom := x.settingsOf(xmrCancelWaitFromKey)
+				x.setLastDeadlineStep("72 hours") // down from 12 hours after the first round
+				gap := x.lastDeadlineStep()
+
+				// inFirst's ship_by is after the first start and before this gap; before's is before both.
+				heldBefore := c.kept && origin == "restore"
+				stage := func(i int, says ...string) {
+					t.Helper()
+					if c.kept {
+						x.wantCancelHeld(inFirst[i].order, inFirst[i].sess, says...)
+					} else {
+						x.wantCancelAccepted(inFirst[i].order, inFirst[i].sess)
+					}
+					if heldBefore {
+						x.wantCancelHeld(before[i].order, before[i].sess, says...)
+					} else {
+						x.wantCancelAccepted(before[i].order, before[i].sess)
+					}
+					x.wantCancelHeld(inSecond.order, inSecond.sess, says...)
+				}
+				stage(0, "cannot be cancelled yet", outageWhy) // on the stale step
+				x.A.xmrNoteDeadlineStepEarly(context.Background())
+				if x.recheckKey() != xmrRecheckOutage || !slices.Equal(x.settingsOf(xmrOutageGapFromKey), []string{gap}) {
+					t.Fatalf("the second request: %q, gap %q, want %q", x.recheckKey(), x.settingsOf(xmrOutageGapFromKey), gap)
+				}
+				stage(1, "cannot be cancelled yet", outageWhy) // with the request pending
+
+				x.mustPoll() // the second round
+				from := x.settingsOf(xmrCancelWaitFromKey)
+				switch {
+				case c.kept && !slices.Equal(from, firstFrom):
+					t.Fatalf("the start after the round: %q, want the grace's own %q", from, firstFrom)
+				case !c.kept && !slices.Equal(from, []string{gap}):
+					t.Fatalf("the start after the round: %q, want the gap's %q", from, gap)
+				}
+				if x.recheckKey() != "" || len(x.settingsOf(xmrOutageGapFromKey)) != 0 {
+					t.Fatalf("after the round: request %q, gap %q", x.recheckKey(), x.settingsOf(xmrOutageGapFromKey))
+				}
+				until := x.cancelWaitUntil()
+				if d := until.Sub(x.dbNow()); d < 71*time.Hour || d > 72*time.Hour {
+					t.Fatalf("the new end is %s away", d)
+				}
+				stage(2, "You can cancel this order from "+utcFrom(until), outageWhy)
+			})
+		}
+	}
+}
+
 // DA108-1 (the ruled default, which the owner may overturn): an outage the watcher detected holds the buyer's no-ship cancel
 // only for an order whose ship-by time fell after the gap began. One overdue before it has no such reason to wait. Further
 // rounds in the same grace keep that start, a host request with no gap has no start to go by and holds them all, and a
@@ -1527,8 +1747,10 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 	physical := x.physical(x.vendor)
 	order, _, _ := x.shippedXMR(physical)
 	paid, paidSess := x.paidXMRPhysical(physical)
+	preGap, preGapSess := x.paidXMRPhysical(physical)
 	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
-	x.forceDeadline(paid, "ship_by=now()-interval '1 minute'")
+	x.forceDeadline(paid, "ship_by=now()+interval '1 minute'") // not yet due on true time: only the jump makes it look overdue
+	x.forceDeadline(preGap, "ship_by=now()-interval '10 days'")
 	was := x.releaseAt(order)
 	logs := captureLog(t)
 	adminNotices := func() int {
@@ -1570,10 +1792,11 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 			t.Fatalf("the panel names %q:\n%s", private, s)
 		}
 	}
-	// Holds stay in force: nothing completes on a passed deadline, and the buyer's no-ship cancel waits.
-	if code, body := x.xmrBuyerCancel(paid, paidSess); code != 409 || x.state(paid) != statePaid {
-		t.Fatalf("a no-ship cancel while the clocks disagree: %d %s, order %s", code, body, x.state(paid))
-	}
+	// Holds stay in force: nothing completes on a passed deadline, and the buyer's no-ship cancel waits, page and action alike.
+	x.wantCancelHeld(paid, paidSess, "cannot be cancelled yet", outageWhy)
+	// PAY113-2: an order overdue before the gap was not held up by it. The gap's start and its ship_by were both stored before the
+	// jump, so the comparison does not read the jumped clock: the page offers the cancel and the action requests the refund.
+	x.wantCancelAccepted(preGap, preGapSess)
 
 	jump("0")
 	x.mustPoll()

@@ -132,6 +132,7 @@ func orderIDs(ctx context.Context, q rowsQuerier, query string, args ...any) ([]
 // file comment): refused once the order was marked shipped (naming when), for an order with no ship-by time, before
 // its ship-by time (naming it), while a restore's recheck of its coin's deadlines is pending (errCancelRecheck,
 // lateDispute's exception) or a stale Monero deadline step means the next check will ask for one (xmrStaleStep, A-763),
+// unless a gap the watcher found began after its ship-by time (xmrCancelRecheck, PAY113-2),
 // and in the vendor's grace after that recheck (cancelWaitRefusal, naming its end, A-720). A
 // paid digital Monero escrow order's ship-by time is its delivery deadline
 // (A-709); a delivered order is refused by the transition table (there is no delivered -> cancelled edge).
@@ -161,15 +162,12 @@ func noShipCancel(c *actionCtx, o *Order) error {
 	var shipBy, wait sql.NullTime
 	var open, recheck, outage bool
 	var days sql.NullInt64
-	var step sql.NullString
-	var now time.Time
-	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+","+xmrOutageCauseSQL+","+xmrLastStepSQL+",now() FROM escrows es WHERE es.order_id=$1",
-		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&shipBy, &open, &days, &recheck, &wait, &outage, &step, &now); err != nil {
+	var hold xmrCancelHold
+	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+","+xmrOutageCauseSQL+","+xmrCancelHoldSQL+" FROM escrows es WHERE es.order_id=$1",
+		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(append([]any{&shipBy, &open, &days, &recheck, &wait, &outage}, hold.dest()...)...); err != nil {
 		return err
 	}
-	if c.A.xmrStaleStep(step, now) && !recheck { // A-763: the next check asks for an outage's recheck; a request already there keeps its cause
-		recheck, outage = true, true
-	}
+	recheck, outage = c.A.xmrCancelRecheck(hold, shipBy, recheck, outage) // A-763, PAY113-2
 	switch {
 	case !shipBy.Valid:
 		return errCancelNoShipBy
