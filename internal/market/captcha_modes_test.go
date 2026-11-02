@@ -739,6 +739,33 @@ func TestHumanCheckRadiosDescribeConsequences(t *testing.T) {
 	}
 }
 
+// PM-4: the overview flags Security & access while the human check is off, across a reload and until a mode with a
+// check is saved.
+func TestOverviewFlagsHumanCheckOff(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("dm_off_admin", "admin")
+	_, moderator := e.user("dm_off_mod", "moderator")
+	const alert = "The human check is off: only each handle's budget of failed passwords slows guessing, and nothing slows sign-up bots."
+	overview := func() string { return html.UnescapeString(e.body("GET", "/admin", admin, nil, 200)) }
+	for _, c := range []struct {
+		mode string
+		on   bool
+	}{{"under_attack", false}, {"true", false}, {"false", true}, {"under_attack", false}} {
+		setCaptchaMode(e, c.mode)
+		for range 2 { // the page reloads to the same state
+			if got := strings.Contains(overview(), alert); got != c.on {
+				t.Fatalf("mode %s: alert shown %v", c.mode, got)
+			}
+		}
+	}
+	// The alert follows the saved form, and only an administrator reads the overview.
+	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}, "password": {testPassword}}), 303)
+	mustContain(t, overview(), alert)
+	if w := e.do("GET", "/admin", moderator, nil); w.Code == 200 || strings.Contains(html.UnescapeString(w.Body.String()), alert) {
+		t.Fatalf("a moderator reads the overview: %d", w.Code)
+	}
+}
+
 func TestMigration155KeepsAnOperatorsChoice(t *testing.T) {
 	apply := func(t *testing.T, value string, audits ...string) string {
 		t.Helper()

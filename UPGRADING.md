@@ -15,6 +15,11 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## New overview flags and first-install password checks (A-759)
+
+No migration or configuration. The `/admin` overview now flags **Security & access** while the human check is Off (PM-4): a market that
+keeps it Off on purpose sees that line until another mode is saved.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
