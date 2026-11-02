@@ -356,6 +356,12 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || !strings.Contains(stdout, "cannot undo a completion") || !strings.Contains(stdout, "within every 72 hours") || !strings.Contains(stdout, "Confirm on Admin > Payments") {
 		t.Fatalf("none pending: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
+	// A-761: it says to run it once more on return, and does not promise a next pass with Monero escrow off.
+	for _, want := range []string{"run this once more when public access returns", "With Monero escrow on, the watcher's next pass", "With ESCROW_XMR off the request stays pending until the first pass after it is on again", "a buyer's no-ship cancel past its time waits until then"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("the output lacks %q: %q", want, stdout)
+		}
+	}
 	noURL(stdout + stderr)
 	if value() != "outage" {
 		t.Fatalf("the request wrote %q", value())

@@ -41,8 +41,9 @@ import (
 //     affected: its ship_by is at least 72 hours from payment.
 //     An outage takes the same path (A-730, owner decision): each step records the database's time, and one that finds
 //     more than xmrOutageGap since the last asks for the recheck, with its notices naming the outage, so downtime
-//     consumes neither a buyer's deadline nor a vendor's time. The check also runs first in a pass (xmrNoteDeadlineStepEarly).
-//     It sees only that this step did not run: public access down while the watcher runs is not visible here, and the
+//     consumes neither a buyer's deadline nor a vendor's time. The check also runs first in a pass (xmrNoteDeadlineStepEarly),
+//     and until it has, a stored time past that gap holds a buyer's cancel and opens a late dispute (xmrStaleStepSQL, A-763).
+//     The check sees only that this step did not run: public access down while the watcher runs is not visible here, and the
 //     operator asks for the recheck with the host command -request-deadline-recheck (RequestDeadlineRecheck). Each recheck
 //     records itself in its own transaction: when, its cause and how many deadlines moved (xmrLastRecheckKey, shown on
 //     Admin → Payments), and one audit row with the cause and the count, and after it commits logs one fixed line, since it
@@ -112,6 +113,23 @@ const outageWhy = "an outage made this market unavailable"
 // as a late dispute does (disputeClosedSQL, lateDispute): a recheck that failed leaves the setting, so the same pass
 // completes no order whose restored deadline has passed before the buyer was given 72 hours (A-393, A-714).
 const xmrNoRecheckSQL = "NOT EXISTS (SELECT 1 FROM settings WHERE key='" + xmrReleaseRecheckKey + "')"
+
+// xmrStaleStepSQL: the last deadline step of the Monero escrow es is older than the gap, $3 in seconds (xmrStaleStepGap), so
+// the next check will ask for the recheck: the buyer's cancel and a late dispute treat it as asked for already (noShipCancel,
+// lateDispute; A-763). It closes the time between a gap and that check. It reads the settings row in a statement after the
+// order row lock and writes nothing. No stored step, one that cannot be read and a NULL gap are false, as xmrNoteDeadlineStep
+// asks for nothing on the first two; the CASE keeps the cast from a value it would fail on.
+const xmrStaleStepSQL = `(es.coin='XMR' AND COALESCE((SELECT CASE WHEN pg_input_is_valid(value,'timestamptz') THEN now()-value::timestamptz>make_interval(secs => $3::float8) END
+	FROM settings WHERE key='` + xmrLastDeadlineStepKey + `'),false))`
+
+// xmrStaleStepGap is xmrStaleStepSQL's $3: xmrOutageGap in seconds, or NULL with Monero escrow off, when no watcher runs to
+// end the hold and a cancel and a dispute keep the rules UPGRADING.md gives for that time (DA104-3).
+func (a *App) xmrStaleStepGap() sql.NullFloat64 {
+	if a.escrowXMR == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: xmrOutageGap().Seconds(), Valid: true}
+}
 
 // xmrCancelWaitSQL is the end of the vendor's grace after a restore (step 4, A-720) for the escrow es, or NULL when none
 // applies: not a Monero escrow, the grace has ended, or es.ship_by does not pass before it. A statement after the order
@@ -233,9 +251,9 @@ func (a *App) xmrDeadlines(pass context.Context) error {
 // xmrNoteDeadlineStepEarly is xmrNoteDeadlineStep at the start of a pass, before any node or wallet call (A-730): the
 // deadline step runs last, and a first pass after an outage can spend minutes on its wallets, in which a dispute would be
 // refused as late and a no-ship cancel accepted. The server accepts requests from just after the watcher starts
-// (cmd/server's app.Start, then serveAll), so this one transaction is the window left. A failure does not touch the pass:
-// the check in xmrDeadlines runs anyway and reports it. Under the restore gate it writes nothing, as there. It needs
-// neither the pass's connection nor the watcher's lock (PAY101-11): another process's check waits on the row, then reads
+// (cmd/server's app.Start, then serveAll), and until a check succeeds the stale time itself holds those actions
+// (xmrStaleStepSQL, A-763). A failure does not touch the pass: the check in xmrDeadlines runs anyway and reports it. Under
+// the restore gate it writes nothing, as there. It needs neither the pass's connection nor the watcher's lock (PAY101-11): another process's check waits on the row, then reads
 // the new time, so two at once ask once.
 func (a *App) xmrNoteDeadlineStepEarly(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, xmrDeadlineBudget)
@@ -350,10 +368,12 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 }
 
 // xmrRemindDeadlines reminds the buyer of every shipped Monero escrow order with no dispute whose release deadline is
-// less than 72 hours away, once, and tells the vendor the buyer's deadline (step 2 of the file comment).
+// less than 72 hours away, once, and tells the vendor the buyer's deadline (step 2 of the file comment); nothing while a
+// recheck is pending (xmrNoRecheckSQL, A-762), since it would name a date about to be replaced: the recheck's own notice
+// counts as the reminder.
 func (a *App) xmrRemindDeadlines(ctx context.Context) error {
 	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND o.state='shipped' AND es.reminded_at IS NULL AND `+releaseSoonSQL+`
-		AND `+noDisputeSQL+` ORDER BY es.release_at`)
+		AND `+noDisputeSQL+` AND `+xmrNoRecheckSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
 	}
@@ -573,8 +593,8 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 	if err != nil {
 		return "", recheckRequestFailed(err)
 	}
-	const next = " The Monero escrow watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. "
-	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns. Confirm on Admin > Payments that it shows pending or has just run: this command writes only to the database its URL names."
+	const next = " With Monero escrow on, the watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. With ESCROW_XMR off the request stays pending until the first pass after it is on again, and a buyer's no-ship cancel past its time waits until then. "
+	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns, and run this once more when public access returns, so a buyer does not come back with minutes left. Confirm on Admin > Payments that it shows pending or has just run: this command writes only to the database its URL names."
 	if n, err := r.RowsAffected(); err != nil {
 		return "", recheckRequestFailed(err)
 	} else if n > 0 {

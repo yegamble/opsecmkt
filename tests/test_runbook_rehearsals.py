@@ -202,6 +202,8 @@ class RehearsalSectionTest(unittest.TestCase):
         leg = re.search(r'^### Leg: real outages.*?(?=^### )', section(), re.M | re.S).group(0)
         self.assertIn('-request-deadline-recheck', leg)
         self.assertIn('/admin/payments', leg)
+        # QA108-3: a buyer returning to the last request's remainder can have minutes left, so leg (b) ends with one more.
+        self.assertIn('run the same command once more', ' '.join(leg.split()))
         self.assertNotIn('db_sql', leg)
         self.assertNotIn('docker compose exec', leg)
 
