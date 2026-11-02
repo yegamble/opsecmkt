@@ -1731,7 +1731,7 @@ func (x *xmrEscrowEnv) settingsOf(key string) []string {
 
 const (
 	clocksApartLine  = "the application's clock and the database's clock differ by more than 5 minutes"
-	daemonApartLine  = "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE"
+	daemonApartLine  = "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE (check the daemon's peers and block time)"
 	deferredLogStart = "monero escrow recheck deferred: "
 )
 
