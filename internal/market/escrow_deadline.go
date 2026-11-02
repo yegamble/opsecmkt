@@ -131,7 +131,7 @@ func orderIDs(ctx context.Context, q rowsQuerier, query string, args ...any) ([]
 // noShipCancel checks the buyer's cancellation of a paid escrow order, in tx after the order row lock (step 1 of the
 // file comment): refused once the order was marked shipped (naming when), for an order with no ship-by time, before
 // its ship-by time (naming it), while a restore's recheck of its coin's deadlines is pending (errCancelRecheck,
-// lateDispute's exception) or a stale Monero deadline step means the next check will ask for one (xmrStaleStepSQL, A-763),
+// lateDispute's exception) or a stale Monero deadline step means the next check will ask for one (xmrStaleStep, A-763),
 // and in the vendor's grace after that recheck (cancelWaitRefusal, naming its end, A-720). A
 // paid digital Monero escrow order's ship-by time is its delivery deadline
 // (A-709); a delivered order is refused by the transition table (there is no delivered -> cancelled edge).
@@ -159,13 +159,15 @@ func noShipCancel(c *actionCtx, o *Order) error {
 		return errConflict
 	}
 	var shipBy, wait sql.NullTime
-	var open, recheck, outage, stale bool
+	var open, recheck, outage bool
 	var days sql.NullInt64
-	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+","+xmrOutageCauseSQL+","+xmrStaleStepSQL+" FROM escrows es WHERE es.order_id=$1",
-		o.ID, releaseRecheckKeyOf(o.Currency), c.A.xmrStaleStepGap()).Scan(&shipBy, &open, &days, &recheck, &wait, &outage, &stale); err != nil {
+	var step sql.NullString
+	var now time.Time
+	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+","+xmrOutageCauseSQL+","+xmrLastStepSQL+",now() FROM escrows es WHERE es.order_id=$1",
+		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&shipBy, &open, &days, &recheck, &wait, &outage, &step, &now); err != nil {
 		return err
 	}
-	if stale && !recheck { // A-763: the next check asks for an outage's recheck; a request already there keeps its cause
+	if c.A.xmrStaleStep(step, now) && !recheck { // A-763: the next check asks for an outage's recheck; a request already there keeps its cause
 		recheck, outage = true, true
 	}
 	switch {
@@ -221,7 +223,7 @@ func buyerCancelledAt(c *actionCtx, orderID string) (sql.NullTime, error) {
 // 2026-10-03: the release is due), in tx after the order row lock; before the deadline it returns the sentence the
 // other party's notice carries. While a restore's recheck is pending (escrow off after the restore, or before the first
 // pass after startup) the passed deadline is not yet due: the recheck will give the buyer 72 hours (A-393). So too on a
-// stale Monero deadline step, whose next check asks for that recheck (xmrStaleStepSQL, A-763).
+// stale Monero deadline step, whose next check asks for that recheck (xmrStaleStep, A-763).
 //
 // A delivered digital Monero escrow order's release_at is the end of its dispute window (A-709), checked the same way.
 func lateDispute(c *actionCtx, o *Order) (string, error) {
@@ -230,11 +232,14 @@ func lateDispute(c *actionCtx, o *Order) (string, error) {
 	}
 	var at sql.NullTime
 	var due bool
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2) AND NOT "+xmrStaleStepSQL+",false) FROM escrows es WHERE es.order_id=$1",
-		o.ID, releaseRecheckKeyOf(o.Currency), c.A.xmrStaleStepGap()).Scan(&at, &due)
+	var step sql.NullString
+	var now time.Time
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false),"+xmrLastStepSQL+",now() FROM escrows es WHERE es.order_id=$1",
+		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&at, &due, &step, &now)
 	if err != nil || !at.Valid {
 		return "", err
 	}
+	due = due && !c.A.xmrStaleStep(step, now)
 	what := "release deadline"
 	if o.State == stateDelivered {
 		what = "dispute window"

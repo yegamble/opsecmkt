@@ -1,10 +1,15 @@
 package market
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"html"
+	"io/fs"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -611,11 +616,17 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrLastDeadlineStepKey)
 		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
 	})
-	t.Run("unreadable", func(t *testing.T) { // as xmrNoteDeadlineStep treats one
-		x, paid, paidSess, shipped, shippedSess := setup(t)
-		agExec(x.testEnv, "UPDATE settings SET value='not a time' WHERE key=$1", xmrLastDeadlineStepKey)
-		wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
-	})
+	for name, value := range map[string]string{ // as xmrNoteDeadlineStep treats each: no hold, no error
+		"unreadable":                "not a time",
+		"unreadable impossible":     "2026-13-45T00:00:00Z", // the shape of a stored time, with no such date
+		"unreadable not its format": "2020-01-01 00:00:00+00",
+	} {
+		t.Run(name, func(t *testing.T) {
+			x, paid, paidSess, shipped, shippedSess := setup(t)
+			agExec(x.testEnv, "UPDATE settings SET value=$2 WHERE key=$1", xmrLastDeadlineStepKey, value)
+			wantAsToday(t, x, paid, paidSess, shipped, shippedSess)
+		})
+	}
 	t.Run("escrow off", func(t *testing.T) { // DA104-3 stays true: no watcher runs, so no pass could end a hold
 		x, paid, paidSess, shipped, shippedSess := setup(t)
 		x.setLastDeadlineStep("2 hours")
@@ -646,15 +657,72 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		x, _, _, _, _ := setup(t)
 		x.setLastDeadlineStep("2 hours")
 		for coin, want := range map[string]bool{"XMR": true, "BTC": false} {
-			var stale bool
-			if err := x.DB.QueryRow(`SELECT `+xmrStaleStepSQL+` FROM (SELECT $1::text AS coin,$2::text AS unused) es`, coin, "", x.A.xmrStaleStepGap()).Scan(&stale); err != nil {
+			var step sql.NullString
+			var now time.Time
+			if err := x.DB.QueryRow(`SELECT `+xmrLastStepSQL+`,now() FROM (SELECT $1::text AS coin) es`, coin).Scan(&step, &now); err != nil {
 				t.Fatal(err)
 			}
-			if stale != want {
+			if stale := x.A.xmrStaleStep(step, now); stale != want {
 				t.Fatalf("the stale step for %s: %v", coin, stale)
 			}
 		}
 	})
+}
+
+// A-769: xmrStaleStep's comparison, with no database: what the SQL's interval comparison and null handling did.
+func TestXMRStaleStepReads(t *testing.T) {
+	gap := xmrOutageGap()
+	now := time.Date(2026, 6, 15, 12, 0, 0, 500_000_000, time.UTC)
+	stored := func(at time.Time) sql.NullString {
+		return sql.NullString{String: at.UTC().Format("2006-01-02T15:04:05.000000Z"), Valid: true}
+	}
+	on, off := &App{escrowXMR: &escrowXMR{}}, &App{}
+	for name, c := range map[string]struct {
+		a    *App
+		step sql.NullString
+		want bool
+	}{
+		"past the gap":        {on, stored(now.Add(-gap - time.Microsecond)), true},
+		"exactly the gap":     {on, stored(now.Add(-gap)), false},
+		"inside the gap":      {on, stored(now.Add(-gap + time.Microsecond)), false},
+		"from the future":     {on, stored(now.Add(time.Hour)), false},
+		"another offset":      {on, sql.NullString{String: now.Add(-2 * gap).In(time.FixedZone("", 5*3600)).Format(time.RFC3339Nano), Valid: true}, true},
+		"far past":            {on, sql.NullString{String: "0001-01-01T00:00:00Z", Valid: true}, true},
+		"none stored":         {on, sql.NullString{}, false},
+		"empty":               {on, sql.NullString{Valid: true}, false},
+		"not a time":          {on, sql.NullString{String: "not a time", Valid: true}, false},
+		"an impossible date":  {on, sql.NullString{String: "2026-13-45T00:00:00Z", Valid: true}, false},
+		"no such day":         {on, sql.NullString{String: "2026-02-30T00:00:00Z", Valid: true}, false},
+		"Monero escrow off":   {off, stored(now.Add(-2 * gap)), false},
+		"off and none stored": {off, sql.NullString{}, false},
+	} {
+		if got := c.a.xmrStaleStep(c.step, now); got != c.want {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+}
+
+// A-769: pg_input_is_valid needs PostgreSQL 16, and one call in a statement fails that statement at parse on an older
+// server, whatever its data; no minimum is stated or enforced. TestMain runs the tests from the repository root.
+func TestXMRShippedSQLHasNoPgInputFunctions(t *testing.T) {
+	checked := 0
+	err := filepath.WalkDir("internal/market", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || strings.HasSuffix(path, "_test.go") || !strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, ".sql") {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		checked++
+		if bytes.Contains(bytes.ToLower(b), []byte("pg_input_")) {
+			t.Errorf("%s calls a pg_input_ function", path)
+		}
+		return nil
+	})
+	if err != nil || checked < 100 {
+		t.Fatalf("checked %d files: %v", checked, err)
+	}
 }
 
 // A-730: a pending outage's request says so on every line a paid order's parties read, as a restore's does.
