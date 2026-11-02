@@ -148,7 +148,7 @@ const (
 // xmrClocksWhy is the fixed line of a reason in xmrRecheckWait.
 func xmrClocksWhy(reason string) string {
 	if reason == xmrClocksDaemon {
-		return "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE"
+		return "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE (check the daemon's peers and block time)"
 	}
 	return "the application's clock and the database's clock differ by more than 5 minutes"
 }
@@ -712,6 +712,9 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	if outage {
 		after = "an outage"
 	}
+	if ranApart { // QA112-4: past the wait's bound, so a clock left wrong may have moved its dates too far
+		after += ", with the clocks still apart"
+	}
 	// PM-3: in the transaction that consumes the request, so one notice per recheck however often a pass retries. It
 	// names no order and no count: the panel it points to has the count.
 	if err = notifyAdmins(ctx, tx, "A Monero escrow deadline recheck ran after "+after+". Admin > Payments shows how many deadlines it moved and any hold on buyers' no-ship cancels."); err != nil {
@@ -731,8 +734,10 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 // xmrClocksApart compares the database's time dbNow with this process's clock and with the daemon's newest block, and returns
 // the reason they disagree, or "" (PAY108-1). The application's clock is time.Now, not the watcher's clock, which tests fix.
 // A check that cannot run proves nothing and stops nothing: a daemon that is off, unreachable or hung (xmrClockCheckBudget),
-// or that does not itself say it is synced (still catching up after the same outage, or with no peers), or the fakechain, whose
-// tip is old by design, leaves only the two clocks that could be read. Run with those two already apart, it asks no daemon.
+// or that does not itself say it is synced (still catching up after the same outage, or an unrestricted RPC with no peers), or
+// the fakechain, whose tip is old by design, leaves only the two clocks that could be read. A restricted RPC cannot show its
+// peers (notSynced does not read the count), so a synced one with an old tip does disagree, and waits like any other (QA112-1).
+// Run with those two already apart, it asks no daemon.
 func (a *App) xmrClocksApart(ctx context.Context, dbNow time.Time) string {
 	if dbNow.Sub(time.Now()).Abs() > xmrClockTolerance {
 		return xmrClocksDatabase
