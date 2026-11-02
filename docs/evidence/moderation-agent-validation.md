@@ -304,3 +304,34 @@ evidence was prepared. PR #99 records their final outcomes and the exact final
 commit's CI run; earlier green results above do not certify a later source state.
 Real model quality, deployed confinement/private Tor, legacy retention policy,
 and actual physical database/WAL/backup storage remain separate operator gates.
+
+## Stage A code definitions (moderation-v7)
+
+moderation-v7 (A-745) replaces Stage A's bare reason codes with one definition per
+code. The only figures behind that change come from the seat's iteration 105 run
+above: the same unpinned model and 71 synthetic items, comparing shipped v6 with a
+scratch codebook that is **not** the shipped v7 text.
+
+| Measure (local-runtime tier, unpinned) | Shipped v6 | Scratch codebook |
+| --- | --- | --- |
+| Benign items flagged as injection | 26 of 29 | 1 of 29 |
+| Injection items flagged | 15 of 16 | 7 of 16 |
+| Strict precision | 23% | 23% |
+| Items reaching a validated proposal | 3 | 40 |
+| Stage A prompt tokens (about) | 476 | 660 |
+
+Injection recall fell, strict precision did not improve, and the wording was tuned
+on the same items, so these figures do not show that a codebook makes a model fit.
+The failure being fixed was safe: every item still reached a human. **No model has
+run the shipped v7 text.** The opsec-llm rerun on fresh items and the 300-item check
+at a pinned build (A-692) are still open.
+
+Repository tests prove only what the fake runtime can: the prompt sent defines each
+Stage A code once (`TestStageAPromptDefinesEachReasonCode`), an ordinary item fits at
+a pessimistic one token per byte
+(`TestStageAInstructionsFitTokenBudgetAtOneTokenPerByte`), and v6 pins are refused
+(`TestOldPromptPinAndDraftReplyAreRefused`,
+`TestLocalModelRejectsRemoteAndUnpinnedConfiguration`,
+`TestModerationWorkerRejectsRetiredPromptProtocol`). The grammar templates still
+have the v6 hashes above and the Go oracle tests still pass on them; the native
+llama.cpp parser check was not rerun.

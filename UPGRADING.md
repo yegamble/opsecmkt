@@ -15,6 +15,21 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Stage A now defines its reason codes (moderation-v7, A-745)
+
+No migration. The moderation protocol is now `moderation-v7`, and the controller refuses v1–v6 pins. **If you start
+`moderation-worker` with `--prompt-version moderation-v6`, change it to `moderation-v7`** (or drop the flag, which
+defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Without `--model`
+nothing else changes.
+
+With `--model` on, only Stage A's instructions change: they define each reason code once, say that an opinion about the
+product is never injection, and call `NO_FINDING` the usual result. Grammars, Go validation, routing and authority are
+the same, so a model result still waits for a human. The longer instructions use more of each item's token budget; see
+[Token budget, throughput and model size](docs/moderation-agent.md#token-budget-throughput-and-model-size). No model
+has run this text yet, so re-run your selected model's checks after upgrading rather than assuming fewer false alarms.
+Stored decisions keep their bytes and their recorded `prompt_version`. A `--replay` treats v7 as a new policy, so an
+eligible snapshot gets a new decision beside its older one.
+
 ## A banned seller's sign-in refusal states the payment policy (A-739)
 
 No migration or configuration. After a correct password, a banned account that sells (vendor role, approved to sell, or an order on its
@@ -265,10 +280,10 @@ still needs `deploy status` and the administrator panel. For the separate gatewa
 
 ## Moderation model proposals always wait for a human (moderation-v6, A-684)
 
-No migration. The moderation protocol is now `moderation-v6`, and the controller refuses v1–v5 pins. **If you start
-`moderation-worker` with `--prompt-version moderation-v5`, change it to `moderation-v6`** (or drop the flag, which
-defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Without `--model`
-nothing else changes.
+No migration. The moderation protocol became `moderation-v6` (the current pin is `moderation-v7`; see A-745 above), and
+the controller refused v1–v5 pins. **If you start `moderation-worker` with `--prompt-version moderation-v5`, change it to
+the current version** (or drop the flag, which defaults to this build's version) when you upgrade the controller;
+otherwise it refuses to start. Without `--model` nothing else changes.
 
 With `--model` on:
 
@@ -466,7 +481,7 @@ paid until the ban is lifted.
 
 ## The moderation model no longer reads listings or uploads (moderation-v5, A-651)
 
-No migration. The moderation protocol became `moderation-v5` (the current pin is `moderation-v6`; see A-684 above),
+No migration. The moderation protocol became `moderation-v5` (the current pin is `moderation-v7`; see A-745 above),
 and the controller refused v1–v4 pins. **If you start
 `moderation-worker` with `--prompt-version moderation-v4`, change it to the current version** (or drop the flag, which
 defaults to this build's version) when you upgrade the controller; otherwise it refuses to start. Grammars and model
@@ -846,7 +861,7 @@ launcher's 4096-token context, or an unfinished generation, gets `MODEL_FAILURE`
 and human review. Stored v1/v2 decisions keep their bytes and still render.
 
 The `moderation-v4` protocol refused v1, v2 and v3 pins; the current pin is
-`moderation-v6` (see A-684 above). Prompt
+`moderation-v7` (see A-745 above). Prompt
 data now writes `[` and `]` inside JSON strings as `\u005b` and `\u005d` (same JSON
 meaning), because llama.cpp's `/completion` parses special tokens in the prompt
 and bracket-spelled control tokens such as `[INST]` in vendor text could

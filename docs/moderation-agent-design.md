@@ -62,7 +62,7 @@ facts increase uncertainty.
 | Injection suspicion or a high-impact proposal | `ESCALATE_ADMIN` | `HOLD` |
 | Money, punitive action, insufficient actor age, low confidence, conflicting or missing evidence | `QUEUE_HUMAN` or `ESCALATE_ADMIN`, according to impact | `HOLD` |
 | Model missing, timeout, invalid output, failed canary or failed reference checks | Durable human review; suspicious output escalates | `HOLD` |
-| Validated, explicitly enumerated benign result | `AUTO_APPLY` only where the application has an independently implemented benign executor and a measured evaluation supports it; moderation-v6 has neither for model proposals, so they route `QUEUE_HUMAN` | No new action |
+| Validated, explicitly enumerated benign result | `AUTO_APPLY` only where the application has an independently implemented benign executor and a measured evaluation supports it; moderation-v7 has neither for model proposals, so they route `QUEUE_HUMAN` | No new action |
 | Expired or otherwise unusable proposal | `HOLD` | `HOLD` |
 | Stale content during processing | `HOLD`; preserve `ESCALATE_ADMIN` for an existing high-risk/injection signal | `HOLD` |
 
@@ -80,7 +80,8 @@ authority. No dead-man punitive or money action is introduced.
    detect suspicious script mixing, and record truncation or normalization
    concerns. Reject or queue data whose identity or required facts cannot be
    established. Do not silently turn missing content into a clean verdict.
-3. Stage A receives only untrusted fields under fixed extraction instructions.
+3. Stage A receives only untrusted fields under fixed extraction instructions,
+   which define each reason code once.
    It returns bounded findings with finite per-request references. It receives no application
    secrets and no execution authority.
 4. Go validates Stage A schema, allowlisted codes, bounds and references. Stage B
@@ -99,6 +100,9 @@ authority. No dead-man punitive or money action is introduced.
    completion ran to its output limit: a parser check shows acceptance, not
    termination. The moderation-v6 templates passed 35 cases on the same parser,
    including refusal of anything after `}`; see the [validation evidence](evidence/moderation-agent-validation.md).
+   moderation-v7 changes only Stage A's instructions. Its grammar templates have the
+   hashes recorded for those cases, but the native parser was not rerun for v7; no
+   repository test runs it, and the Go test oracle is not llama.cpp.
    The selected deployed runtime's behavior remains an operator acceptance check.
 6. Recheck deterministic facts against the current database before recording or
    applying a result. Stale entity revisions must not mutate a newer entity.

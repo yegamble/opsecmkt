@@ -77,7 +77,7 @@ func TestCustomModelCannotPersistFreeProse(t *testing.T) {
 }
 
 func TestOldPromptPinAndDraftReplyAreRefused(t *testing.T) {
-	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3", "moderation-v4", "moderation-v5"} {
+	for _, retired := range []string{"moderation-v1", "moderation-v2", "moderation-v3", "moderation-v4", "moderation-v5", "moderation-v6"} {
 		cfg := DefaultConfig()
 		cfg.PromptVersion = retired
 		if _, err := (Engine{Config: cfg}).Evaluate(t.Context(), ordinaryInput()); err == nil {
@@ -89,8 +89,8 @@ func TestOldPromptPinAndDraftReplyAreRefused(t *testing.T) {
 			t.Errorf("local adapter accepted legacy prompt pin %s", retired)
 		}
 	}
-	if PromptVersion != "moderation-v6" {
-		t.Fatalf("prompt version %s, want moderation-v6", PromptVersion)
+	if PromptVersion != "moderation-v7" {
+		t.Fatalf("prompt version %s, want moderation-v7", PromptVersion)
 	}
 	in := protocolInput()
 	p := protocolProposal(in)

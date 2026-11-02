@@ -97,8 +97,8 @@ The v2 response has no summary or evidence prose; Go renders review text from
 validated codes. Source text is limited to 8192 normalized runes/64 KiB raw, with
 complete original digests and no mutation of caller data.
 
-Model proposals never become `AUTO_APPLY` (A-684, prompt `moderation-v6`; v1–v5
-pins are refused): a confident `NO_ACTION`/`NO_FINDING` from a model waits in
+Model proposals never become `AUTO_APPLY` (A-684, since prompt `moderation-v6`;
+the current pin is `moderation-v7` and v1–v6 pins are refused): a confident `NO_ACTION`/`NO_FINDING` from a model waits in
 the human queue like any other proposal, because no evaluation shows model
 judgment or its uncalibrated confidence is fit to clear an item
 (`TestModelProposalNeverAutoApplies`); no deterministic path produced it
@@ -113,6 +113,13 @@ can repeat a reason code (`TestGrammarsTerminateAtRoot`,
 beside `HUMAN_REVIEW` (`TestRouteExternalDestinationCode`). No model has been
 measured fit for use at the shipped launcher limits; see
 [the token budget](moderation-agent.md#token-budget-throughput-and-model-size).
+
+Stage A defines each of its reason codes once (A-745, `moderation-v7`,
+`TestStageAPromptDefinesEachReasonCode`). This changes instructions only: no
+grammar, Go validation, routing or authority change. No model has run the shipped
+v7 text, so its effect on false alarms is unmeasured; the only figures come from a
+scratch codebook on an unpinned development model
+([evidence](evidence/moderation-agent-validation.md#stage-a-code-definitions-moderation-v7)).
 
 The model does not judge listings by text (owner directive, A-651, first in
 `moderation-v5`). Listing and upload jobs never reach a

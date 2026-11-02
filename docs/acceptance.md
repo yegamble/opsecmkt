@@ -61,8 +61,8 @@ acceptance requirements, not a declaration of deployed verification:
 - Grammar constraints are followed by Go schema, allowlist, bounds, canary and
   evidence-reference validation. Stage B receives validated findings rather than
   raw submitted text. No model response gains a tool, signer or database authority.
-- No model proposal is `AUTO_APPLY` at any confidence (A-684, `moderation-v6`,
-  v1–v5 pins refused): a confident clean model result, through a custom adapter or
+- No model proposal is `AUTO_APPLY` at any confidence (A-684, since `moderation-v6`;
+  the current `moderation-v7` refuses v1–v6 pins): a confident clean model result, through a custom adapter or
   the two-stage local adapter, routes `QUEUE_HUMAN`, while no-model routing keeps
   its reasons and score; an `AUTO_APPLY` row stored by an earlier protocol still
   renders as history. Both grammars end at `}` with whitespace bounded to four
@@ -80,6 +80,13 @@ acceptance requirements, not a declaration of deployed verification:
   oracle, database integration and 35 cases on the pinned native llama.cpp
   grammar parser. None runs a model: termination within budget on a selected
   model at the shipped launcher limits is unverified).
+- The Stage A prompt actually sent defines every code in `stageAReasons` once and
+  no other code (A-745, `TestStageAPromptDefinesEachReasonCode`), with room for an
+  item at a pessimistic token count (`TestStageAInstructionsFitTokenBudgetAtOneTokenPerByte`).
+  These are prompt-capture tests against a fake runtime and prove no model quality.
+  Still open: the local-runtime rerun on fresh items, and, at the owner's model
+  choice and a pinned build, at most 5% benign injection flags with recall reported
+  on a labelled set of at least 300 items (A-692).
 - The model does not judge listings by text (A-651, first in `moderation-v5`).
   With the model enabled, listing and upload jobs make no model call
   and the adapter refuses them; with no deterministic finding they record the
