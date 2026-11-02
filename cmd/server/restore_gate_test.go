@@ -305,7 +305,8 @@ func TestRestoreGateRequestRecheckRefusesBadInvocation(t *testing.T) {
 
 // -request-deadline-recheck against a real database (OPS104-1): it asks for the outage's recheck with the application
 // running, from DATABASE_URL or DATABASE_URL_FILE; says so when one is already pending, an outage's or a restore's; refuses
-// under the restore gate; changes nothing else, writes no audit row, and prints no connection detail.
+// under the restore gate; a new request adds one audit row with no actor in the request's transaction and changes nothing
+// else, anything else adds none (PM-3), and it prints no connection detail.
 func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	dsn := cliSchema(t)
 	db, err := sql.Open("pgx", dsn)
@@ -321,6 +322,31 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 		return s
+	}
+	settingsOnly := func() string {
+		t.Helper()
+		var s string
+		if err := db.QueryRow(`SELECT COALESCE((SELECT string_agg(key||'='||value, ',' ORDER BY key) FROM settings),'')`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	const requestRow = "Monero deadline recheck requested from the host"
+	auditRows := func() (rows []string) {
+		t.Helper()
+		r, err := db.Query(`SELECT COALESCE(user_id,'-')||':'||action FROM audit_events ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		for r.Next() {
+			var row string
+			if err := r.Scan(&row); err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, row)
+		}
+		return rows
 	}
 	exec := func(q string, args ...any) {
 		t.Helper()
@@ -351,13 +377,15 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	}
 	defer app.Close()
 	exec("DELETE FROM settings WHERE key=$1", key)
-	before := settingsNow()
+	before, auditBefore := settingsOnly(), len(auditRows())
 	stdout, stderr, code := runServer(t, nil, "-request-deadline-recheck")
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || !strings.Contains(stdout, "cannot undo a completion") || !strings.Contains(stdout, "within every 72 hours") || !strings.Contains(stdout, "Confirm on Admin > Payments") {
 		t.Fatalf("none pending: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
-	// A-761: it says to run it once more on return, and does not promise a next pass with Monero escrow off.
-	for _, want := range []string{"run this once more when public access returns", "With Monero escrow on, the watcher's next pass", "With ESCROW_XMR off the request stays pending until the first pass after it is on again", "a buyer's no-ship cancel past its time waits until then"} {
+	// A-761: it says to run it once more on return, and does not promise a next pass with Monero escrow off. DA108-2: it states
+	// the hold on cancels, which a recheck that moves no deadline places too. QA108-2: and that each repeat notifies again.
+	for _, want := range []string{"run this once more when public access returns", "With Monero escrow on, the watcher's next pass", "With ESCROW_XMR off the request stays pending until the first pass after it is on again", "a buyer's no-ship cancel past its time waits until then",
+		"also holds a buyer's no-ship cancel for 72 hours, even if it moves no deadline", "Each repeat notifies every buyer and vendor it moves again"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("the output lacks %q: %q", want, stdout)
 		}
@@ -366,12 +394,15 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	if value() != "outage" {
 		t.Fatalf("the request wrote %q", value())
 	}
-	wrote := settingsNow()
+	if rows := auditRows(); len(rows) != auditBefore+1 || rows[len(rows)-1] != "-:"+requestRow {
+		t.Fatalf("the request's audit rows: %q, %d before", rows, auditBefore)
+	}
 	exec("DELETE FROM settings WHERE key=$1", key)
-	if settingsNow() != before {
-		t.Fatalf("the request changed more than its key: %s, was %s", settingsNow(), before)
+	if settingsOnly() != before {
+		t.Fatalf("the request changed more than its key: %s, was %s", settingsOnly(), before)
 	}
 	exec("INSERT INTO settings(key,value) VALUES($1,'outage')", key)
+	wrote := settingsNow()
 
 	// An outage's already pending: said so, nothing changed.
 	stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
@@ -419,9 +450,24 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	if err = os.WriteFile(file, []byte(dsn), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	auditBefore = len(auditRows())
 	stdout, stderr, code = runServer(t, []string{"DATABASE_URL=", "DATABASE_URL_FILE=" + file}, "-request-deadline-recheck")
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck now pending (outage).") || value() != "outage" {
 		t.Fatalf("from the file: code %d stdout %q stderr %q value %q", code, stdout, stderr, value())
+	}
+	noURL(stdout + stderr)
+	if rows := auditRows(); len(rows) != auditBefore+1 || rows[len(rows)-1] != "-:"+requestRow {
+		t.Fatalf("the audit rows from the file: %q, %d before", rows, auditBefore)
+	}
+
+	// PM-3: one transaction. An audit row that cannot be written leaves no request, and the failure names no connection detail.
+	exec("DELETE FROM settings WHERE key=$1", key)
+	exec(`CREATE FUNCTION refuse_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$`)
+	exec("CREATE TRIGGER refuse_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION refuse_audit()")
+	held := settingsNow()
+	stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "database statement failed") || settingsNow() != held || value() != "" {
+		t.Fatalf("an audit row refused: code %d stdout %q stderr %q value %q", code, stdout, stderr, value())
 	}
 	noURL(stdout + stderr)
 }

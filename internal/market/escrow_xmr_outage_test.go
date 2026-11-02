@@ -71,6 +71,12 @@ func (x *xmrEscrowEnv) wantVendorMoved(order, cause string, says ...string) {
 	}
 }
 
+// requestRecords lists the audit rows of a host command's recheck request as user:action (PM-3).
+func (x *xmrEscrowEnv) requestRecords() []string {
+	x.t.Helper()
+	return agStrings(x.t, x.testEnv, "SELECT COALESCE(user_id,'-')||':'||action FROM audit_events WHERE action=$1 ORDER BY id", xmrRecheckRequestedAudit)
+}
+
 // recheckLogPrefix opens the log line of a deadline recheck.
 const recheckLogPrefix = "monero escrow deadline recheck"
 
@@ -137,6 +143,9 @@ func TestXMROutageMovesNearDeadlines(t *testing.T) {
 	x.mustPoll()
 	// DA104-5: one fixed log line and one audit row with the cause and the count, and no order data.
 	x.wantRecheckRecorded(logs, "outage", 4, passed, near, window, remindedOrder)
+	if rows := x.requestRecords(); len(rows) != 0 { // PM-3: nobody on the host asked
+		t.Fatalf("a recheck the watcher asked for has request rows: %q", rows)
+	}
 	for _, o := range []string{passed, near, window} {
 		if d := x.releaseAt(o).Sub(x.dbNow()); d < 71*time.Hour || d > 72*time.Hour {
 			t.Fatalf("the deadline of %s is %s away, want 72 hours", shortID(o), d)
@@ -358,7 +367,11 @@ func TestXMROutageEscrowOffPaths(t *testing.T) {
 		on := x.A.escrowXMR
 		x.A.escrowXMR = nil
 
-		if code, body := x.xmrDispute(late, lateSess); code != 409 || !strings.Contains(body, "a dispute can no longer be opened") {
+		// BE110-3: the banner tells the buyer the deadline still closes disputes, and the refusal says the same thing.
+		if p := html.UnescapeString(x.page("/order?id="+late, lateSess)); !strings.Contains(p, "The deadline still closes disputes: after it, a dispute can no longer be opened") || strings.Contains(p, "applied only once it is on again") {
+			t.Fatalf("the banner with escrow off:\n%s", p)
+		}
+		if code, body := x.xmrDispute(late, lateSess); code != 409 || !strings.Contains(html.UnescapeString(body), "The release deadline of this order passed at "+utcUntil(x.releaseAt(late))+", so the release to the vendor is due and a dispute can no longer be opened. Nothing was changed.") {
 			t.Fatalf("a late dispute with escrow off: %d %s", code, body)
 		}
 		if code, body := x.xmrBuyerCancel(cancelled, cancelledSess); code != 303 || x.state(cancelled) != stateCancelled {
@@ -1084,15 +1097,149 @@ func TestXMROutageManualRequestAfterCompletion(t *testing.T) {
 func TestXMROutageRecheckOnReturnRestoresFullGrace(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
-	order, _, _ := x.shippedXMR(x.physical(x.vendor))
+	physical := x.physical(x.vendor)
+	order, _, _ := x.shippedXMR(physical)
+	buyer := x.partyOf(order, roleBuyer)
+	restored, _, _ := x.shippedXMR(physical)
+	request := func() {
+		t.Helper()
+		out, err := RequestDeadlineRecheck(context.Background(), x.DB)
+		if err != nil || !strings.HasPrefix(out, "Deadline recheck now pending (outage).") {
+			t.Fatalf("request: %q, %v", out, err)
+		}
+	}
+	// A restore's recheck moved this one, so its flag stays set: no later recheck may skip it for that.
+	x.forceDeadline(restored, "release_at=now()+interval '1 hour'")
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	x.mustPoll()
+	// The earlier request of the outage, then the return, with the deadline nearly used up: DA110-5.
 	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
-	out, err := RequestDeadlineRecheck(context.Background(), x.DB)
-	if err != nil || !strings.HasPrefix(out, "Deadline recheck now pending (outage).") {
-		t.Fatalf("request: %q, %v", out, err)
+	request()
+	x.mustPoll()
+	if d := x.releaseAt(order).Sub(x.dbNow()); d < 71*time.Hour || x.recheckKey() != "" {
+		t.Fatalf("after the earlier request: %s left, request %q", d, x.recheckKey())
+	}
+	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
+	x.forceDeadline(restored, "release_at=now()+interval '1 hour'")
+	request()
+	x.mustPoll()
+	for name, o := range map[string]string{"a repeated request's": order, "a restore's": restored} {
+		if d := x.releaseAt(o).Sub(x.dbNow()); d < 71*time.Hour || x.state(o) != stateShipped || x.recheckKey() != "" {
+			t.Fatalf("after the request on return, %s order: %s left, order %s, request %q", name, d, x.state(o), x.recheckKey())
+		}
+	}
+	// QA108-2: each repeat tells every party again, as the guides warn.
+	if n := len(x.movedNotices(buyer, order)); n != 2 {
+		t.Fatalf("the buyer's notices after two rounds: %d", n)
+	}
+}
+
+// DA108-1 (the ruled default, which the owner may overturn): an outage the watcher detected holds the buyer's no-ship cancel
+// only for an order whose ship-by time fell after the gap began. One overdue before it has no such reason to wait. Further
+// rounds in the same grace keep that start, a host request with no gap has no start to go by and holds them all, and a
+// restore holds them all as it always did.
+func TestXMROutageGraceOnlyAfterGapBegan(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	logs := captureLog(t)
+	paid := func(n int) (orders, sessions []string) {
+		for range n {
+			o, sess := x.paidXMRPhysical(x.physical(x.vendor))
+			orders, sessions = append(orders, o), append(sessions, sess)
+		}
+		return orders, sessions
+	}
+	os, ss := paid(6)
+	before, inGap, soon := os[0], os[1], os[2]
+	x.forceDeadline(before, "ship_by=now()-interval '3 hours'")
+	x.forceDeadline(inGap, "ship_by=now()-interval '30 minutes'")
+	x.forceDeadline(soon, "ship_by=now()+interval '1 hour'")
+	x.forceDeadline(os[3], "ship_by=now()-interval '3 hours'") // the second round's
+	x.forceDeadline(os[4], "ship_by=now()-interval '3 hours'") // the host request's
+	x.forceDeadline(os[5], "ship_by=now()-interval '3 hours'") // the restore's
+	x.setLastDeadlineStep("2 hours")
+	x.mustPoll()
+	x.wantRecheckRecorded(logs, "outage", 0)
+	var from string
+	if err := x.DB.QueryRow("SELECT value FROM settings WHERE key=$1", xmrCancelWaitFromKey).Scan(&from); err != nil {
+		t.Fatalf("the grace's start: %v", err)
+	}
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrOutageGapFromKey); len(v) != 0 {
+		t.Fatalf("the request's gap stayed: %q", v)
+	}
+	// Before the gap: the cancel goes through. Its order page does not claim a wait either.
+	if p := x.page("/order?id="+before, ss[0]); strings.Contains(p, "an outage made this market unavailable") {
+		t.Fatalf("the order page of an order overdue before the gap claims the outage:\n%s", p)
+	}
+	if code, body := x.xmrBuyerCancel(before, ss[0]); code != 303 || x.state(before) != stateCancelled {
+		t.Fatalf("overdue before the gap: %d %s, order %s", code, body, x.state(before))
+	}
+	// After the gap began, passed or still to come within the grace: the cancel waits, and says an outage is why.
+	until := utcFrom(x.cancelWaitUntil())
+	for i, o := range []string{inGap, soon} {
+		if code, body := x.xmrBuyerCancel(o, ss[i+1]); code != 409 || x.state(o) != statePaid || !containsAll(html.UnescapeString(body), "You can cancel this order from "+until, outageWhy) {
+			t.Fatalf("ship_by after the gap began (%d): %d %s, order %s", i, code, body, x.state(o))
+		}
+	}
+
+	// A second gap in the same grace keeps the first start: this order overdue before it still has nothing to wait for.
+	x.setLastDeadlineStep("2 hours")
+	x.mustPoll()
+	// A host request in the same grace keeps it too.
+	if _, err := RequestDeadlineRecheck(context.Background(), x.DB); err != nil {
+		t.Fatal(err)
 	}
 	x.mustPoll()
-	if d := x.releaseAt(order).Sub(x.dbNow()); d < 71*time.Hour || x.state(order) != stateShipped || x.recheckKey() != "" {
-		t.Fatalf("after the request on return: %s left, order %s, request %q", d, x.state(order), x.recheckKey())
+	var fromNow string
+	if err := x.DB.QueryRow("SELECT value FROM settings WHERE key=$1", xmrCancelWaitFromKey).Scan(&fromNow); err != nil || fromNow != from {
+		t.Fatalf("the grace's start after more rounds: %q, was %q, %v", fromNow, from, err)
+	}
+	if code, body := x.xmrBuyerCancel(os[3], ss[3]); code != 303 || x.state(os[3]) != stateCancelled {
+		t.Fatalf("overdue before the gap, later rounds: %d %s, order %s", code, body, x.state(os[3]))
+	}
+	if code, body := x.xmrBuyerCancel(inGap, ss[1]); code != 409 || x.state(inGap) != statePaid {
+		t.Fatalf("ship_by after the gap began, later rounds: %d %s, order %s", code, body, x.state(inGap))
+	}
+
+	// The grace over, a host request alone knows no start: everything overdue waits, and the old start is gone.
+	agExec(x.testEnv, "UPDATE settings SET value=to_char((now()-interval '1 minute') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE key=$1", xmrCancelWaitKey)
+	if _, err := RequestDeadlineRecheck(context.Background(), x.DB); err != nil {
+		t.Fatal(err)
+	}
+	x.mustPoll()
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrCancelWaitFromKey); len(v) != 0 {
+		t.Fatalf("a host request's grace has a start: %q", v)
+	}
+	if code, body := x.xmrBuyerCancel(os[4], ss[4]); code != 409 || x.state(os[4]) != statePaid || !strings.Contains(html.UnescapeString(body), outageWhy) {
+		t.Fatalf("a host request's grace: %d %s, order %s", code, body, x.state(os[4]))
+	}
+
+	// A watcher's gap in that grace keeps it whole: a request with no start stays one.
+	x.setLastDeadlineStep("2 hours")
+	x.mustPoll()
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrCancelWaitFromKey); len(v) != 0 {
+		t.Fatalf("a gap narrowed a running grace: %q", v)
+	}
+
+	// A grace with a start that has ended, then a restore: as today, every order overdue waits, with a restore's reason.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2)", xmrCancelWaitFromKey, from)
+	agExec(x.testEnv, "UPDATE settings SET value=to_char((now()-interval '1 minute') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE key=$1", xmrCancelWaitKey)
+	x.setLastDeadlineStep("2 hours") // the backup's old time: the gap is found, and a restore's request stays one
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	x.mustPoll()
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key IN ($1,$2)", xmrCancelWaitFromKey, xmrOutageGapFromKey); len(v) != 0 {
+		t.Fatalf("a restore's grace has a start: %q", v)
+	}
+	if code, body := x.xmrBuyerCancel(os[5], ss[5]); code != 409 || x.state(os[5]) != statePaid || !strings.Contains(html.UnescapeString(body), "restored its records from a backup") {
+		t.Fatalf("a restore's grace: %d %s, order %s", code, body, x.state(os[5]))
+	}
+	// A restore that leaves a later end in place still holds every order: it is not narrowed by the row the backup carried.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2)", xmrCancelWaitFromKey, from)
+	agExec(x.testEnv, "UPDATE settings SET value=to_char((now()+interval '100 hours') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE key=$1", xmrCancelWaitKey)
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	x.mustPoll()
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrCancelWaitFromKey); len(v) != 0 {
+		t.Fatalf("a restore kept the start of a later grace: %q", v)
 	}
 }
 
@@ -1200,6 +1347,9 @@ func TestAdminPaymentsDeadlineRecheck(t *testing.T) {
 	// It ran: when, the cause and the count, with no order data.
 	x.mustPoll()
 	x.wantRecheckRecorded(logs, "outage", 1, order)
+	if rows := x.requestRecords(); len(rows) != 1 || rows[0] != "-:"+xmrRecheckRequestedAudit { // PM-3: who asked
+		t.Fatalf("the request's audit rows: %q", rows)
+	}
 	at := x.lastRecheckAt()
 	if s := section(); !containsAll(s, "No deadline recheck is pending.", "Last deadline recheck: "+utcUntil(at)+", after an outage; it moved 1 order deadline(s).") || strings.Contains(s, shortID(order)) {
 		t.Fatalf("after the recheck:\n%s", s)
@@ -1219,6 +1369,25 @@ func TestAdminPaymentsDeadlineRecheck(t *testing.T) {
 	}
 	if rows := x.recheckRecords(); len(rows) != 2 || rows[1] != "-:Monero escrow deadline recheck (cause: restore): moved 0 order deadline(s)" {
 		t.Fatalf("the audit rows: %q", rows)
+	}
+	// DA108-2: moved 0 is not "nothing happened": the panel states the hold on cancels and its end.
+	waitUntil := utcFrom(x.cancelWaitUntil())
+	if s := section(); !containsAll(s, "Buyers' no-ship cancels are held until "+waitUntil, "even when the count above is 0") || strings.Contains(s, "overdue since before") {
+		t.Fatalf("a restore's hold on cancels:\n%s", s)
+	}
+	// An outage the watcher detected names the start of the gap, and an order overdue before it is not held.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,to_char((now()-interval '2 hours') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'))", xmrCancelWaitFromKey)
+	var from time.Time
+	if err := x.DB.QueryRow("SELECT value::timestamptz FROM settings WHERE key=$1", xmrCancelWaitFromKey).Scan(&from); err != nil {
+		t.Fatal(err)
+	}
+	if s := section(); !containsAll(s, "Buyers' no-ship cancels are held until "+waitUntil, "An order overdue since before "+utcUntil(from)+", when the gap began, is not held") {
+		t.Fatalf("the hold with a gap's start:\n%s", s)
+	}
+	// Over, or spoiled by a hand, it says nothing.
+	agExec(x.testEnv, "UPDATE settings SET value='2000-01-01T00:00:00Z' WHERE key=$1", xmrCancelWaitKey)
+	if s := section(); strings.Contains(s, "no-ship cancels are held") {
+		t.Fatalf("an ended hold is stated:\n%s", s)
 	}
 	// A record only a hand could have spoiled shows as none, and does not break the page.
 	agExec(x.testEnv, "UPDATE settings SET value='not a record' WHERE key=$1", xmrLastRecheckKey)
