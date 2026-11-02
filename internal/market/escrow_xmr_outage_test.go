@@ -452,14 +452,23 @@ func TestXMROutageNoRecheckWithoutGap(t *testing.T) {
 // A-730: the request and the new time commit together. A recheck that fails keeps the request and tells no buyer; the
 // next pass, though it finds no gap, retries it, and each buyer is told once. A step that cannot write the time, as with
 // a database failing during the outage, changes nothing and completes nothing, so the gap is still there on return.
+//
+// A-762: an order due within 72 hours and not yet reminded gets no reminder while the recheck is pending and failing, as
+// it would name the date about to be replaced: each party gets exactly one notice in the end, the moved one.
 func TestXMROutageRecheckRetries(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
-	order, sess, _ := x.shippedXMR(x.physical(x.vendor))
+	physical := x.physical(x.vendor)
+	order, sess, _ := x.shippedXMR(physical)
+	soon, _, _ := x.shippedXMR(physical)
 	window, windowSess := x.deliveredXMR(x.product)
 	x.forceDeadline(order, "release_at=now()-interval '2 days'")
 	x.forceDeadline(window, "release_at=now()-interval '2 days'")
+	x.forceDeadline(soon, "release_at=now()+interval '10 hours',reminded_at=NULL")
 	passedAt := x.releaseAt(order)
+	soonAt := x.releaseAt(soon)
+	soonBuyer, soonVendor := x.partyOf(soon, roleBuyer), x.partyOf(soon, roleVendor)
+	buyerHad, vendorHad := len(x.noticesOf(soonBuyer, soon)), len(x.noticesOf(soonVendor, soon))
 	x.setLastDeadlineStep("2 hours")
 	stale := x.lastDeadlineStep()
 
@@ -486,6 +495,9 @@ func TestXMROutageRecheckRetries(t *testing.T) {
 		if x.lastDeadlineStep() == stale {
 			t.Fatalf("pass %d: the time was not recorded", pass)
 		}
+		if b, v := x.noticesOf(soonBuyer, soon), x.noticesOf(soonVendor, soon); len(b) != buyerHad || len(v) != vendorHad || !x.releaseAt(soon).Equal(soonAt) {
+			t.Fatalf("pass %d: a notice while the recheck is pending and failing: buyer %q, vendor %q, deadline %s", pass, b, v, x.releaseAt(soon))
+		}
 	}
 	// While it is pending the page names the outage too.
 	if p := x.panel(order, sess); strings.Contains(p, "restore") || !strings.Contains(p, "an outage") {
@@ -506,6 +518,14 @@ func TestXMROutageRecheckRetries(t *testing.T) {
 	notices := x.noticesOf(x.partyOf(order, roleBuyer), order)
 	if x.recheckKey() != "" || countContaining(notices, "an outage") != 1 || x.releaseAt(order).Before(x.dbNow().Add(71*time.Hour)) || x.state(order) != stateShipped {
 		t.Fatalf("after the retry: request %q, deadline %s, order %s, notices %q", x.recheckKey(), x.releaseAt(order), x.state(order), notices)
+	}
+	for party, had := range map[string]int{soonBuyer: buyerHad, soonVendor: vendorHad} {
+		if n, moved := x.noticesOf(party, soon), x.movedNotices(party, soon); len(n) != had+1 || len(moved) != 1 || !strings.Contains(moved[0], utcUntil(x.releaseAt(soon))) || anyContains(n, "Reminder") {
+			t.Fatalf("the notices after the retry, want one more, the moved one: %q", n)
+		}
+	}
+	if x.releaseAt(soon).Before(x.dbNow().Add(71 * time.Hour)) {
+		t.Fatalf("the deadline due soon: %s", x.releaseAt(soon))
 	}
 }
 

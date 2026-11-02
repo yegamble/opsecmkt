@@ -350,10 +350,12 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 }
 
 // xmrRemindDeadlines reminds the buyer of every shipped Monero escrow order with no dispute whose release deadline is
-// less than 72 hours away, once, and tells the vendor the buyer's deadline (step 2 of the file comment).
+// less than 72 hours away, once, and tells the vendor the buyer's deadline (step 2 of the file comment); nothing while a
+// recheck is pending (xmrNoRecheckSQL, A-762), since it would name a date about to be replaced: the recheck's own notice
+// counts as the reminder.
 func (a *App) xmrRemindDeadlines(ctx context.Context) error {
 	ids, err := orderIDs(ctx, a.db, `SELECT o.id FROM orders o JOIN escrows es ON es.order_id=o.id WHERE es.coin='XMR' AND o.state='shipped' AND es.reminded_at IS NULL AND `+releaseSoonSQL+`
-		AND `+noDisputeSQL+` ORDER BY es.release_at`)
+		AND `+noDisputeSQL+` AND `+xmrNoRecheckSQL+` ORDER BY es.release_at`)
 	if err != nil {
 		return err
 	}
