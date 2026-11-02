@@ -204,6 +204,9 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          'the request stays pending until the first pass after it is on again',
                          "a buyer's no-ship cancel past its time waits until then",
                          'the jump plus 72 hours',
+                         # PAY108-1: the wait for the clocks, its tolerance and how it ends.
+                         'more than 5 minutes',
+                         '72 hours have passed on both clocks',
                          'market-wide',
                          'no form undoes it',
                          'It cannot undo a completion',

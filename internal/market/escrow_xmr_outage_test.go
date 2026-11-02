@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io/fs"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1458,6 +1460,343 @@ func TestAdminPaymentsDeadlineRecheckPreview(t *testing.T) {
 	a.ServeHTTP(w, httptest.NewRequest("GET", "/admin/payments", nil))
 	if w.Code != 200 || !containsAll(w.Body.String(), `id="xmr-deadline-recheck"`, "No deadline recheck is pending.", "No deadline recheck has been recorded.") {
 		t.Fatalf("preview: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// simDBClock puts every statement the application sends under a simulated database clock: now() in the application's SQL
+// resolves to a function that adds a settable interval to the real one, by the search path of a reconnected App, and the
+// returned function sets it ("30 days" ahead, "0" back). Clock_timestamp() and column defaults keep the real time. It stands
+// for a stepped host clock, which a test must not do; it is not evidence of one.
+func (x *xmrEscrowEnv) simDBClock() (jump func(ahead string)) {
+	x.t.Helper()
+	schema := "clock_" + randomToken()[:12]
+	agExec(x.testEnv, "CREATE SCHEMA "+schema)
+	agExec(x.testEnv, "CREATE TABLE "+schema+".shift AS SELECT interval '0' AS ahead")
+	agExec(x.testEnv, "CREATE FUNCTION "+schema+".now() RETURNS timestamptz LANGUAGE sql STABLE AS $$SELECT pg_catalog.now()+ahead FROM "+schema+".shift$$")
+	x.t.Cleanup(func() { x.DB.Exec("DROP SCHEMA " + schema + " CASCADE") })
+	u, err := url.Parse(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		x.t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", q.Get("search_path")+","+schema+",pg_catalog")
+	u.RawQuery = q.Encode()
+	x.t.Setenv("DATABASE_URL", u.String())
+	x.restart()
+	x.mustPoll() // a restarted watcher makes its escrow accounts ready again
+	return func(ahead string) {
+		x.t.Helper()
+		agExec(x.testEnv, "UPDATE "+schema+".shift SET ahead=$1::interval", ahead)
+		agExec(x.testEnv, "UPDATE sessions SET expires=now()+interval '30 days'") // a step of that size signs everyone out; the pages are what is tested
+	}
+}
+
+// recheckPanel is the section of Admin → Payments on the recheck, as an administrator reads it.
+func (x *xmrEscrowEnv) recheckPanel(admin string) string {
+	x.t.Helper()
+	page := html.UnescapeString(x.page("/admin/payments", admin))
+	_, after, found := strings.Cut(page, `id="xmr-deadline-recheck"`)
+	if !found {
+		x.t.Fatalf("no recheck section:\n%s", page)
+	}
+	block, _, _ := strings.Cut(after, "<h3")
+	return block
+}
+
+// settingsOf lists the values of a setting (none or one).
+func (x *xmrEscrowEnv) settingsOf(key string) []string {
+	x.t.Helper()
+	return agStrings(x.t, x.testEnv, "SELECT value FROM settings WHERE key=$1", key)
+}
+
+const (
+	clocksApartLine  = "the application's clock and the database's clock differ by more than 5 minutes"
+	daemonApartLine  = "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE"
+	deferredLogStart = "monero escrow recheck deferred: "
+)
+
+// PAY108-1: a forward step of the database's clock looks like a long outage, and a recheck on it writes a far-future end of
+// the vendor's grace that no later recheck shortens. Compared with the application's clock it waits: no deadline moves,
+// the request stays pending, holds stay in force, one log line and Admin → Payments say why, and once they agree the next
+// pass runs it, at the true time.
+func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	jump := x.simDBClock()
+	_, admin := x.user("xclock_"+randomToken()[:6], "admin")
+	physical := x.physical(x.vendor)
+	order, _, _ := x.shippedXMR(physical)
+	paid, paidSess := x.paidXMRPhysical(physical)
+	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
+	x.forceDeadline(paid, "ship_by=now()-interval '1 minute'")
+	was := x.releaseAt(order)
+	logs := captureLog(t)
+
+	jump("30 days")
+	for range 3 {
+		x.mustPoll()
+		if x.recheckKey() != xmrRecheckOutage {
+			t.Fatalf("the request while the clocks disagree: %q", x.recheckKey())
+		}
+		if !x.releaseAt(order).Equal(was) || x.state(order) != stateShipped || len(x.movedNotes(order)) != 0 {
+			t.Fatalf("a deadline moved while the clocks disagree: %s, was %s, order %s, notes %q", x.releaseAt(order), was, x.state(order), x.movedNotes(order))
+		}
+		if v := x.settingsOf(xmrCancelWaitKey); len(v) != 0 {
+			t.Fatalf("a hold's end written while the clocks disagree: %q", v)
+		}
+		if rows := x.recheckRecords(); len(rows) != 0 {
+			t.Fatalf("a recheck recorded while the clocks disagree: %q", rows)
+		}
+	}
+	// One line for the change, whatever the passes, with the reason and nothing of the database's or the wallet's.
+	text := logs.String()
+	if strings.Count(text, deferredLogStart) != 1 || !strings.Contains(text, deferredLogStart+clocksApartLine) || strings.Contains(text, recheckLogPrefix) {
+		t.Fatalf("the log while the clocks disagree:\n%s", text)
+	}
+	s := x.recheckPanel(admin)
+	if !containsAll(s, "Deadline recheck pending: an outage asked for it.", clocksApartLine, "No deadline moves", "at the latest", "72 hours") || strings.Contains(s, "watcher's next pass runs it") {
+		t.Fatalf("the panel while the clocks disagree:\n%s", s)
+	}
+	for _, private := range []string{"postgres", "127.0.0.1", "wallet", "30 days", "720"} {
+		if strings.Contains(s, private) {
+			t.Fatalf("the panel names %q:\n%s", private, s)
+		}
+	}
+	// Holds stay in force: nothing completes on a passed deadline, and the buyer's no-ship cancel waits.
+	if code, body := x.xmrBuyerCancel(paid, paidSess); code != 409 || x.state(paid) != statePaid {
+		t.Fatalf("a no-ship cancel while the clocks disagree: %d %s, order %s", code, body, x.state(paid))
+	}
+
+	jump("0")
+	x.mustPoll()
+	if x.recheckKey() != "" || len(x.settingsOf(xmrRecheckWaitKey)) != 0 {
+		t.Fatalf("after agreement: request %q, wait %q", x.recheckKey(), x.settingsOf(xmrRecheckWaitKey))
+	}
+	if d := x.releaseAt(order).Sub(x.dbNow()); d < 71*time.Hour || d > 72*time.Hour {
+		t.Fatalf("after agreement the deadline is %s away, want 72 hours", d)
+	}
+	if d := x.cancelWaitUntil().Sub(x.dbNow()); d < 71*time.Hour || d > 72*time.Hour {
+		t.Fatalf("after agreement the vendor's grace ends %s away: a forward step must not write a far-future end", d)
+	}
+	if s := x.recheckPanel(admin); !strings.Contains(s, "No deadline recheck is pending.") || strings.Contains(s, clocksApartLine) || strings.Contains(s, "still apart") {
+		t.Fatalf("the panel after agreement:\n%s", s)
+	}
+	x.wantRecheckRecorded(logs, "outage", 1, order)
+
+	// The stated tolerance, either way, on an operator's request as on a found gap: past 5 minutes it waits, within them it runs.
+	for _, c := range []struct {
+		ahead string
+		waits bool
+	}{{"6 minutes", true}, {"-6 minutes", true}, {"-4 minutes", false}, {"4 minutes", false}} {
+		jump("0")
+		if _, err := RequestDeadlineRecheck(context.Background(), x.DB); err != nil {
+			t.Fatal(err)
+		}
+		jump(c.ahead)
+		x.mustPoll()
+		if pending := x.recheckKey() == xmrRecheckOutage; pending != c.waits {
+			t.Fatalf("the database's clock %s from the application's: pending %v, want %v", c.ahead, pending, c.waits)
+		}
+		jump("0")
+		x.mustPoll()
+		if x.recheckKey() != "" {
+			t.Fatalf("after %s, agreement left the request %q", c.ahead, x.recheckKey())
+		}
+	}
+
+	// A restore's recheck is unchanged: with the clocks apart it runs at once, and it says a restore.
+	x.mustPoll()
+	jump("30 days")
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT (key) DO UPDATE SET value='true'", xmrReleaseRecheckKey)
+	x.mustPoll()
+	if x.recheckKey() != "" || !strings.Contains(x.recheckPanel(admin), "after a restore from backup") {
+		t.Fatalf("a restore's recheck with the clocks apart: request %q\n%s", x.recheckKey(), x.recheckPanel(admin))
+	}
+}
+
+// PAY108-1: a genuine long outage has the same gap as a step of the clock, and with the clocks agreeing it moves deadlines
+// as it always did: a disagreement defers, and an agreement never reads as no outage.
+func TestXMROutageMonthLongWithClocksAgreeing(t *testing.T) {
+	x := newXMREscrowEnvWith(t, func(f *fakeXMREscrow) { f.nettype, f.peers = "stagenet", 8 })
+	x.mustPoll()
+	logs := captureLog(t)
+	order, _ := x.deliveredXMR(x.product)
+	x.forceDeadline(order, "release_at=now()-interval '20 days'")
+	x.setLastDeadlineStep("30 days")
+	x.mustPoll()
+	if d := x.releaseAt(order).Sub(x.dbNow()); d < 71*time.Hour || d > 72*time.Hour || x.recheckKey() != "" || x.state(order) != stateDelivered {
+		t.Fatalf("a month's outage: %s away, request %q, order %s", d, x.recheckKey(), x.state(order))
+	}
+	x.wantRecheckRecorded(logs, "outage", 1, order)
+	if strings.Contains(logs.String(), deferredLogStart) {
+		t.Fatalf("a deferral with the clocks agreeing:\n%s", logs.String())
+	}
+}
+
+// PAY108-1: the daemon's newest block is the third clock, for a step of the host that moves the application and the database
+// together. A daemon that says it is synced and has an old tip defers, and the tip's catching up ends that. A daemon that
+// cannot say, whether unreachable, not synced or hung, cannot stop the recheck: only the two clocks that could be read count.
+func TestXMROutageRecheckDaemonTip(t *testing.T) {
+	x := newXMREscrowEnvWith(t, func(f *fakeXMREscrow) { f.nettype, f.peers = "stagenet", 8 })
+	x.mustPoll()
+	_, admin := x.user("xclockd_"+randomToken()[:6], "admin")
+	order, _ := x.deliveredXMR(x.product)
+	near := func() {
+		t.Helper()
+		x.forceDeadline(order, "release_at=now()+interval '1 hour'")
+		x.setLastDeadlineStep("2 hours")
+	}
+	recheck := func() {
+		t.Helper()
+		x.A.xmrNoteDeadlineStepEarly(context.Background())
+		if err := x.A.xmrRecheckReleaseDeadlines(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	moved := func(name string) {
+		t.Helper()
+		if d := x.releaseAt(order).Sub(x.dbNow()); d < 71*time.Hour || x.recheckKey() != "" {
+			t.Fatalf("%s: the deadline is %s away, request %q", name, d, x.recheckKey())
+		}
+	}
+
+	t.Run("a synced daemon's old tip waits, and its catching up ends the wait", func(t *testing.T) {
+		logs := captureLog(t)
+		near()
+		was := x.releaseAt(order)
+		x.fake.edit(func(f *fakeXMREscrow) { f.tipAge = 30 * 24 * time.Hour })
+		recheck()
+		if !x.releaseAt(order).Equal(was) || x.recheckKey() != xmrRecheckOutage {
+			t.Fatalf("with an old tip: %s, was %s, request %q", x.releaseAt(order), was, x.recheckKey())
+		}
+		if text := logs.String(); !strings.Contains(text, deferredLogStart+daemonApartLine) {
+			t.Fatalf("the log with an old tip:\n%s", text)
+		}
+		if s := x.recheckPanel(admin); !strings.Contains(s, daemonApartLine) {
+			t.Fatalf("the panel with an old tip:\n%s", s)
+		}
+		x.fake.edit(func(f *fakeXMREscrow) { f.tipAge = 0 })
+		x.mustPoll()
+		moved("the tip caught up")
+	})
+	for _, c := range []struct {
+		name       string
+		set, unset func(f *fakeXMREscrow)
+	}{
+		{"not synced", func(f *fakeXMREscrow) { f.unsynced, f.tipAge = true, 30*24*time.Hour }, func(f *fakeXMREscrow) { f.unsynced, f.tipAge = false, 0 }},
+		{"tip unreadable", func(f *fakeXMREscrow) { f.tipErr = true }, func(f *fakeXMREscrow) { f.tipErr = false }},
+		{"no peers", func(f *fakeXMREscrow) { f.peers, f.tipAge = 0, 30*24*time.Hour }, func(f *fakeXMREscrow) { f.peers, f.tipAge = 8, 0 }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			near()
+			x.fake.edit(c.set)
+			defer x.fake.edit(c.unset)
+			recheck()
+			moved(c.name)
+		})
+	}
+	t.Run("unreachable", func(t *testing.T) {
+		near()
+		x.fake.fault("get_info", fakeXMRDrop)
+		recheck()
+		moved("unreachable")
+	})
+	t.Run("not ready", func(t *testing.T) {
+		near()
+		x.A.escrowXMR.ready.Store(false)
+		defer x.A.escrowXMR.ready.Store(true)
+		x.mustPoll()
+		moved("not ready")
+	})
+	t.Run("hung", func(t *testing.T) {
+		was := xmrClockCheckBudget
+		xmrClockCheckBudget = 200 * time.Millisecond
+		defer func() { xmrClockCheckBudget = was }()
+		release := make(chan struct{})
+		x.fake.hook("get_info", func() { <-release })
+		defer func() { x.fake.hook("get_info", nil); close(release) }()
+		near()
+		started := time.Now()
+		recheck()
+		if took := time.Since(started); took > 10*time.Second {
+			t.Fatalf("the recheck waited %s on a hung daemon", took)
+		}
+		moved("hung")
+	})
+	t.Run("a restore's overwrite during the comparison", func(t *testing.T) {
+		near()
+		x.fake.edit(func(f *fakeXMREscrow) { f.tipAge = 30 * 24 * time.Hour })
+		defer x.fake.edit(func(f *fakeXMREscrow) { f.tipAge = 0 })
+		x.fake.hook("get_info", func() {
+			agExec(x.testEnv, "UPDATE settings SET value='true' WHERE key=$1", xmrReleaseRecheckKey)
+		})
+		defer x.fake.hook("get_info", nil)
+		recheck()
+		moved("a restore's overwrite")
+		if s := x.recheckPanel(admin); !strings.Contains(s, "after a restore from backup") {
+			t.Fatalf("the panel after a restore's overwrite:\n%s", s)
+		}
+	})
+}
+
+// PAY108-1: the wait is bounded. It ends at the latest once 72 hours have passed on both clocks, so a market whose clocks stay
+// apart is not held for good: the recheck then runs as it would have, says it ran with them apart, and clears the wait.
+// One clock's jump alone does not end it, and a clock stepped back starts the count again.
+func TestXMROutageRecheckWaitBound(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	jump := x.simDBClock()
+	_, admin := x.user("xclockb_"+randomToken()[:6], "admin")
+	order, _, _ := x.shippedXMR(x.physical(x.vendor))
+	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
+	was := x.releaseAt(order)
+	logs := captureLog(t)
+	jump("30 days")
+	x.mustPoll()
+	if x.recheckKey() != xmrRecheckOutage || !x.releaseAt(order).Equal(was) {
+		t.Fatalf("the first wait: request %q, deadline %s", x.recheckKey(), x.releaseAt(order))
+	}
+	set := func(db, app time.Time) {
+		t.Helper()
+		raw, err := json.Marshal(xmrRecheckWait{Reason: xmrClocksDatabase, DB: db, App: app})
+		if err != nil {
+			t.Fatal(err)
+		}
+		agExec(x.testEnv, "UPDATE settings SET value=$2 WHERE key=$1", xmrRecheckWaitKey, string(raw))
+	}
+	dbNow, appNow := x.dbNow(), time.Now()
+	past := xmrRecheckWaitMax + time.Hour
+	for name, c := range map[string][2]time.Time{
+		"only the database's clock passed the bound":    {dbNow.Add(-past), appNow},
+		"only the application's clock passed the bound": {dbNow, appNow.Add(-past)},
+	} {
+		set(c[0], c[1])
+		x.mustPoll()
+		if x.recheckKey() != xmrRecheckOutage || !x.releaseAt(order).Equal(was) {
+			t.Fatalf("%s: request %q, deadline %s", name, x.recheckKey(), x.releaseAt(order))
+		}
+	}
+	// A clock stepped back: its elapsed time means nothing, so the count starts again rather than never ending.
+	set(dbNow.Add(time.Hour), appNow.Add(-past))
+	x.mustPoll()
+	var again xmrRecheckWait
+	if v := x.settingsOf(xmrRecheckWaitKey); len(v) != 1 || json.Unmarshal([]byte(v[0]), &again) != nil || again.DB.After(x.dbNow()) || time.Since(again.App) > time.Minute {
+		t.Fatalf("the count after a clock stepped back: %q", v)
+	}
+
+	set(dbNow.Add(-past), appNow.Add(-past))
+	x.mustPoll()
+	if x.recheckKey() != "" || len(x.settingsOf(xmrRecheckWaitKey)) != 0 || x.releaseAt(order).Sub(x.dbNow()) < 71*time.Hour {
+		t.Fatalf("past the bound: request %q, wait %q, deadline %s", x.recheckKey(), x.settingsOf(xmrRecheckWaitKey), x.releaseAt(order))
+	}
+	if !strings.Contains(logs.String(), recheckLogPrefix+": cause=outage moved=1 clocks_apart=true\n") {
+		t.Fatalf("the log past the bound:\n%s", logs.String())
+	}
+	if rows := x.recheckRecords(); len(rows) != 1 || !strings.Contains(rows[0], "clocks still apart") {
+		t.Fatalf("the audit row past the bound: %q", rows)
+	}
+	if s := x.recheckPanel(admin); !containsAll(s, "No deadline recheck is pending.", "It ran with the clocks still apart") {
+		t.Fatalf("the panel past the bound:\n%s", s)
 	}
 }
 
