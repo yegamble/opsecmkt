@@ -254,6 +254,19 @@ class UpgradingAlpha2Test(unittest.TestCase):
         self.assertNotIn('writes that request and nothing else', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
         self.assertRegex(guide, r'\| Payments \| `/admin/payments` \|[^\n]*\*Monero deadline recheck\*')
 
+    def test_never_enrolled_warning_has_a_section(self):
+        # A-782 SRE113-4: an upgrade is when the warning first appears, so UPGRADING.md says what it means. The phrases the
+        # guide loop of scripts/test-backup-restore.sh greps for are on one line each there, and the section links its guide.
+        match = re.search(r'^## [^\n]*A-772[^\n]*\n(.*?)(?=^#)', UPGRADING, re.M | re.S)
+        self.assertTrue(match, 'UPGRADING.md has no A-772 section')
+        section = match.group(1)
+        for line_phrase in ('cannot reopen once the original database is lost', 'no other path exists today', '-enroll-retention'):
+            self.assertRegex(section, r'(?m)^.*%s.*$' % re.escape(line_phrase))
+        self.assertIn('docs/retention.md#before-enabling', section)
+        self.assertIn('warning: this database has never enrolled retention', section)
+        self.assertIn('earlier backups', ' '.join(section.split()))
+        self.assertIn('RETENTION_ENABLED=on', section)
+
     def test_recheck_fallback_finds_a_wait(self):
         # A-782 SRE113-1: with the panel behind the failed ingress, each guide's fallback must see the wait as well as
         # the run. The grep is read from the guide and tried on the log formats themselves, and the SQL names the third

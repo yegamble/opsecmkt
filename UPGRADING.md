@@ -37,6 +37,14 @@ completions and cancels for good: the recheck then runs with the clocks still ap
 **Admin → Payments** say so. That run can delay deadlines by the jump plus 72 hours, and no form undoes it. Tested against a database with
 a simulated clock and a simulated wallet RPC; no host's clock was stepped.
 
+## A backup of a market that never enrolled retention (A-772)
+
+No migration or configuration. `./scripts/install.sh status`, `upgrade`, `-status` and every run of `scripts/backup.sh` now print `warning: this database has never enrolled retention …` for a default install, where `RETENTION_ENABLED` is off. The backup still succeeds.
+
+**A backup of such a database cannot reopen once the original database is lost**: its restored copy refuses to start and refuses to enroll, and no other path exists today. While the original exists, read [Before enabling](docs/retention.md#before-enabling) first, because enrollment starts the retention lifecycle: ordinary historical data is purged after the 30-day grace, and retention cannot be switched off afterwards. Then set `RETENTION_ENABLED=on` in `.env`, run `docker compose run --rm app -enroll-retention`, then `docker compose up -d`, and keep the retention state apart from the database. Other installation types are in [Backups of a never-enrolled database](docs/retention.md#backups-of-a-never-enrolled-database).
+
+Once the original is enrolled, earlier backups become usable too: a backup that predates enrollment adopts the current retention state. Keep that state, because recovery needs it if the original database is lost.
+
 ## Identity notices: the attack signal's route, the staff contact and refused registrations (A-768)
 
 No migration or configuration. New `settings` rows, written when they first apply: `sign_in_attack_last_public` and `sign_in_attack_last_private` hold the count that last turned the attack signal on and when, with no handle, account or client. *Security & access* shows them, and the notification now names the count.
