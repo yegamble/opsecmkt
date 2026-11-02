@@ -325,6 +325,9 @@ func TestStaffContactRestoreFromSuspensionTells(t *testing.T) {
 	if n := unnamedNotices(e, bannedID); n != 1 {
 		t.Fatalf("%d un-named notices after a ban", n)
 	}
+	if n := agInt(e, "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE '%p113r\\_banned%; told the staff member no longer named%'", adminID); n != 1 {
+		t.Fatalf("%d administrator audit rows say the banned account was told", n)
+	}
 	e.check(e.do("POST", "/admin/ban", admin, banForm("unban", "p113r_banned", testBanReason)), 303)
 	if n := namedNotices(e, bannedID); n != 1 {
 		t.Fatalf("lifting a ban told the account: %d named notices (one from naming)", n)
