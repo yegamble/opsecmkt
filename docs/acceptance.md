@@ -283,7 +283,9 @@ acceptance requirements, not a declaration of deployed verification:
   (`TestOverviewCountsUnreviewedProposals`, `TestReviewKeepsFilterAndConfirms`,
   `TestModerationBudgetRaiseKeepsFilterAndConfirms`, `TestModerationQueueWithinTwoTabStops`,
   `TestModerationFilterMatchesWhatItShows`, `TestModerationItemControlsNameTheirItem`,
-  `TestModerationLabelsCoverAllowedValues`, A-723).
+  `TestModerationLabelsCoverAllowedValues`, A-723). A refused review or budget
+  raise links back to the same view, labelled Moderation review; a tampered view
+  or a denied account gets no queue link (`TestModerationRefusalKeepsQueueView`, UI107-2).
 - Administrator diagnostics expose only bounded review metadata and health
   classes, not runtime endpoints, credentials or raw transport errors. Verify
   no-JavaScript rendering and sensitive-data access on the deployed private path.

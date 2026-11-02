@@ -204,6 +204,9 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 	v.EnrolFactor = msg == staffFactorRequiredMessage && user != nil
 	d.Refusal = v
 	a.loadRefusalPage(r, &d)
+	if back := a.moderationRefusalBack(r, d.User); back != "" { // waits for the session lookup: only an administrator has a queue view
+		v.Back, v.BackLabel = back, "Back to "+nextTitle(back)
+	}
 	// The title waits for the session lookup above: it depends on whether this browser is signed in.
 	d.Title, d.Error = refusalTitle(code, post, d.User != nil, msg), msg
 	if d.Title == passwordRefusedTitle || d.Title == confirmRefusedTitle {

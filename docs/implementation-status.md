@@ -167,7 +167,8 @@ A-711), and labels confidence as model-stated and uncalibrated
 counts unreviewed proposals, escalations and those past their deadline, counts only, and the section navigation has
 a **Moderation review** entry there (`TestOverviewCountsUnreviewedProposals`); a recorded review or budget raise confirms
 itself and keeps its filter and page (`TestReviewKeepsFilterAndConfirms`,
-`TestModerationBudgetRaiseKeepsFilterAndConfirms`); the queue comes first, with capacity and budget behind details
+`TestModerationBudgetRaiseKeepsFilterAndConfirms`), and a refused one links back to that view under the queue's name
+(UI107-2, `TestModerationRefusalKeepsQueueView`); the queue comes first, with capacity and budget behind details
 until the capture alert applies (`TestModerationQueueWithinTwoTabStops`); a filter offers only what can match, on the
 stored disposition, labelled Proposed (`TestModerationFilterMatchesWhatItShows`); and each control names its item
 (`TestModerationItemControlsNameTheirItem`). `tests/e2e/db-moderation.spec.ts` reaches the page in Chromium on a

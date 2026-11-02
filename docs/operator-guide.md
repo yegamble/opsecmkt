@@ -708,7 +708,7 @@ off by default. The Admin overview on private administrator ingress shows "N unr
 deadline" above the checklist, counts only, with a link to `/admin/moderation`, available only
 on the private administrator connection. The public listener and moderators see neither the line nor the section
 navigation's **Moderation review** entry. A recorded review or budget raise says so in the page title and its section and
-returns to the filter and page it was submitted from. The panel shows **Capture: on** or **Capture: off**,
+returns to the filter and page it was submitted from; a refused one links back to the same view. The panel shows **Capture: on** or **Capture: off**,
 job/review/escalation counts, injection-suspicion counts, prompt/weights pins,
 last pass, pass interval, the last database outage the worker recovered from and
 bounded failure classes. These are worker observations, not proof of model or host integrity.
