@@ -116,6 +116,14 @@ test('administrator publishes a staff contact that every promised page shows as 
     await expect(buyer.locator('input[name="recipient"]')).toHaveValue(modHandle);
     await buyer.goto('/notifications');
     await expect(notice.locator('.staff-contact a')).toHaveAttribute('href', `/messages?to=${modHandle}`);
+
+    // A-766: once the account is no longer staff, a visitor reads the unset text without the handle; the panel still warns.
+    sql(`UPDATE users SET role='buyer' WHERE handle='${modHandle}'`);
+    await visitor.goto('/login');
+    await expect(lockedOut).toHaveText(`Locked out or reporting a stolen account? Ask the operator of this market. Have ready your account's handle, your PGP key fingerprint and, if your key expired or was lost, your renewed or replacement public key. Staff never ask for your password, recovery codes or private key.`);
+    await admin.goto('/admin/site');
+    await expect(panel.locator('.staff-contact-warning')).toContainText('Every place that names the contact says');
+    await expect(panel.getByLabel('Staff contact')).toHaveValue(modHandle);
   } finally {
     // Cleared again so later database specs see the unset state (409: it was never set, after an earlier failure).
     expect([303, 409]).toContain(await saveContact(''));

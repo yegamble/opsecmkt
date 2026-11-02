@@ -15,8 +15,8 @@ import (
 
 // bannedSellerMsg is what a banned account that sells reads after a correct password, with the hold of days days.
 func bannedSellerMsg(days int) string {
-	return "This account is closed and cannot sign in. While it is closed, payments to this account not yet sent are held, with no other address paid in their place, and after " +
-		strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. Ask the operator of this market. " + staffReadyLine
+	return "This account is closed and cannot sign in. While it is closed, payments for this account's sales that the market has not yet built are held, with no other address paid in their place, and after " +
+		strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. A refund due to this account as a buyer is paid as usual. Ask the operator of this market. " + staffReadyLine
 }
 
 var bannedMsg = bannedSellerMsg(defaultBanHoldRefundDays)
@@ -188,7 +188,7 @@ func TestBanAccount(t *testing.T) {
 	if wrong.Code != 401 || wrong.Code != unknownHandle.Code || refusalText(wrong.Body.String()) != refusalText(unknownHandle.Body.String()) {
 		t.Fatalf("a wrong password on a banned seller: %d %q, unknown handle %d %q", wrong.Code, refusalText(wrong.Body.String()), unknownHandle.Code, refusalText(unknownHandle.Body.String()))
 	}
-	mustNotContain(t, wrong.Body.String(), "not yet sent", "cannot sign in")
+	mustNotContain(t, wrong.Body.String(), "not yet built", "cannot sign in")
 	plainID, _ := e.user("ban_plain_buyer", "buyer")
 	sellerID, _ := e.user("ban_buyer_seller", "buyer")
 	e.order(plainID, e.product(sellerID, "physical"), "XMR", stateDraft)

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"html"
 	"html/template"
 	"net/url"
@@ -520,9 +521,10 @@ func TestStaffContactUnreadableOnUpload(t *testing.T) {
 }
 
 // A-734 (STAFF102-1): /admin/site and its section alert on the overview name each way the staff contact fails, for as
-// long as it fails; /login makes no message promise for a handle a message cannot reach, without saying why. What a
-// handle needs is what /messages checks: an active moderator or administrator (messageRecipient) with a key that can
-// receive encrypted messages (inspectMessage's 409).
+// long as it fails; /login makes no message promise for a staff handle a message cannot reach, without saying why, and
+// A-766: a handle that is not active staff reads as unset for every reader, handle unprinted. What a handle needs is what
+// /messages checks: an active moderator or administrator (messageRecipient) with a key that can receive encrypted
+// messages (inspectMessage's 409).
 func TestStaffContactHealthWarnings(t *testing.T) {
 	e := newTestApp(t)
 	_, admin := e.user("a734_admin", "admin")
@@ -552,6 +554,14 @@ func TestStaffContactHealthWarnings(t *testing.T) {
 		keyed(c.handle, staffPub)
 		agExec(e, "UPDATE users SET "+c.set+" WHERE handle=$1", c.handle)
 	}
+	// A-766: a former staff member still selling takes messages under the vendor rules, not as the staff contact.
+	demotedVendorID, _ := e.keylessUser("a734_vendor", "vendor")
+	e.setKey(demotedVendorID, staffPub)
+	e.product(demotedVendorID, "physical")
+	// A staff account closed by retention gives up its handle (retention.go), and someone else registers it.
+	keyed("a734_reused", staffPub)
+	agExec(e, "UPDATE users SET handle='closed_'||id,closed_at=now() WHERE handle='a734_reused'")
+	e.user("a734_reused", "buyer")
 
 	registrations := func(v string) {
 		agExec(e, "INSERT INTO settings(key,value) VALUES('registrations',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", v)
@@ -599,6 +609,19 @@ func TestStaffContactHealthWarnings(t *testing.T) {
 			}
 		}
 	}
+	// unset checks the signed-out and signed-in pages read as if nothing were saved, without the handle.
+	unset := func(t *testing.T, handle string) {
+		t.Helper()
+		login := page("/login", randomToken())
+		mustContain(t, login, lockedOut+askOperatorLine+" "+staffReadyLine)
+		for name, b := range map[string]string{"/login": login, "/register": page("/register", randomToken()),
+			"/canary": page("/canary", randomToken()), "/canary signed in": page("/canary", sender)} {
+			mustContain(t, b, askOperatorLine)
+			if strings.Contains(b, handle) || strings.Contains(b, "Contact the market staff:") || strings.Contains(b, `href="/messages?to=`) {
+				t.Errorf("%s names %s as the staff contact", name, handle)
+			}
+		}
+	}
 	save(staffContactValue) // a working address: each case saves away from it, and back to it to clear the warning
 	for _, c := range []struct {
 		name, contact string
@@ -608,6 +631,8 @@ func TestStaffContactHealthWarnings(t *testing.T) {
 		{"empty", "", false, staffContactWarnEmpty},
 		{"no account", "a734_ghost", false, staffContactWarnNotStaff},
 		{"buyer", "a734_buyer", false, staffContactWarnNotStaff},
+		{"vendor", "a734_vendor", false, staffContactWarnNotStaff},
+		{"closed then re-registered", "a734_reused", false, staffContactWarnNotStaff},
 		{"suspended", "a734_suspended", false, staffContactWarnNotStaff},
 		{"banned", "a734_banned", false, staffContactWarnNotStaff},
 		{"closed account", "a734_closed", false, staffContactWarnNotStaff},
@@ -635,12 +660,20 @@ func TestStaffContactHealthWarnings(t *testing.T) {
 				mustContain(t, login, lockedOut+"Contact the market staff: "+c.contact+". "+closedLine+" "+staffReadyLine)
 			case c.contact == "":
 				mustContain(t, login, lockedOut+askOperatorLine+" "+staffReadyLine)
-			default:
-				// No promise and no reason: the same text whichever way it fails, and the message really is refused.
+			case c.want == staffContactWarnNoKey:
+				// A staff contact stays named. No promise and no reason, and the message really is refused.
 				mustContain(t, login, lockedOut+"Contact the market staff: "+c.contact+". "+staffReadyLine)
 				mustNotContain(t, login, "That is a market handle", closedLine, "PGP key that can", "not an active")
 				if code := send(c.contact); code == 303 {
 					t.Fatalf("a message to %s was accepted, so the warning is wrong", c.contact)
+				}
+			default:
+				// A-766: not staff, so it reads as unset, the same text whichever way it fails, and the panel says so. The
+				// vendor still takes a buyer's message under the vendor rules, which is why nothing may call it staff.
+				unset(t, c.contact)
+				mustContain(t, page("/admin/site", admin), staffContactWarnNotStaff+" Every place that names the contact says “"+askOperatorLine+"” instead, without this handle")
+				if code := send(c.contact); (code == 303) != (c.contact == "a734_vendor") {
+					t.Fatalf("a message to %s answered %d", c.contact, code)
 				}
 			}
 			// Fixed: an address that works without an account clears it, in the notice and on the pages.
@@ -692,16 +725,27 @@ func TestStaffContactHealthWarnings(t *testing.T) {
 	if got := refusal(); got != "This account is suspended. Contact the market staff: a734_keyed. "+staffNewAccountLine+" "+staffReadyLine {
 		t.Fatalf("refusal with a working handle: %q", got)
 	}
+	e.keylessUser("a734_keyless_named", "moderator")
+	save("a734_keyless_named")
+	if got := refusal(); got != "This account is suspended. Contact the market staff: a734_keyless_named. "+staffReadyLine {
+		t.Fatalf("refusal with a keyless staff handle: %q", got)
+	}
 	save("a734_ghost")
-	if got := refusal(); got != "This account is suspended. Contact the market staff: a734_ghost. "+staffReadyLine {
-		t.Fatalf("refusal with a broken handle: %q", got)
+	if got := refusal(); got != "This account is suspended. "+askOperatorLine+" "+staffReadyLine {
+		t.Fatalf("refusal with a handle that is not staff: %q", got)
 	}
 
-	// Under the forced image the handle's fallback is a promise too: a broken one lists no contact instead.
+	// Under the forced image the handle's fallback is a promise too: a contact that is not staff reads as none, and a
+	// keyless staff contact is named and lists no contact that works.
 	agExec(e, "INSERT INTO settings(key,value) VALUES('captcha_required','true') ON CONFLICT(key) DO UPDATE SET value='true'")
 	b := page("/login", randomToken())
-	mustContain(t, b, captchaFallbackNone, "Contact the market staff: a734_ghost.")
+	mustContain(t, b, captchaFallbackNone, captchaHelpLine+" "+askOperatorLine)
+	mustNotContain(t, b, captchaFallbackHandle, "a734_ghost", "Contact the market staff:")
+	save("a734_keyless_named")
+	b = page("/login", randomToken())
+	mustContain(t, b, captchaFallbackNone, "Contact the market staff: a734_keyless_named.")
 	mustNotContain(t, b, captchaFallbackHandle)
+	save("a734_ghost")
 
 	// With the image shown, the CAPTCHA warning and the contact's own warning stay on their own pages, one each, and
 	// the overview's two alerts agree.
@@ -721,4 +765,162 @@ func TestStaffContactHealthWarnings(t *testing.T) {
 	e.check(e.do("GET", "/admin/users", mod, nil), 403)
 	e.check(e.do("GET", "/admin/site", mod, nil), 403)
 	mustContain(t, page("/admin/site", admin), "A moderator contact must forward", "on the sign-in page (<code>/login</code>)")
+}
+
+// A-766: a bare handle with no active staff account reads as unset for every reader of the setting, not only the pages
+// the page loader serves: the sign-in refusals, /challenge, a notification, the vendor desk, the restore refusal, the
+// flagged-photo refusal and the /totp notice after the last recovery code. The setting stays as saved; free text and a
+// staff handle with no usable key stay named. Demoting the account, closing it, and a re-registered handle each do it.
+func TestStaffContactNotStaffReadsUnsetEverywhere(t *testing.T) {
+	e := newTestApp(t)
+	agExec(e, "INSERT INTO settings(key,value) VALUES('registrations','open') ON CONFLICT(key) DO UPDATE SET value='open'")
+	suspendedID, _ := e.user("a766_suspended", "buyer")
+	agExec(e, "UPDATE users SET suspended_at=now() WHERE id=$1", suspendedID)
+	totpID, _ := e.user("a766_totp", "buyer")
+	agEnableTOTP(e, totpID)
+	e.keylessUser("a766_nokey", "buyer")
+	vendorID, vendor := e.user("a766_seller", "vendor")
+	agExec(e, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), vendorID,
+		"Your security settings changed. If this was not you, change your password and contact the market staff.")
+	takenDown := e.product(vendorID, "physical")
+	agExec(e, "UPDATE products SET archived=true,archived_at=now(),admin_archive_reason='Counterfeit branding shown.' WHERE id=$1", takenDown)
+	photoListing := e.product(vendorID, "physical")
+	clamd := newFakeClamd(t)
+	e.withScanner(clamd)
+	clamd.SetVerdict(func([]byte) string { return "stream: Win.Test.A766 FOUND" })
+	recoveryID, _ := e.user("a766_recovery", "buyer")
+	_, lastCode := agEnableTOTP(e, recoveryID)
+	anonRecovery, pcRecovery := e.pendingSignIn("a766_recovery")
+	w := e.do("POST", "/challenge", anonRecovery, url.Values{"method": {"totp"}, "recovery": {lastCode}}, pcRecovery)
+	recoveryNotice := noticeSetCookie(w)
+	if w.Code != 303 || recoveryNotice == nil || recoveryNotice.Value != "signin-recovery" {
+		t.Fatalf("sign-in with the last recovery code: %d", w.Code)
+	}
+	recoverySess := e.session(w)
+
+	// readers is what each reader of the contact says, as text, keyed by reader.
+	readers := func() map[string]string {
+		t.Helper()
+		refused := func(handle string, code int) string {
+			t.Helper()
+			w := e.do("POST", "/login", randomToken(), form("handle", handle, "password", testPassword))
+			if w.Code != code {
+				t.Fatalf("sign-in of %s: %d", handle, w.Code)
+			}
+			return refusalText(w.Body.String())
+		}
+		strictRefusal := func() string {
+			t.Helper()
+			agExec(e, "UPDATE settings SET value='false' WHERE key=$1", settingAllowLoginWithoutPGP)
+			defer agExec(e, "UPDATE settings SET value='true' WHERE key=$1", settingAllowLoginWithoutPGP)
+			return refused("a766_nokey", 409)
+		}
+		anon, pc := e.pendingSignIn("a766_totp")
+		restore := e.do("POST", "/listings/restore", vendor, form("id", takenDown))
+		upload := e.upload("/listings/photo", vendor, e.photoParts(vendor, photoListing, smallJPEG(t))...)
+		if restore.Code != 409 || upload.Code != 422 {
+			t.Fatalf("restore %d, flagged upload %d", restore.Code, upload.Code)
+		}
+		return map[string]string{
+			"/login":            html.UnescapeString(e.body("GET", "/login", randomToken(), nil, 200)),
+			"/register":         html.UnescapeString(e.body("GET", "/register", randomToken(), nil, 200)),
+			"/canary":           html.UnescapeString(e.body("GET", "/canary", randomToken(), nil, 200)),
+			"/challenge":        html.UnescapeString(e.body("GET", "/challenge", anon, nil, 200, pc)),
+			"suspended refusal": refused("a766_suspended", 403),
+			"key refusal":       strictRefusal(),
+			"/notifications":    html.UnescapeString(e.body("GET", "/notifications", vendor, nil, 200)),
+			"/vendor-dashboard": html.UnescapeString(e.body("GET", "/vendor-dashboard", vendor, nil, 200)),
+			"/listing-edit":     html.UnescapeString(e.body("GET", "/listing-edit?id="+takenDown, vendor, nil, 200)),
+			"restore refusal":   refusalText(restore.Body.String()),
+			"upload refusal":    html.UnescapeString(upload.Body.String()),
+			"/totp":             html.UnescapeString(e.body("GET", "/totp", recoverySess, nil, 200, recoveryNotice)),
+		}
+	}
+	readsUnset := func(t *testing.T, handle string) {
+		t.Helper()
+		for reader, b := range readers() {
+			if !strings.Contains(b, askOperatorLine) {
+				t.Errorf("%s does not say %q", reader, askOperatorLine)
+			}
+			if strings.Contains(b, handle) || strings.Contains(b, "Contact the market staff:") || strings.Contains(b, staffNewAccountLine) || strings.Contains(b, `href="/messages?to=`) {
+				t.Errorf("%s names %s as the staff contact", reader, handle)
+			}
+		}
+		if got := agStr(e, "SELECT value FROM settings WHERE key='staff_contact'"); got != handle {
+			t.Fatalf("the setting is %q, want %q as saved", got, handle)
+		}
+	}
+	readsNamed := func(t *testing.T, contact string) {
+		t.Helper()
+		for reader, b := range readers() {
+			if !strings.Contains(b, "Contact the market staff: "+contact+".") || strings.Contains(b, askOperatorLine) {
+				t.Errorf("%s does not name %s", reader, contact)
+			}
+		}
+	}
+	set := func(v string) {
+		agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", v)
+	}
+
+	modID, _ := e.user("a766_mod", "moderator")
+	set("a766_mod")
+	readsNamed(t, "a766_mod")
+	t.Run("demoted", func(t *testing.T) {
+		agExec(e, "UPDATE users SET role='buyer' WHERE id=$1", modID)
+		readsUnset(t, "a766_mod")
+		agExec(e, "UPDATE users SET role='vendor' WHERE id=$1", modID)
+		readsUnset(t, "a766_mod")
+	})
+	t.Run("closed then re-registered", func(t *testing.T) {
+		agExec(e, "UPDATE users SET role='moderator',handle='closed_'||id,closed_at=now() WHERE id=$1", modID)
+		readsUnset(t, "a766_mod")
+		e.user("a766_mod", "buyer")
+		readsUnset(t, "a766_mod")
+	})
+	t.Run("never registered", func(t *testing.T) {
+		set("a766_ghost")
+		readsUnset(t, "a766_ghost")
+	})
+	t.Run("keyless staff stays named", func(t *testing.T) {
+		e.keylessUser("a766_keyless", "moderator")
+		set("a766_keyless")
+		readsNamed(t, "a766_keyless")
+	})
+	t.Run("free text stays named", func(t *testing.T) {
+		set(staffContactValue)
+		readsNamed(t, staffContactValue)
+		set("a766_ghost on this market") // names a handle, and is not one
+		readsNamed(t, "a766_ghost on this market")
+	})
+}
+
+// A-766: when the staff check itself fails, nothing claims the handle is staff, and nothing says no contact exists.
+// A page fails like any other loader failure (500 "Unable to load this page", or 503 when the database is busy), a
+// refusal's caller gets the error, and a flagged upload leaves the line out (A-298). The users table is gone only for
+// this check; the setting still reads.
+func TestStaffContactLookupFailureMakesNoStaffClaim(t *testing.T) {
+	e := newTestApp(t)
+	e.user("a766_dbmod", "moderator")
+	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact','a766_dbmod') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+	agExec(e, "ALTER TABLE users RENAME TO users_a766")
+	defer agExec(e, "ALTER TABLE users_a766 RENAME TO users")
+	ctx := context.Background()
+
+	d := PageData{Settings: map[string]string{settingStaffContact: "a766_dbmod"}}
+	if err := staffContactLoader(ctx, e.A, nil, &d); err == nil || d.StaffContact != nil {
+		t.Fatalf("loader: err %v, view %+v", err, d.StaffContact)
+	}
+	if got, err := staffContactRefusal(ctx, e.DB); err == nil || got != "" {
+		t.Fatalf("staffContactRefusal: %q, %v", got, err)
+	}
+	if got, err := signedOutStaffContactRefusal(ctx, e.DB); err == nil || got != "" {
+		t.Fatalf("signedOutStaffContactRefusal: %q, %v", got, err)
+	}
+	w := e.do("GET", "/login", "", nil)
+	if w.Code != 500 {
+		t.Fatalf("/login with the check failing: %d", w.Code)
+	}
+	body := html.UnescapeString(w.Body.String())
+	mustContain(t, body, "Unable to load this page")
+	mustNotContain(t, body, "a766_dbmod", "Contact the market staff:", askOperatorLine)
 }

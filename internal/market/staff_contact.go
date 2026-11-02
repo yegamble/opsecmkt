@@ -24,8 +24,11 @@ import (
 // the handle of a moderator or administrator who is not suspended and whose key can receive encrypted messages
 // (canReceiveEncrypted, A-83), a signed-in reader also gets a /messages?to=<handle> link; a signed-out reader could
 // not use it. Unset, each place says "Ask the operator of this market." instead, so no page implies a channel that
-// does not exist. A-734: a handle no message can reach is named as text with no promise to message it, and /admin/site
-// and its overview alert say what is wrong (staffContactHealth).
+// does not exist. A-766: a bare handle with no active staff account (demoted, closed, renamed then re-registered, never
+// registered) reads as unset for every reader, because such a handle is no one's staff contact, though the vendor rules
+// may still let a buyer message it; the setting stays as saved. A-734: a staff handle whose key cannot receive encrypted
+// messages is named as text with no promise to message it. /admin/site and its overview alert say what is wrong with
+// either (staffContactHealth).
 
 const (
 	settingStaffContact  = "staff_contact"
@@ -51,7 +54,7 @@ func init() {
 }
 
 // staffContactSentence is the plain-text form for a refusal: "Contact the market staff: <contact>." or, unset,
-// askOperator.
+// askOperator. contact is what readers may see, not the raw setting (staffContactReaderSentence checks it).
 func staffContactSentence(contact string) string {
 	if contact == "" {
 		return askOperator
@@ -63,7 +66,8 @@ func staffContactSentence(contact string) string {
 // is a bare handle they can still reach it from a new account; and they are told what staff will ask for, and what
 // staff never ask for, so a phishing "staff member" asking for a password or private key is recognisable. A-703: while
 // registrations are closed there is no new account to message it from, so they are told that instead. A-734: neither
-// line is said of a handle no message can reach, and nothing says why: the reader has the public contact and no more.
+// line is said of a staff handle whose key cannot receive encrypted messages, and nothing says why: the reader has the
+// public contact and no more.
 const (
 	staffContactNewAccount = "That is a market handle: you can message it from a new account once that account has a PGP key."
 	staffContactNoAccount  = "That is a market handle, and new registrations are closed, so only an existing account can message it."
@@ -112,6 +116,21 @@ func staffContactRefusal(ctx context.Context, q rowQuerier) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return staffContactReaderSentence(ctx, q, contact)
+}
+
+// staffContactReaderSentence is staffContactSentence of what the setting's value contact shows to readers (A-766);
+// "" with the error when that cannot be told, so a failed check never reads as a staff claim or as no contact.
+func staffContactReaderSentence(ctx context.Context, q rowQuerier, contact string) (string, error) {
+	if staffContactNeedsAccount(contact) {
+		id, _, err := staffContactAccount(ctx, q, contact)
+		if err != nil {
+			return "", err
+		}
+		if id == "" {
+			contact = ""
+		}
+	}
 	return staffContactSentence(contact), nil
 }
 
@@ -127,9 +146,12 @@ func signedOutStaffContactRefusal(ctx context.Context, q rowQuerier) (string, er
 	}
 	unreachable := false
 	if staffContactNeedsAccount(contact) {
-		_, canReceive, err := staffContactAccount(ctx, q, contact)
+		id, canReceive, err := staffContactAccount(ctx, q, contact)
 		if err != nil {
 			return "", err
+		}
+		if id == "" { // A-766: not staff, so it reads as unset
+			contact = ""
 		}
 		unreachable = !canReceive
 	}
@@ -158,6 +180,7 @@ func suspendedRefusal(ctx context.Context, q rowQuerier, userID string, banned b
 // "" for any other: it sells when its role is vendor, it was approved to sell, or an order was placed on one of its listings
 // (a ban makes a moderator a buyer, whose orders stay held). The sentence is the same for every such account, so it
 // states no order, count or amount. The days are the period the held-release refund enforces (holdRefundDaysShown).
+// A-767: it holds only what the ban holds: a release already built is sent, and a refund due to the account is paid.
 func bannedSellerPolicy(ctx context.Context, q rowQuerier, userID string) (string, error) {
 	var sells bool
 	if err := q.QueryRowContext(ctx, `SELECT u.role='vendor' OR u.vendor_approved OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE p.vendor_id=u.id)
@@ -171,7 +194,7 @@ func bannedSellerPolicy(ctx context.Context, q rowQuerier, userID string) (strin
 	if err != nil {
 		return "", err
 	}
-	return "While it is closed, payments to this account not yet sent are held, with no other address paid in their place, and after " + strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. ", nil
+	return "While it is closed, payments for this account's sales that the market has not yet built are held, with no other address paid in their place, and after " + strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. A refund due to this account as a buyer is paid as usual. ", nil
 }
 
 // staffContactNeedsAccount: a contact that is exactly a handle can be messaged only from an account, so it is no
@@ -221,7 +244,7 @@ func staffContactHealth(ctx context.Context, q rowQuerier, contact string, regis
 	case err != nil:
 		return nil, err
 	case id == "":
-		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, "Messages to it do not reach the staff, so the sign-in page does not offer to message it. Save the handle of an active staff account, or another address."})
+		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, "Every place that names the contact says “" + askOperator + "” instead, without this handle, so someone locked out has no one to write to. Save the handle of an active staff account, or another address."})
 	case !canReceive:
 		warnings = append(warnings, StaffContactWarning{staffContactWarnNoKey, "A message to it is refused (no key saved, or the saved one is unreadable, expired or revoked, or has no current encryption subkey), so the sign-in page does not offer to message it. Ask that account to save a key that can, or save another address."})
 	}
@@ -241,23 +264,23 @@ func staffContactHealthLoader(ctx context.Context, a *App, _ *http.Request, d *P
 	return err
 }
 
-// staffContactLoader sets d.StaffContact from the setting (nil while unset; the "staff-contact" partial then says
-// askOperator), whether a message can reach a bare handle and, for a signed-in reader other than that staff member,
-// the handle to link.
+// staffContactLoader sets d.StaffContact from the setting (nil while unset, and A-766 for a bare handle that is not
+// active staff; the "staff-contact" partial then says askOperator), whether a message can reach a bare handle and, for a
+// signed-in reader other than that staff member, the handle to link. An error fails the page, naming no one.
 func staffContactLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	contact := d.Settings[settingStaffContact]
 	if contact == "" {
 		return nil
 	}
-	d.StaffContact = &StaffContactView{Text: contact, NeedsAccount: staffContactNeedsAccount(contact)}
-	if !d.StaffContact.NeedsAccount {
+	if !staffContactNeedsAccount(contact) {
+		d.StaffContact = &StaffContactView{Text: contact}
 		return nil
 	}
 	id, canReceive, err := staffContactAccount(ctx, a.db, contact)
-	if err != nil {
+	if err != nil || id == "" {
 		return err
 	}
-	d.StaffContact.Unreachable = !canReceive
+	d.StaffContact = &StaffContactView{Text: contact, NeedsAccount: true, Unreachable: !canReceive}
 	if canReceive && d.User != nil && d.User.ID != id {
 		d.StaffContact.Handle = contact
 	}
