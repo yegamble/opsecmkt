@@ -18,7 +18,9 @@ existing documented operations workflow.
 ## New overview flags and first-install password checks (A-759)
 
 No migration or configuration. The `/admin` overview now flags **Security & access** while the human check is Off (PM-4): a market that
-keeps it Off on purpose sees that line until another mode is saved.
+keeps it Off on purpose sees that line until another mode is saved. It also flags **Payments** while a Monero deadline recheck is
+pending, and each recheck now sends every active administrator one notice naming its cause and no order (PM-3), so each repeat of
+`-request-deadline-recheck` that runs adds one.
 
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 

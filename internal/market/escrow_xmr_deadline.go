@@ -49,8 +49,9 @@ import (
 //     operator asks for the recheck with the host command -request-deadline-recheck (RequestDeadlineRecheck), which audits
 //     itself (PM-3) and, with no gap to go by, leaves the grace whole. Each recheck
 //     records itself in its own transaction: when, its cause and how many deadlines moved (xmrLastRecheckKey, shown on
-//     Admin → Payments), and one audit row with the cause and the count, and after it commits logs one fixed line, since it
-//     moves deadlines market-wide and a clock jump can ask for it falsely.
+//     Admin → Payments), one audit row with the cause and the count and one notice to each administrator naming the cause
+//     and no order (PM-3), and after it commits logs one fixed line, since it moves deadlines market-wide and a clock jump
+//     can ask for it falsely. The /admin overview flags Payments while one is pending.
 //  5. A vendor's ban (admin_ban.go, A-652d) moves every sooner deadline of the vendor's shipped or delivered orders with
 //     no dispute to 72 hours after the ban, in the ban's transaction, and tells each buyer (xmrBanDeadlines). While the vendor is
 //     banned, steps 2 and 3 and the buyer's confirmation say the release is then held (xmrReleaseHeld, A-652c).
@@ -630,6 +631,15 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES(NULL,$1)",
 		"Monero escrow deadline recheck (cause: "+cause+"): moved "+strconv.Itoa(count)+" order deadline(s)"); err != nil {
+		return err
+	}
+	after := "a restore from backup"
+	if outage {
+		after = "an outage"
+	}
+	// PM-3: in the transaction that consumes the request, so one notice per recheck however often a pass retries. It
+	// names no order and no count: the panel it points to has the count.
+	if err = notifyAdmins(ctx, tx, "A Monero escrow deadline recheck ran after "+after+". Admin > Payments shows how many deadlines it moved and any hold on buyers' no-ship cancels."); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
