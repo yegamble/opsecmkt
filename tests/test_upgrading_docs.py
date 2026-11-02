@@ -220,12 +220,36 @@ class UpgradingAlpha2Test(unittest.TestCase):
             self.assertNotIn('a delay of up to 72 hours', flat, name)
             self.assertNotIn('with no coins moved', flat, name)
             self.assertNotIn('./private/database.url ./opsecmkt -request-deadline-recheck', flat, name)
+            # PM-3, DA108-3, SRE110-3, SRE110-N1, QA108-2, PAY109-2, DA108-1.
+            for want in ('one audit row with no actor', 'Monero deadline recheck requested from the host',
+                         "docker compose logs app | grep 'deadline recheck'", 'monero escrow deadline recheck: cause=outage moved=N',
+                         'keeps no application logs', '/srv/opsecmkt-inputs/database-restored.url',
+                         'Each repeat that moves a deadline notifies', 'no request has been made',
+                         'an order overdue before the gap began'):
+                self.assertIn(want, flat, name)
+            self.assertNotIn('writes the request and nothing else', flat, name)
+            self.assertNotIn('So that one can be seen', flat, name)
         # OPS105-1: after a native rollback database.url still names the upgraded database.
         rollback = ' '.join(UPGRADING[UPGRADING.index('### Rolling back a native installation'):
                                       UPGRADING.index('## Native production encryption prerequisite')].split())
         self.assertIn('Until you roll forward, `/srv/opsecmkt-inputs/database-rollback.url` is the file for the database the installation uses now', rollback)
         self.assertIn('-request-deadline-recheck', rollback)
         self.assertIn('-request-deadline-recheck', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
+        # SRE110-5: the install guides reach the paragraph itself. PM-N3: the section table names the recheck.
+        guide = (REPOSITORY / 'docs' / 'operator-guide.md').read_text()
+        self.assertIn('<a id="after-an-outage"></a>', guide)
+        for name in ('cli-reference.md', 'production.md', 'tor.md'):
+            self.assertIn('../operator-guide.md#after-an-outage', (REPOSITORY / 'docs' / 'install' / name).read_text(), name)
+        self.assertNotIn('writes that request and nothing else', (REPOSITORY / 'docs' / 'install' / 'cli-reference.md').read_text())
+        self.assertRegex(guide, r'\| Payments \| `/admin/payments` \|[^\n]*\*Monero deadline recheck\*')
+
+    def test_smoke_runs_the_documented_recheck_request(self):
+        # SRE110-4: the literal Compose form, its prefix and no URL, and the setting does not stay behind.
+        smoke = (REPOSITORY / 'scripts' / 'ci-smoke.sh').read_text()
+        self.assertIn('"${compose[@]}" run --rm --no-deps app -request-deadline-recheck', smoke)
+        self.assertIn('"Deadline recheck now pending (outage)."*', smoke)
+        self.assertIn('postgres(ql)?://', smoke)
+        self.assertIn("DELETE FROM settings WHERE key='escrow_xmr_release_recheck'", smoke)
 
 
 if __name__ == '__main__':
