@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -45,6 +46,7 @@ const (
 	staffContactNotStaffEffect = "Every place that names the contact says “" + askOperator + "” instead, without this handle, so someone locked out has no one to write to."
 	staffContactWarnNoKey      = "The staff contact's account has no PGP key that can receive encrypted messages."
 	staffContactWarnClosed     = "The staff contact is a bare handle while new registrations are closed."
+	staffContactWarnKeyStops   = "The staff contact's PGP key stops receiving encrypted messages on "
 )
 
 func init() {
@@ -246,7 +248,7 @@ func staffContactAccount(ctx context.Context, q rowQuerier, handle string) (id s
 // Other free text is taken to work, as staffContactNeedsAccount does.
 func staffContactHealth(ctx context.Context, q rowQuerier, contact string, registrationOpen bool) ([]StaffContactWarning, error) {
 	if contact == "" {
-		return []StaffContactWarning{{staffContactWarnEmpty, "Every place that names it says “" + askOperator + "”, so someone locked out has no one to write to. Save a handle, onion address or XMPP address below."}}, nil
+		return []StaffContactWarning{{staffContactWarnEmpty, "Every place that names it says “" + askOperator + "”, so someone locked out has no one to write to. Save a handle, onion address or XMPP address below.", "empty"}}, nil
 	}
 	if !staffContactNeedsAccount(contact) {
 		return nil, nil
@@ -257,14 +259,37 @@ func staffContactHealth(ctx context.Context, q rowQuerier, contact string, regis
 	case err != nil:
 		return nil, err
 	case id == "":
-		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, staffContactNotStaffEffect + " Save the handle of an active staff account, or another address."})
+		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, staffContactNotStaffEffect + " Save the handle of an active staff account, or another address.", "not-staff"})
 	case !canReceive:
-		warnings = append(warnings, StaffContactWarning{staffContactWarnNoKey, "A message to it is refused (no key saved, or the saved one is unreadable, expired or revoked, or has no current encryption subkey), so the sign-in page does not offer to message it. Ask that account to save a key that can, or save another address."})
+		warnings = append(warnings, StaffContactWarning{staffContactWarnNoKey, "A message to it is refused (no key saved, or the saved one is unreadable, expired or revoked, or has no current encryption subkey), so the sign-in page does not offer to message it. Ask that account to save a key that can, or save another address.", "no-key"})
+	default:
+		until, err := staffContactKeyStops(ctx, q, id, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		if !until.IsZero() {
+			day := until.UTC().Format(time.DateOnly)
+			warnings = append(warnings, StaffContactWarning{staffContactWarnKeyStops + day + " UTC.", "From then a message to it is refused, and the sign-in page stops offering to message it. Ask that account to renew the key, or save another address.", "key-stops:" + day})
+		}
 	}
 	if !registrationOpen {
-		warnings = append(warnings, StaffContactWarning{staffContactWarnClosed, "Only an existing account can message a handle, so someone locked out of their account has no way to reach it. Save an onion or XMPP address, or open registrations under Security & access."})
+		warnings = append(warnings, StaffContactWarning{staffContactWarnClosed, "Only an existing account can message a handle, so someone locked out of their account has no way to reach it. Save an onion or XMPP address, or open registrations under Security & access.", "closed"})
 	}
 	return warnings, nil
+}
+
+// staffContactKeyStops is when encryption to the account's key stops, if within keyExpiryWarning of now (PM109-5, A-155's
+// window); zero otherwise.
+func staffContactKeyStops(ctx context.Context, q rowQuerier, id string, now time.Time) (time.Time, error) {
+	p, err := loadPGPAccount(ctx, q, id, false)
+	if err != nil || p.Key == nil {
+		return time.Time{}, err
+	}
+	enc, ok := encryptionSubkey(p.Key, now)
+	if !ok || enc.Until.IsZero() || enc.Until.Sub(now) > keyExpiryWarning {
+		return time.Time{}, nil
+	}
+	return enc.Until, nil
 }
 
 // staffContactHealthLoader (admin page, A-734) sets d.StaffContactWarnings on the two views that show them: /admin/site

@@ -131,9 +131,10 @@ type StaffContactView struct {
 	NeedsAccount, Unreachable bool
 }
 
-// StaffContactWarning is one thing wrong with the staff contact (A-734, staffContactHealth): fixed text, for the
+// StaffContactWarning is one thing wrong with the staff contact (A-734, staffContactHealth): Code is what the daily sweep
+// stores (PM109-5), and the rest fixed text, for the
 // administrator only.
-type StaffContactWarning struct{ Name, Fix string }
+type StaffContactWarning struct{ Name, Fix, Code string }
 
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string

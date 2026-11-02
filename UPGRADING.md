@@ -21,6 +21,8 @@ No migration or configuration. New `settings` rows, written when they first appl
 
 A staff member named as the staff contact, or no longer named, now gets a notification, and the audit row says so. Nothing is sent for a contact saved before this version.
 
+Each process now checks the staff contact daily and at start, and notifies administrators when its warnings change, and 30 days before its key expires, which *Site & branding* and the overview also show. The state told is the new `staff_contact_health_notice` setting. A market whose contact has a warning at the first start gets that one notice.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
