@@ -153,7 +153,8 @@ init options (each answers one question; a question without its option is asked)
   --monero-escrow yes|no           Monero escrow on the local Monero node (custodial; default no)
   --monero-escrow-seed-key FILE    with it: the armored OpenPGP public key its wallet seeds are sealed to
   --admin HANDLE [--site-name NAME]  create the first administrator here (password asked twice, never shown)
-                                   instead of printing a setup token for the browser
+                                   instead of printing a setup token for the browser; the password needs 12-72 bytes,
+                                   not a common password or simple pattern, and not containing the handle
   --uploads yes|no                 photo uploads with the ClamAV malware scanner (needs 3 GiB of memory; default no)
   --onion-key-dir DIR              Tor: use this onion identity (e.g. a vanity address) instead of a new one: DIR holds
                                    hs_ed25519_secret_key and optionally hs_ed25519_public_key, outside this checkout
@@ -171,6 +172,72 @@ die() {
   printf '%s\n' "$@" >&2
   exit 1
 }
+
+# ---- administrator password -----------------------------------------------------------------------------------
+
+# password_list_has FILE VALUE: whether VALUE is an entry of one of the lists password_policy.go embeds.
+password_list_has() {
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ -n $line && $line != \#* && $line == "$2" ]]; then return 0; fi
+  done < "$1"
+  return 1
+}
+
+# password_run_step A B: password_policy.go's passwordRunStep, on two bytes.
+password_run_step() {
+  local run
+  if [[ $1 == "$2" ]]; then return 0; fi
+  for run in 1234567890 01 qwertyuiop asdfghjkl zxcvbnm abcdefghijklmnopqrstuvwxyz; do
+    if [[ $run == *"$1$2"* || $run == *"$2$1"* ]]; then return 0; fi
+  done
+  return 1
+}
+
+# admin_password_weak HANDLE PASSWORD: whether password_policy.go's weakPassword refuses PASSWORD for HANDLE, so --admin
+# refuses it before anything is written and not with the market already running (PM-7). Keep the two in step:
+# test_admin_password_weak_matches_the_server_rule runs the server's table here. The server still decides: only ASCII is
+# lowered here, so a repeat that differs only in the case of a non-ASCII letter is left to -bootstrap-admin, as are the
+# lists when a checkout lacks them. The password never reaches a command's arguments: tr has it on a pipe from a builtin,
+# and the rest is the shell's own. A subshell, in the C locale, so a length and an offset count bytes as Go's do.
+admin_password_weak() (
+  LC_ALL=C
+  local p handle base leet list n unit i repeats breaks=0
+  p=$(printf '%s' "$2" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  handle=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  if [[ $p == *"$handle"* ]]; then return 0; fi
+  list=internal/market/common_passwords.txt
+  if [[ -r $list ]] && password_list_has "$list" "$p"; then return 0; fi
+  # A common word once the ASCII that is no lowercase letter is stripped around it and basic leet undone; 1 reads as l or i.
+  base=$p
+  while [[ $base == [[:cntrl:][:digit:][:punct:][:space:]]* ]]; do base=${base:1}; done
+  while [[ $base == *[[:cntrl:][:digit:][:punct:][:space:]] ]]; do base=${base%?}; done
+  base=${base//@/a}
+  base=${base//0/o}
+  base=${base//3/e}
+  base=${base//\$/s}
+  list=internal/market/common_words.txt
+  if [[ -r $list ]]; then
+    for leet in l i; do
+      if password_list_has "$list" "${base//1/$leet}"; then return 0; fi
+    done
+  fi
+  n=${#p}
+  for unit in 1 2 3 4; do
+    repeats=yes
+    for ((i = unit; i < n; i++)); do
+      if [[ ${p:i:1} != "${p:i%unit:1}" ]]; then
+        repeats=no
+        break
+      fi
+    done
+    if [[ $repeats == yes ]]; then return 0; fi
+  done
+  for ((i = 1; i < n; i++)); do
+    if ! password_run_step "${p:i-1:1}" "${p:i:1}"; then breaks=$((breaks + 1)); fi
+  done
+  ((breaks <= 2))
+)
 
 # ---- .env access -------------------------------------------------------------------------------------------
 
@@ -1437,6 +1504,7 @@ cmd_init() {
   if [[ -n $admin ]]; then
     # Asked last, before anything is written or built. Kept in an unexported variable: it reaches the server
     # only through a pipe on stdin, never argv, the environment, the output or .env.
+    echo 'The administrator password needs at least 12 characters and at most 72 UTF-8 bytes. Common passwords, common words with digits or symbols added, simple patterns and passwords containing the handle are refused; a passphrase of four or more unrelated words is a good choice.'
     IFS= read -r -s -p "Password for administrator $admin (12-72 bytes, not shown): " password1 || die '' 'No password entered; nothing was written or started.'
     printf '\n'
     IFS= read -r -s -p 'Repeat the password: ' password2 || die '' 'No password entered; nothing was written or started.'
@@ -1458,6 +1526,9 @@ cmd_init() {
     utf8_text='^((0[1-9a-f]|[1-7][0-9a-f])|(c[2-9a-f]|d[0-9a-f])[89ab][0-9a-f]|e0[ab][0-9a-f][89ab][0-9a-f]|e[1-9abcef]([89ab][0-9a-f]){2}|ed[89][0-9a-f][89ab][0-9a-f]|f0[9ab][0-9a-f]([89ab][0-9a-f]){2}|f[123]([89ab][0-9a-f]){3}|f48[0-9a-f]([89ab][0-9a-f]){2})*$'
     (LC_ALL=C; [[ $password_bytes =~ $utf8_text ]]) ||
       die 'The password is not valid UTF-8 (is the terminal set to another encoding, such as LATIN1?); nothing was written or started.'
+    if admin_password_weak "$admin" "$password1"; then
+      die 'That password is too easy to guess: it is a common password, a common word with digits or symbols added, or a simple pattern, or it contains the handle. Use a passphrase of four or more unrelated words; nothing was written or started.'
+    fi
     password2=''
   fi
 

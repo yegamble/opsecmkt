@@ -265,6 +265,8 @@ type PageData struct {
 	FormHandle string
 	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
 	FormVendor bool
+	// FormSiteName: /setup re-rendered after a refused post, the marketplace name that was typed (UI107-3).
+	FormSiteName string
 	// FormPGP: /register re-rendered after a refused post, the PGP public key that was pasted (A-722).
 	FormPGP string
 	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;

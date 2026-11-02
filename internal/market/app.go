@@ -1007,6 +1007,8 @@ func pageTitle(page string) string {
 		return "Marketplace"
 	case "canary":
 		return "Transparency"
+	case "admin/moderation":
+		return "Moderation review"
 	}
 	if _, section := adminSectionPage(page); section != "" {
 		return "Admin: " + adminSectionName(section)

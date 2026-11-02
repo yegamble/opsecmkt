@@ -46,6 +46,18 @@ Each process now checks the staff contact daily and at start, and notifies admin
 
 *Security & access* also shows the registrations refused since the process started and the time of the last; these are in memory, and a restart clears them.
 
+## New overview flags and first-install password checks (A-759)
+
+No migration or configuration. The `/admin` overview now flags **Security & access** while the human check is Off (PM-4): a market that
+keeps it Off on purpose sees that line until another mode is saved. It also flags **Payments** while a Monero deadline recheck is
+pending, and each recheck now sends every active administrator one notice naming its cause and no order (PM-3), so each repeat of
+`-request-deadline-recheck` that runs adds one.
+
+`./scripts/install.sh init --admin` now states the password rule before it asks, and refuses a common password, a padded common word,
+a simple pattern or one containing the handle before it writes or starts anything (PM-7), where the refusal used to come from
+`-bootstrap-admin` with the market already running. The check runs in the shell from the lists in `internal/market/`; the password
+stays out of every command's arguments, the output and `.env`. `-bootstrap-admin` still checks it too.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
@@ -192,7 +204,7 @@ it is on again, and a buyer's no-ship cancel past its time waits until then. Rep
 since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
 come back with minutes left of the last request's 72 hours. Each repeat that moves a deadline notifies that order's buyer and vendor again, and any deadline inside 72 hours moves every time, so four rounds are four notices to each party: repeat near the end of the 72 hours, not more often. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
-order deadlines it moved.
+order deadlines it moved. The `/admin` overview flags **Payments** while one is pending, and each recheck sends every active administrator one notice naming its cause and no order (PM-3).
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
@@ -257,8 +269,7 @@ backup, where the setting is what it was. The signal is in memory, so a restart 
 New passwords are checked too (SEC725-1), with no configuration: a listed common password, a common word with digits or symbols
 added, a simple pattern or a password containing the handle is refused on `/setup`, `/register`, `/account/password`, `-bootstrap-admin` and
 `-reset-admin-password`. Accounts that already have such a password still sign in, and nothing asks them to change it.
-`install.sh init --admin` checks only the length before it starts, so a weak password there is refused after the market
-is running, with the commands to finish. Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused
+`install.sh init --admin` applies the same rule before it writes or starts anything (PM-7). Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused
 one answers 503 "Registration is busy". Since SEC102, 30 sign-ins refused in one minute while a registration holds a slot also turn
 the attack signal on, `/admin/security` shows that count and the refused registrations, the signal's log line adds `route=`, and a
 vendor or strict registration without a PGP key is refused before the question and any slot.

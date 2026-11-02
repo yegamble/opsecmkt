@@ -20,12 +20,12 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/captcha"}}">
 <fieldset><legend>Human check</legend>
-<label class="check"><input type="radio" name="captcha_required" value="under_attack"{{if .UnderAttack}} checked{{end}}> Only under attack (the default)</label>
-<span class="help">Sign-in has no image until the attack signal is on. Registration asks a written question instead of an image, so people using a screen reader can get in. The question on registration stops only simple bots: a script written for this market answers every one, so anyone who bothers can create accounts in bulk, and can test as many handles as they like, because registration says when a handle is taken and no budget limits that. Choosing Always the image makes each such test cost an image. Sign-in is protected by each handle's budget of failed passwords and, during an attack, the image.</span>
-<label class="check"><input type="radio" name="captcha_required" value="true"{{if .Always}} checked{{end}}> Always the image</label>
-<span class="help">The image on every sign-in and registration. It has no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it), so a screen-reader user cannot get in at all. It is stronger against sign-up bots and against guessing below the signal's thresholds.</span>
-<label class="check"><input type="radio" name="captcha_required" value="false"{{if .Off}} checked{{end}}> Off</label>
-<span class="help">No check on sign-in or registration, whatever the attack signal says. Only each handle's budget slows guessing, and nothing slows sign-up bots.</span>
+<label class="check"><input type="radio" name="captcha_required" value="under_attack"{{if .UnderAttack}} checked{{end}} aria-describedby="human-check-under-attack-help"> Only under attack (the default)</label>
+<span class="help" id="human-check-under-attack-help">Sign-in has no image until the attack signal is on. Registration asks a written question instead of an image, so people using a screen reader can get in. The question on registration stops only simple bots: a script written for this market answers every one, so anyone who bothers can create accounts in bulk, and can test as many handles as they like, because registration says when a handle is taken and no budget limits that. Choosing Always the image makes each such test cost an image. Sign-in is protected by each handle's budget of failed passwords and, during an attack, the image.</span>
+<label class="check"><input type="radio" name="captcha_required" value="true"{{if .Always}} checked{{end}} aria-describedby="human-check-always-help"> Always the image</label>
+<span class="help" id="human-check-always-help">The image on every sign-in and registration. It has no audio or text alternative (it fails WCAG 3.3.8 for people who cannot read it), so a screen-reader user cannot get in at all. It is stronger against sign-up bots and against guessing below the signal's thresholds.</span>
+<label class="check"><input type="radio" name="captcha_required" value="false"{{if .Off}} checked{{end}} aria-describedby="human-check-off-help"> Off</label>
+<span class="help" id="human-check-off-help">No check on sign-in or registration, whatever the attack signal says. Only each handle's budget slows guessing, and nothing slows sign-up bots.</span>
 </fieldset>
 {{template "confirm-fields" (and $.Security $.Security.TOTPEnabled)}}
 <button type="submit">Save human check</button>

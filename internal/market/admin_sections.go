@@ -97,9 +97,15 @@ func (d PageData) AdminSectionAlert(slug string) string {
 		if n := d.XMREscrowNode; n != nil && (n.Mismatch != nil || n.NotReady != "" || n.NotSynced != "" || n.TorHold != "") || d.XMREscrowHealth.Attention() {
 			alerts = append(alerts, "Monero escrow needs attention.")
 		}
+		if v := d.XMRDeadlineRecheck; v != nil && v.Pending { // PM-3: no order completes on a passed deadline until it has run
+			alerts = append(alerts, "A Monero deadline recheck is pending.")
+		}
 	case "security":
 		if v := d.CaptchaAdmin; v != nil && v.UnderAttack && (v.Public.Active || v.Private.Active) {
 			alerts = append(alerts, "Sign-in is asking everyone for the image: the attack signal is on.")
+		}
+		if v := d.CaptchaAdmin; v != nil && v.Off { // PM-4: the page advises it during an attack; this says it is still off
+			alerts = append(alerts, "The human check is off: only each handle's budget of failed passwords slows guessing, and nothing slows sign-up bots.")
 		}
 		if d.CaptchaNoContact {
 			alerts = append(alerts, "The CAPTCHA is on without a staff contact that works without an account.")

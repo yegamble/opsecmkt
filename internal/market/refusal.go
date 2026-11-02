@@ -2,9 +2,11 @@ package market
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -174,18 +176,23 @@ func refusalTitle(code int, post, signedIn bool, msg string) string {
 // (web/templates/partials/refusal.html, A-514): the layout, msg in the error alert, a link back (refusalBack), a sign-in
 // link on a 401 or an expired form to a browser that is not signed in, and a refused post's long text fields read-only
 // (refusalEcho). A refused /login or /register post gets its form again instead, with the typed handle kept and a fresh
-// CAPTCHA, never the password. user is the signed-in account when the caller knows it; otherwise the session cookie is
+// CAPTCHA, never the password; so does a refused /setup post while setup is pending, with the marketplace name too and
+// never the setup token (setupPending; once installed it gets the shared page). user is the signed-in account when the caller knows it; otherwise the session cookie is
 // looked up for the header (loadRefusalPage). Nothing the request sent is written or logged. The response keeps
 // ServeHTTP's headers (Cache-Control: no-store, the CSP); a 503 caller sets its own Retry-After.
 func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code int, msg string) {
 	post := r.Method == http.MethodPost
-	if post && (r.URL.Path == "/login" || r.URL.Path == "/register") {
+	setup := post && r.URL.Path == "/setup" && a.setupPending(r)
+	if setup || post && (r.URL.Path == "/login" || r.URL.Path == "/register") {
 		d := a.pageData(r, strings.TrimPrefix(r.URL.Path, "/"), sessionToken(r), user)
 		if a.loadRefusalPage(r, &d) {
 			if msg == captchaExpiredMsg {
 				msg = captchaExpiredOnForm(&d)
 			}
 			d.Error, d.FormHandle, d.FormVendor = msg, a.typedHandle(r), a.mayEcho(r) && r.PostForm.Get("account_type") == "vendor"
+			if setup && a.mayEcho(r) { // UI107-3: the token and password are typed again
+				d.FormSiteName = typedText(r.PostForm.Get("site_name"), 80)
+			}
 			a.renderRefusal(w, r, d, code, msg)
 			return
 		}
@@ -204,6 +211,9 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 	v.EnrolFactor = msg == staffFactorRequiredMessage && user != nil
 	d.Refusal = v
 	a.loadRefusalPage(r, &d)
+	if back := a.moderationRefusalBack(r, d.User); back != "" { // waits for the session lookup: only an administrator has a queue view
+		v.Back, v.BackLabel = back, "Back to "+nextTitle(back)
+	}
 	// The title waits for the session lookup above: it depends on whether this browser is signed in.
 	d.Title, d.Error = refusalTitle(code, post, d.User != nil, msg), msg
 	if d.Title == passwordRefusedTitle || d.Title == confirmRefusedTitle {
@@ -219,6 +229,23 @@ func (a *App) refuse(w http.ResponseWriter, r *http.Request, user *User, code in
 		d.Next = a.signInNext(v.Back) // the header's sign-in link returns here too
 	}
 	a.renderRefusal(w, r, d, code, msg)
+}
+
+// setupPending reports whether this market has not been installed, in a page slot like loadRefusalPage's: an installed
+// market has no setup form to show again. A lookup that is busy or fails counts as installed: the shared page answers.
+func (a *App) setupPending(r *http.Request) bool {
+	if a.db == nil {
+		return false
+	}
+	release, ok := tryTake(workFor(r.Context(), pageWork, adminPageWork))
+	if !ok {
+		return false
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	var installed bool
+	return a.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM settings WHERE key='installed')").Scan(&installed) == nil && !installed
 }
 
 // renderRefusal writes d with status code. Should the page fail to render, the refusal is still answered with its
