@@ -167,8 +167,8 @@
 <ol class="shipping-steps">
 <li>Save {{.Vendor}}’s public key to a file, <code>vendor.asc</code>, and run <code>gpg --import vendor.asc</code>.</li>
 <li>The import prints a key ID. Run <code>gpg --fingerprint &lt;key ID&gt;</code> and check that it matches the fingerprint shown below. This only shows your copy of the key is intact: this page and the key come from the same server, so it does not prove the key is {{.Vendor}}’s. If you got their fingerprint elsewhere or from an earlier order, compare with that too. If you cannot, you are trusting this market with your address.</li>
-<li>Run <code>gpg --armor --encrypt --recipient &lt;fingerprint&gt;</code> with that fingerprint, without spaces. If gpg asks whether to use the key anyway, answer <code>y</code> only if the fingerprint matched and you accept that trust. Type your address and end with Ctrl+D on a new line, so no plaintext file is written. Then close the terminal window: the address you typed stays on screen until you do.</li>
-<li>Paste the whole <code>-----BEGIN PGP MESSAGE-----</code> block into Order correspondence below.</li>
+<li>Run <code>gpg --armor --encrypt --recipient &lt;fingerprint&gt;</code> with that fingerprint, without spaces. If gpg asks whether to use the key anyway, answer <code>y</code> only if the fingerprint matched and you accept that trust. Type your address and end with Ctrl+D on a new line, so no plaintext file is written.</li>
+<li>Paste the whole <code>-----BEGIN PGP MESSAGE-----</code> block into Order correspondence below. Once it is sent, close the terminal window: the address you typed stays on screen until you do.</li>
 </ol>
 <p>Or use your PGP application's import, then encrypt.</p>
 <p>{{.Vendor}} reads your address and can keep it; the market cannot delete their copy.</p>

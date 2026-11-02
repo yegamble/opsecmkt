@@ -232,16 +232,13 @@ func expiredChallengeSweeper(ctx context.Context, a *App) {
 
 // sweepExpiredChallenges attempts each table on its own time bound, so one that fails or stalls does not stop the other.
 func (a *App) sweepExpiredChallenges(ctx context.Context) error {
-	sweep := func(query string) error {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_, err := a.db.ExecContext(ctx, query)
-		return err
-	}
-	return errors.Join(
-		sweep("DELETE FROM captcha_spent WHERE expires<now()-interval '1 minute'"),
-		sweep("DELETE FROM pgp_challenges WHERE expires<now()-interval '1 minute'"),
-	)
+	captchaCtx, cancelCaptcha := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelCaptcha()
+	_, captchaErr := a.db.ExecContext(captchaCtx, "DELETE FROM captcha_spent WHERE expires<now()-interval '1 minute'")
+	pgpCtx, cancelPGP := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelPGP()
+	_, pgpErr := a.db.ExecContext(pgpCtx, "DELETE FROM pgp_challenges WHERE expires<now()-interval '1 minute'")
+	return errors.Join(captchaErr, pgpErr)
 }
 
 func captchaToggle(c *actionCtx) (actionResult, error) {

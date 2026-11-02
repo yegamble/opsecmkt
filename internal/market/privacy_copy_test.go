@@ -49,12 +49,17 @@ func TestOrderCopyGivesShippingAddressSteps(t *testing.T) {
 		"you are trusting this market with your address.",
 		"only if the fingerprint matched and you accept that trust",
 		"cannot read it as long as the key is really",
-		"Then close the terminal window",
 		"end with Ctrl+D",
 		"no plaintext file is written",
 		"Or use your PGP application's import, then encrypt.",
 		"reads your address and can keep it; the market cannot delete their copy.",
 	)
+	// A-748: the terminal holds the block to paste, so closing it comes after the send.
+	plain := html.UnescapeString(buyer)
+	paste, closeTerminal := strings.Index(plain, "into Order correspondence below. Once"), strings.Index(plain, "close the terminal window")
+	if paste < 0 || closeTerminal < paste {
+		t.Fatalf("close instruction at %d must follow the paste step at %d", closeTerminal, paste)
+	}
 	vendor := x.page("/order?id="+order, x.vendorSess)
 	mustNotContain(t, vendor, "gpg --import vendor.asc", "the market cannot delete their copy")
 
