@@ -171,6 +171,20 @@ func TestStaffContactHealthSweepNotifiesOncePerChange(t *testing.T) {
 	want(10)
 	mustContain(t, latest(), "no longer has a warning")
 
+	// A pass that cannot read the contact's account fails: it tells no one and keeps the state, so the next pass decides.
+	agExec(e, "UPDATE settings SET value='pm5_keyless2' WHERE key=$1", settingStaffContact)
+	before := marker()
+	agExec(e, "ALTER TABLE users RENAME COLUMN pgp_key_generation TO pgp_key_generation_broken")
+	err := e.A.sweepStaffContactHealth(ctx)
+	agExec(e, "ALTER TABLE users RENAME COLUMN pgp_key_generation_broken TO pgp_key_generation")
+	if err == nil {
+		t.Fatal("a pass with the check failing reported success")
+	}
+	want(10)
+	if m := marker(); m != before {
+		t.Fatalf("a failed pass moved the state from %q to %q", before, m)
+	}
+
 	// A market whose first sweep finds nothing wrong says nothing.
 	agExec(e, "DELETE FROM settings WHERE key=$1", settingStaffContactHealth)
 	setting(settingStaffContact, "xmpp:help@staff-example.onion")
