@@ -686,7 +686,7 @@ current one is marked for screen readers). Where this guide says
 | Overview | `/admin` | Staff attention, on private administrator ingress the moderation queue's counts, *Get your marketplace ready*, section links |
 | Users | `/admin/users` | *User directory* (each account's page at `/admin/users?handle=`), *Assign an account role*, *Reset a user's second factors*, *Suspend or restore an account*, *Ban or unban an account* (and, on a banned account's page, *Orders of this banned account*), *Staff roster* |
 | Vendors | `/admin/vendors` | *Vendor applications*: vendor policy, open applications awaiting a bond or decision, verified-vendor mark |
-| Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Held releases of banned vendors* (the held-release refund period, A-652f), *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
+| Payments | `/admin/payments` | *Escrow status and payment intake*: Monero escrow alerts, *Monero escrow watcher health*, release deadline, *Monero deadline recheck* ([after an outage](#after-an-outage)), *Held releases of banned vendors* (the held-release refund period, A-652f), *Monero escrow recovery and retention*, *New escrow checkouts*, *Escrow readiness* |
 | Security & access | `/admin/security` | *Site access and registration*, *Sign-in protection* (human check and attack signal), *Handles with paused sign-in* |
 | Site & branding | `/admin/site` | *Market name and logo*, *Staff contact*, *Outgoing XMPP* |
 | Transparency | `/admin/transparency` | *Operator PGP key*, *Warrant canary*, *Signed audit export*, *Public staff list* |
@@ -1716,10 +1716,11 @@ watcher never runs: the recheck stays pending, that cancel is refused with "try 
 and the 72 hours start on the first pass after Monero escrow is back on; do not delete the setting by hand.
 Then [clear the gate](testnet-runbook.md#clear-the-gate) as the runbook describes.
 
+<a id="after-an-outage"></a>
 **After an outage** (A-730). A Monero escrow watcher pass that finds more than an hour, or twice `PAYMENT_POLL_INTERVAL` plus the 10-minute pass timeout if that is longer (2 hours 10 minutes at the 1-hour maximum) since the last deadline step, because
 the market or its database was down or `ESCROW_XMR` was off, takes the recheck above without a restore: orders near their
 deadline get 72 hours, each buyer and vendor gets a notice naming the outage, and the same 72-hour vendor grace applies to a buyer's
-no-ship cancel. A restored database stays a restore.
+no-ship cancel. That hold applies to an order whose ship-by time or delivery deadline fell after the gap began, or is still to come within the 72 hours; an order overdue before the gap began can still be cancelled, as nothing about the outage held it up (DA108-1; a default the owner may overturn). A host request knows no such start, since nothing records when ingress failed, so unless it continues a hold that has one it holds every order past its time. **Admin → Payments** states a running hold and its end, because a recheck that moved 0 deadlines still places one, and a restore's hold still covers every order. A restored database stays a restore.
 
 What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
 Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
@@ -1732,14 +1733,14 @@ docker compose run --rm --no-deps app -request-deadline-recheck
 DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck
 ```
 
-On a native installation, name the host-readable URL file of the [production layout](install/production.md) for the database the installation uses now. After a [native rollback](../UPGRADING.md#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request.
+On a native installation, name the host-readable URL file of the [production layout](install/production.md) for the database the installation uses now. After a [native rollback](../UPGRADING.md#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`, and after [pointing the installation at a restored database](install/production.md) it is `/srv/opsecmkt-inputs/database-restored.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request. When that panel shares the failed ingress, confirm without it. On Compose, `docker compose logs app | grep 'deadline recheck'` shows `monero escrow deadline recheck: cause=outage moved=N` once the recheck has run, and on a native development installation `deploy logs` shows the same line. A native production application keeps no application logs (`deploy logs` says so and prints nothing), so read `SELECT key,value FROM settings WHERE key IN ('escrow_xmr_release_recheck','escrow_xmr_last_recheck')` over your protected database connection, or open the panel on the private administrator onion if that ingress still works.
 
-The command works with the app running and writes the request and nothing else. It prints whether the recheck is now pending
+The command works with the app running. A new request writes that setting and one audit row with no actor, *Monero deadline recheck requested from the host*, in one transaction, and nothing else; a repeat that finds a request pending, a refusal or a failure adds no row. It prints whether the recheck is now pending
 or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. With
 Monero escrow on, the next pass consumes the request; with `ESCROW_XMR=off` the request stays pending until the first pass after
 it is on again, and a buyer's no-ship cancel past its time waits until then. Repeat it within every 72 hours until ingress returns,
 since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
-come back with minutes left of the last request's 72 hours. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
+come back with minutes left of the last request's 72 hours. Each repeat that moves a deadline notifies that order's buyer and vendor again, and any deadline inside 72 hours moves every time, so four rounds are four notices to each party: repeat near the end of the 72 hours, not more often. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
 order deadlines it moved.
 
@@ -1753,6 +1754,8 @@ requests a refund, which relays once a watcher runs:
 
 - The gap is no longer than the threshold, which is no outage: no recheck follows either.
 - There is no stored time, or one that cannot be read: the first step after the upgrade that added it, or a hand's work.
+- Public access failed while the watcher runs and no request has been made: the watcher finds no gap, so a deadline that passes
+  is due, and until a request is pending a dispute on it is refused as late and a no-ship cancel past its time accepted.
 - For the whole time `ESCROW_XMR=off`: the watcher does not run, and marking an order shipped answers 404. While no recheck is
   pending a dispute is refused. A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has
   not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
@@ -1760,8 +1763,7 @@ requests a refund, which relays once a watcher runs:
 
 Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
 than the threshold gives a false recheck. A jump delays every release deadline and dispute window it reaches, and the buyer's cancel
-grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. So that one can be seen,
-each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order.
+grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. Each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order. Neither says that the outage was real: `cause=outage` reads the same for a true gap, a false one and an operator's request. A recheck a host request asked for follows a *Monero deadline recheck requested from the host* row in the audit trail; one the watcher asked for, on a true gap or a clock jump, has none.
 
 Tested against a database and a simulated wallet RPC, with no public network and no real outage.
 
@@ -2351,6 +2353,8 @@ preservation exception or dedicated escrow recovery material follows the policy'
 [Enable retention maintenance](retention.md) for database expiry and restore replay, and schedule the backup/export expiry helper daily at every copy location.
 The backup script writes an original-deadline sidecar; restore requires the current external retention state before the server can reopen.
 
+**A default install has not enrolled, so its backups cannot reopen once the original database is lost.** `RETENTION_ENABLED` defaults to `off`, and a restored database then refuses to start in every configuration, and refuses to enroll; no other path exists today. `scripts/backup.sh` warns on every run and still succeeds, and `./scripts/install.sh status` warns too. While the original exists, read [Before enabling](retention.md#before-enabling), set `RETENTION_ENABLED=on` in `.env`, run `docker compose run --rm app -enroll-retention`, then `docker compose up -d`, and keep the retention state apart from the database and its backups. Enrollment starts the retention lifecycle and cannot be undone; backups taken earlier can then reopen with that state too ([details](retention.md#backups-of-a-never-enrolled-database)).
+
 Install [age](https://age-encryption.org/) and Python 3, then generate an identity offline (`age-keygen -o backup-key.txt`). Store the private key separately from backups and use its public recipient for encryption:
 
 ```sh
@@ -2394,7 +2398,7 @@ Without `BACKUP_DATABASE_URL`, the script dumps the internal database through `d
 
 **External databases:** `BACKUP_DATABASE_URL` is used exactly as given; the script does not look at `DATABASE_URL`. When you switch `DATABASE_URL` to a restored database, point `BACKUP_DATABASE_URL` (in your backup job or cron entry) at that database too, or every later backup silently dumps the old one. The success line names the database it dumped; check it. `BACKUP_DUMP_ENCODING=SQL_ASCII` (the dump holds each text as the bytes stored, unconverted) is only for moving a database that is not UTF8 into a UTF8 one ([UPGRADING.md section 42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481)); the script refuses any other value. Leave it unset in backup jobs.
 
-Restore into an explicitly named **empty** destination. Stop the application first. For the internal database (the default deployment, which publishes no database port), keep the `db` service running and name a database inside it; client tools run in the container:
+Restore into an explicitly named **empty** destination, with the current retention state to hand: a backup of a [never-enrolled database](retention.md#backups-of-a-never-enrolled-database) has none, and its restored copy will not start. Stop the application first. For the internal database (the default deployment, which publishes no database port), keep the `db` service running and name a database inside it; client tools run in the container:
 
 ```sh
 docker compose stop app

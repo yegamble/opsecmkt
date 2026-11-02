@@ -107,9 +107,9 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	// unspent counts the deposits that do not count for the order and that no settlement spends yet (A-435).
-	var received, pending, afterCloseSeen, leftOutSeen, unspent int64
+	var received, pending, afterCloseSeen, leftOutSeen, lockedSeen, unspent int64
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,xmr_settlement_id IS NOT NULL FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,xmr_settlement_id IS NOT NULL,credited FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -117,14 +117,14 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		var dep PaymentDeposit
 		var amt int64
 		var locked, afterClose, leftOut, outside, settled bool
-		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &settled); err != nil {
+		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &settled, &dep.credited); err != nil {
 			rows.Close()
 			return err
 		}
 		dep.Amount = amount(amt, 12)
 		switch {
 		case locked:
-			dep.State = "Locked (it has an unlock time) — not counted; market staff were notified"
+			dep.State, lockedSeen = "Locked (it has an unlock time) — not counted; market staff were notified", lockedSeen+1
 		case dep.Confirmations < 0:
 			dep.State = xmrDepositMissing
 		case afterClose:
@@ -160,7 +160,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	// A-770: an order a missing deposit left with too little counted. Its state stays (the watcher does not unfund an
 	// order), and the deposit counts again if the wallet lists it again, so its copy is hedged. ShortCounted and
-	// NothingCounted (nothing is sent now) are cleared by xmrSettlementViews once a settlement has its transaction.
+	// NothingCounted (nothing is sent now) are cleared by xmrSettlementViews once a settlement has its transaction;
+	// xmrReleaseBuiltShort then says what that transaction spends.
 	missing := false
 	for i := range v.Deposits {
 		missing = missing || v.Deposits[i].State == xmrDepositMissing
@@ -238,6 +239,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		// Nothing is read while Monero escrow is unavailable, so an empty ledger proves nothing.
 		v.Status = "Cancelled. This escrow cannot be checked right now because Monero escrow is unavailable, so a deposit to it may not be shown here."
 		v.Unread = "Not read while Monero escrow is unavailable"
+	case o.State == stateCancelled && lockedSeen > 0 && lockedSeen == int64(len(v.Deposits)): // BE110-2: xmrLeaveOutUncounted leaves a locked one alone
+		v.Status = "Cancelled; no deposit to this escrow counted: a deposit with an unlock time is not counted and is not refunded automatically. Market staff were notified."
 	case o.State == stateCancelled && len(v.Deposits) > 0: // BE103-1: seen, but none counted, so not "nothing was received"
 		v.Status = "Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded. " + sentenceStart(xmrListedAgainRefund) + "."
 	case o.State == stateCancelled:
@@ -251,11 +254,11 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if v.Settlements, err = a.xmrSettlementViews(ctx, d, v); err != nil {
 		return err
 	}
+	check := "The buyer can check this transaction in their own wallet."
+	if d.OrderViewer == roleBuyer {
+		check = "Check this transaction in your own wallet."
+	}
 	if v.ShortCounted { // A-770
-		check := "The buyer can check this transaction in their own wallet."
-		if d.OrderViewer == roleBuyer {
-			check = "Check this transaction in your own wallet."
-		}
 		for i := range v.Deposits {
 			if v.Deposits[i].State == xmrDepositMissing {
 				v.Deposits[i].State += ". " + check + " If the network lists it again, it counts again."
@@ -268,6 +271,14 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			v.Status = "Delivered, but " + xmrMaybeDropped
 		case stateCompleted:
 			v.Status = "Completed, but " + xmrMaybeDropped
+		}
+	}
+	if short := a.xmrReleaseBuiltShort(o, v.Settlements, required); short != "" && (o.State == stateCompleted || o.State == stateResolved) { // QA-A770-5
+		v.Status = stateLabel(o.State) + ", but " + short
+		for i := range v.Deposits {
+			if v.Deposits[i].State == xmrDepositMissing && v.Deposits[i].credited {
+				v.Deposits[i].State += ". " + check + " The release was built without it. " + xmrMissingFate("release")
+			}
 		}
 	}
 	if v.NothingCounted { // A-770
@@ -331,6 +342,26 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	d.Transitions = kept
 	return nil
+}
+
+// xmrReleaseBuiltShort says how the newest release with a stored transaction was built, if it spends less than required
+// ("" otherwise): past xmrMissingWait a release is built without a credited deposit the wallet stopped listing
+// (xmrCreditedHold), and only its input total tells, also once that deposit is listed again.
+func (a *App) xmrReleaseBuiltShort(o *Order, settlements []*XMRSettlementView, required int64) string {
+	for _, s := range settlements { // newest first
+		if s.kind != "release" || !s.stored {
+			continue
+		}
+		if s.inputTotal >= required {
+			return ""
+		}
+		how := "the release was built from less than the price"
+		if s.state == "relayed" || s.state == "confirmed" {
+			how = "the release is paid from less than the price"
+		}
+		return how + ": it spends " + a.escrowAmount(o, s.inputTotal) + " of the " + a.escrowAmount(o, required) + " price, and was built without a deposit that counted when the order was funded."
+	}
+	return ""
 }
 
 // xmrRefunded is what a refund sentence of a paid order says is refunded: funded, or with too little counted (A-770) what
@@ -459,12 +490,13 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	o := d.Order
 	var releaseAt, cancelWait sql.NullTime
 	var left sql.NullFloat64
-	var shipByOpen, rechecked, live, tooFew, claimDue, recheckAsked, outage bool
+	var shipByOpen, rechecked, live, tooFew, claimDue, recheckAsked, outage, wasShipped bool
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
 		`+xmrLiveOutcomeSQL("es.order_id")+`,
 		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2),`+xmrClaimDueSQL("o")+`,
-		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked, &cancelWait, &outage); err != nil {
+		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`,
+		EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=es.order_id AND e.to_state=$4)
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey, stateShipped).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked, &cancelWait, &outage, &wasShipped); err != nil {
 		return err
 	}
 	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
@@ -518,6 +550,8 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		v.NextStep = "The dispute was decided for the vendor, but " + xmrNothingCounts + ": " + xmrListedAgainLive + ". The release deadline no longer applies."
 	case o.State == stateResolved && outcome == "release" && v.NothingCounted:
 		v.NextStep = "The dispute was decided for the vendor, but " + xmrNothingCounts + ": if the network lists the deposit again, it goes to the vendor. The vendor can claim on this page with a fresh address, and the market builds the release and sends it once the deposit has confirmed."
+	case o.State == stateResolved && outcome == "release" && live && !wasShipped: // QA-A770-4: claimed after the decision
+		v.NextStep = "The dispute was decided for the vendor: the release the vendor claimed pays the vendor; the market builds it from this order's escrow account and sends it."
 	case o.State == stateResolved && outcome == "release" && live:
 		v.NextStep = "The dispute was decided for the vendor: the release to the vendor requested when the order was shipped pays the vendor; the market builds it from this order's escrow account and sends it. The release deadline no longer applies."
 	case o.State == stateResolved && outcome == "release":

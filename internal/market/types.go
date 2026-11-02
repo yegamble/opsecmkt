@@ -289,6 +289,8 @@ type PageData struct {
 	StaffContactWarnings []StaffContactWarning
 	// CaptchaNoContact: admin page, the image is being shown (A-725) but no staff contact works without an account (A-517).
 	CaptchaNoContact bool
+	// CaptchaContactNotStaff: with CaptchaNoContact, the warning's words for a handle that is not active staff (PM-N2).
+	CaptchaContactNotStaff string
 	// CaptchaAdmin: admin page, the human check's mode and attack signal (A-725).
 	CaptchaAdmin *CaptchaAdminView
 	// StaffAttention: uncapped actionable category totals in the shared navigation and staff desk summaries.
@@ -727,6 +729,7 @@ type PaymentDeposit struct {
 	Amount        string
 	Confirmations int64
 	State         string
+	credited      bool // counted toward the order's funding (Monero escrow panel)
 }
 
 // PurchaseBlock (A-444) is why a listing cannot be bought in Currency while its intake is escrow only, and Fix what

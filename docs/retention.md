@@ -259,10 +259,33 @@ Remote/provider copies need equivalent expiry and preservation controls; includi
 
 ## Restoring without reviving deleted data
 
-Before relying on a rollback backup from a never-enrolled instance, enroll its **current original database** once and retain that external state separately.
-The enrollment grace gives time to prepare ordinary expiry. A legacy backup can adopt this existing current ledger even if the backup predates enrollment.
-A restored database cannot initialize an empty ledger: if both the original database and current state are lost, recovery needs evidence reconciliation
-and remains blocked until an authoritative current state is available.
+### Backups of a never-enrolled database
+
+A default install runs with `RETENTION_ENABLED=off` and never enrolls, so its database has no retention instance id (`retention_instance_id`).
+**A backup of such a database cannot reopen once the original database is lost**, and no other path exists today:
+
+- `scripts/restore.sh`, and `-set-restore-gate` after a provider point-in-time recovery or a snapshot, set `retention_restore_required`.
+- With retention off, startup refuses a restore that is pending. With retention on, it refuses an empty directory, because a restored database cannot initialize an empty ledger.
+- `-enroll-retention` refuses a pending restore gate, and `-clear-restore-gate` refuses a database the application has not started on.
+
+Before relying on a backup, enroll the **current original database** once, while it exists, and retain that external state separately.
+The commands are in [Enabling the service](#enabling-the-service):
+
+- **Compose:** set `RETENTION_ENABLED=on` in `.env`, run `docker compose run --rm app -enroll-retention`, then `docker compose up -d`.
+- **Native process:** run `server -enroll-retention` as the service user with `RETENTION_ENABLED=on` and an absolute `RETENTION_STATE_DIR`, and keep both set for `serve`.
+- **Managed `deploy` installation:** set `RETENTION_ENABLED` to `on` in the `settings` of the private `operator.json` ([runtime settings](install/cli-reference.md)), then run `deploy plan` and `deploy up`; startup enrolls.
+
+Read [Before enabling](#before-enabling) first, because enrollment starts the retention lifecycle: ordinary historical data is purged after the 30-day grace, and retention cannot be switched off afterwards.
+That grace gives time to prepare ordinary expiry. A legacy backup can adopt this existing current ledger even if the backup predates enrollment, so backups taken before enrolling become usable too (`scripts/test-backup-restore.sh` restores one).
+If both the original database and current state are lost, recovery needs evidence reconciliation and remains blocked until an authoritative current state is available.
+
+What warns you:
+
+- `scripts/backup.sh` warns on every run against a never-enrolled database, and the backup still succeeds. It says so when it could not check, and then does not claim the database is enrolled. A dump with no `settings` table is not a market's, so it stays silent.
+- `-status` writes the same warning to stderr for an installed market that never enrolled, so `./scripts/install.sh status` and `upgrade` print it. It stays silent before setup completes, with a restore pending, and from an image that predates this check. `install.sh status` prints `Retention enrollment: unknown` when it cannot read the database.
+- `deploy status` reports containers and does not read the database, so it never warns. Native `deploy` has no database backup of its own: `deploy recovery` covers configuration and keys, and `deploy init` leaves `RETENTION_ENABLED=off` unless given `--set RETENTION_ENABLED=on`. On a native installation, `scripts/backup.sh` with `BACKUP_DATABASE_URL` and `opsecmkt -status` are the commands that warn.
+
+### Restoring
 
 The replay guarantee covers retention lifecycle erasures. Manual photo/avatar removal and replacement outside that lifecycle are not journaled;
 check restored media and repeat those takedowns before reopening, as the restore script warns.

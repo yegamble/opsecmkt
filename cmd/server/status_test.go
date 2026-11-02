@@ -97,7 +97,8 @@ func TestStatusFlagPrintsNoSecrets(t *testing.T) {
 		t.Fatalf("max migration %d (err %v)", latest, err)
 	}
 	check(fmt.Sprintf("installed=false schema=%03d", latest))
-	if _, err = admin.Exec("INSERT INTO " + schema + ".settings(key,value) VALUES('installed','true')"); err != nil {
+	// Enrolled (A-772: market.New ran with retention off, so the id is added here): nothing on stderr.
+	if _, err = admin.Exec("INSERT INTO " + schema + ".settings(key,value) VALUES('installed','true'),('retention_instance_id','status-test-instance')"); err != nil {
 		t.Fatal(err)
 	}
 	check(fmt.Sprintf("installed=true schema=%03d", latest))
@@ -117,6 +118,30 @@ func TestStatusFlagPrintsNoSecrets(t *testing.T) {
 	if want := fmt.Sprintf("installed=true schema=%03d keyroot=setup_token\n", latest); code != 0 || stdout != want ||
 		!strings.HasPrefix(stderr, "warning: 2 active staff account(s) have no second factor and cannot take staff actions") || strings.Contains(stderr, "status_") {
 		t.Fatalf("factor-less staff: exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
+
+	if _, err = admin.Exec("DELETE FROM " + schema + ".users"); err != nil {
+		t.Fatal(err)
+	}
+	// A-772: an installed market that never enrolled warns on stderr, with the action, and keeps its one stdout line.
+	// A pending restore does not: enrolling would be refused, and startup already explains that gate.
+	if _, err = admin.Exec("DELETE FROM " + schema + ".settings WHERE key='retention_instance_id'"); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runServer(t, []string{"DATABASE_URL=" + dsn, "SETUP_TOKEN=" + setupToken, "APP_SECRET_KEY="}, "-status")
+	if want := fmt.Sprintf("installed=true schema=%03d keyroot=setup_token\n", latest); code != 0 || stdout != want ||
+		!strings.HasPrefix(stderr, "warning: this database has never enrolled retention") ||
+		!strings.Contains(stderr, "cannot reopen once the original database is lost") ||
+		!strings.Contains(stderr, "RETENTION_ENABLED=on") || !strings.Contains(stderr, "-enroll-retention") ||
+		strings.Count(stderr, "\n") != 1 || strings.Contains(stderr, "://") || strings.Contains(stderr, setupToken) || password != "" && strings.Contains(stderr, password) {
+		t.Fatalf("never enrolled: exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if _, err = admin.Exec("INSERT INTO " + schema + ".settings(key,value) VALUES('retention_restore_required','true')"); err != nil {
+		t.Fatal(err)
+	}
+	check(fmt.Sprintf("installed=true schema=%03d", latest))
+	if _, err = admin.Exec("DELETE FROM " + schema + ".settings WHERE key='retention_restore_required'"); err != nil {
+		t.Fatal(err)
 	}
 
 	// A wrong password against the real server: a class, never the URL or the password tried.

@@ -485,6 +485,8 @@ above if the database needs it, then start with `deploy up`. To return to an old
 
 Confirm that the current original instance has enrolled retention state before relying on rollback backups. Step 4 enables it for a new instance. For an existing never-enrolled market, follow [retention enrollment](../retention.md#enabling-the-service) on its current original database first. An old restored database cannot initialize an empty ledger, even if its backup predates enrollment.
 
+**A backup of a never-enrolled database cannot reopen once the original database is lost**, whether it comes back through `scripts/restore.sh` or through a provider recovery with `-set-restore-gate`, and no other path exists today. `deploy init` leaves `RETENTION_ENABLED=off` without step 4's `--set RETENTION_ENABLED=on`. `scripts/backup.sh` warns on every run against such a database and still succeeds, and `./opsecmkt -status` warns; `deploy status` does not read the database, and native `deploy` takes no database backup. While the original exists, enroll it: set `RETENTION_ENABLED` to `on` in the `settings` of the private `operator.json`, run `deploy plan` and `deploy up`, or run `-enroll-retention` as the [CLI reference](cli-reference.md) shows. Then keep the retention directory safe. See [never-enrolled backups](../retention.md#backups-of-a-never-enrolled-database).
+
 From the matching source checkout on the approved backup host, use a private URL file containing that host's CA path:
 
 ```sh
@@ -524,7 +526,7 @@ Inventory all copy locations, including provider snapshots and WAL archives. Sch
 
 Run the [dependency version worker on its separate maintenance host](service-topology.md#version-worker-host). Import its independently pinned public verification key and deliver only signed reports to the app. The worker reports versions; it does not update software.
 
-Monitor public health, application readiness, gateway restarts, database connections/storage, certificate expiry, backup age and scanner signature age. Review administrator diagnostics. A successful `/healthz` response does not prove uploads, recovery or payments work; keep the journey checks above in your runbook.
+If public access fails while the application runs, [ask for the Monero deadline recheck](../operator-guide.md#after-an-outage) from the application host as soon as it does: the watcher cannot see that outage. Monitor public health, application readiness, gateway restarts, database connections/storage, certificate expiry, backup age and scanner signature age. Review administrator diagnostics. A successful `/healthz` response does not prove uploads, recovery or payments work; keep the journey checks above in your runbook.
 
 ### Enable payments deliberately
 
@@ -615,7 +617,7 @@ client-certificate renewal happens on the gateway host only.
 | App `unhealthy` or `Restarting` after `install`, `up` or `redeploy` | The command prints the app's startup check (`serve --check-startup`) before failing, because the production app keeps no container logs. Repeat it with `./opsecmkt deploy doctor --dir /srv/opsecmkt/market-prod --start-check`. A database from a newer release prints the `upgraded by a newer release` line: follow [UPGRADING.md, Rolling back](../../UPGRADING.md#5-rolling-back). A check that passes points at a step it does not run: applying pending migrations (`MIGRATION_TIMEOUT`), wallet RPC, the scanner, listeners or readiness. |
 | Database timeout or connection refused | Verify private endpoint resolution, actual service port, routes and both provider/host allowlists. Test from the application host. |
 | Database TLS or hostname failure | Use the service's matching hostname, correct CA and `sslmode=verify-full`. Check the CA path in the relevant host or container. |
-| Gateway returns `503`, or public proxy returns `502` | Check application health, private DNS/ports and `--app-ca`. Verify the application server certificate matches `--app-url`. |
+| Gateway returns `503`, or public proxy returns `502` | Check application health, private DNS/ports and `--app-ca`. Verify the application server certificate matches `--app-url`. While public access stays down the watcher sees no gap and deadlines keep passing, so [ask for the deadline recheck](../operator-guide.md#after-an-outage) as soon as it fails. |
 | Forms return `403` for origin mismatch | Preserve the browser's original `Host` through public ingress and use the intended public URL. |
 | Upload unavailable | Check ClamAV health/signature freshness, gateway/backend CA pairing, client certificate and private port `8443`. |
 | Setup unavailable on a public onion | Use the separate administrator onion with its configured authorization key. This separation is intentional. |

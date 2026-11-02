@@ -83,6 +83,8 @@ docker run --rm --network none --volumes-from PUBLIC_TOR "$TOR_IMAGE" --verify-c
 
 The first line fetches the image by digest. The second prints the current address; keep it. The third checks the new Tor against the same mounted configuration and identity without network access (add the old container's `--user` if it sets one). Then change only the image reference in the gateway's supervisor unit or Compose file and recreate that one container with the same mounts, user, network and flags. Afterwards, `docker exec PUBLIC_TOR cat /var/lib/tor/public-market/hostname` must print the same address. If it differs or Tor does not start, stop the new container and start the previous image on the same identity. Never delete or recreate the identity volume, and never generate a replacement key for it: that changes the storefront's address.
 
+If the public service or its gateway stays down while the application runs, the Monero escrow watcher sees no gap and deadlines keep passing: [ask for the deadline recheck](../operator-guide.md#after-an-outage) from the application host as soon as it fails, and once more when it returns.
+
 ### Generate the administrator's client key
 
 On the administrator's trusted client machine, create independent authorization outputs in private/public directories, which must exist first:
