@@ -63,11 +63,16 @@ saved value does not change, and a keyless staff contact and free text such as a
 alert, save the handle of an active staff account or an address that works without an account, or fix the account (a usable key,
 a lifted suspension, registrations opened), as the warning says.
 
-## A banned seller's sign-in refusal states the payment policy (A-739)
+## Expired PGP challenges are swept with or without retention (A-749)
+
+No migration or configuration. The minute sweep now deletes a PGP sign-in challenge more than a minute past its expiry whether retention is on or off.
+
+## A banned seller's sign-in refusal states the payment policy (A-739, A-767)
 
 No migration or configuration. After a correct password, a banned account that sells (vendor role, approved to sell, or an order on its
-listings) also reads one fixed sentence: its payments not yet sent are held, no other address is paid in their place, and after the held-release refund
-period in force an administrator may refund a held release to the buyer. It states no order, count or amount. A banned buyer and a wrong password see no change.
+listings) also reads one fixed sentence: payments for its sales that the market has not yet built are held, no other address is paid in their place, after
+the held-release refund period in force an administrator may refund a held release to the buyer, and a refund due to it as a buyer is paid as usual (A-767:
+the payment rules did not change; a release already built is still sent). It states no order, count or amount. A banned buyer and a wrong password see no change.
 
 ## A recheck also tells the vendor; a paid order with no counted deposit can be cancelled from its form (A-737)
 

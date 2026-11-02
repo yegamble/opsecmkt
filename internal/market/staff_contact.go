@@ -180,6 +180,7 @@ func suspendedRefusal(ctx context.Context, q rowQuerier, userID string, banned b
 // "" for any other: it sells when its role is vendor, it was approved to sell, or an order was placed on one of its listings
 // (a ban makes a moderator a buyer, whose orders stay held). The sentence is the same for every such account, so it
 // states no order, count or amount. The days are the period the held-release refund enforces (holdRefundDaysShown).
+// A-767: it holds only what the ban holds: a release already built is sent, and a refund due to the account is paid.
 func bannedSellerPolicy(ctx context.Context, q rowQuerier, userID string) (string, error) {
 	var sells bool
 	if err := q.QueryRowContext(ctx, `SELECT u.role='vendor' OR u.vendor_approved OR EXISTS(SELECT 1 FROM orders o JOIN products p ON p.id=o.product_id WHERE p.vendor_id=u.id)
@@ -193,7 +194,7 @@ func bannedSellerPolicy(ctx context.Context, q rowQuerier, userID string) (strin
 	if err != nil {
 		return "", err
 	}
-	return "While it is closed, payments to this account not yet sent are held, with no other address paid in their place, and after " + strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. ", nil
+	return "While it is closed, payments for this account's sales that the market has not yet built are held, with no other address paid in their place, and after " + strconv.Itoa(days) + " days held an administrator may refund a held release to the buyer. A refund due to this account as a buyer is paid as usual. ", nil
 }
 
 // staffContactNeedsAccount: a contact that is exactly a handle can be messaged only from an account, so it is no

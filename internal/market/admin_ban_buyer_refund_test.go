@@ -71,6 +71,56 @@ func banPayeeFindings(t *testing.T) []string {
 	return found
 }
 
+// A-767: an account that sold, banned with a refund due to it as a buyer, is told that refund is paid as usual, and it is:
+// the sentence holds only payments for its sales that the market has not yet built. DB integration against the simulated
+// Monero wallet RPC, not chain evidence.
+func TestBannedSellerReadsItsRefundIsPaid(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, admin := x.user("bsr_admin", "admin")
+	order, _ := x.paidXMRPhysical(x.physical(x.vendor))
+	x.forceDeadline(order, "ship_by=now()-interval '1 minute'") // the vendor did not ship in time
+	if code, body := x.xmrBuyerCancel(order, x.sessOf(order, roleBuyer)); code != 303 || x.state(order) != stateCancelled {
+		t.Fatalf("buyer's cancellation: %d %s (%s)", code, body, x.state(order))
+	}
+	buyerID := agStr(x.testEnv, "SELECT buyer_id FROM orders WHERE id=$1", order)
+	handle := agStr(x.testEnv, "SELECT handle FROM users WHERE id=$1", buyerID)
+	refund := agStr(x.testEnv, "SELECT refund_address FROM escrows WHERE order_id=$1", order)
+	// The buyer also sold: an order on its own listing makes it an account that sells (bannedSellerPolicy).
+	customerID, _ := x.user("bsr_customer", "buyer")
+	x.testEnv.order(customerID, x.testEnv.product(buyerID, "physical"), "XMR", stateDraft)
+
+	agExpect(x.testEnv, "/admin/ban", admin, banForm("ban", handle, testBanReason), 303, "")
+	read := func() {
+		t.Helper()
+		w := x.do("POST", "/login", randomToken(), form("handle", handle, "password", testPassword))
+		if got := refusalText(w.Body.String()); w.Code != 403 || got != bannedMsg {
+			t.Fatalf("banned seller's sign-in: %d %q", w.Code, got)
+		}
+	}
+	read()
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='refund' AND state='requested'", order); n != 1 {
+		t.Fatalf("%d requested refunds pending at the ban, want 1", n)
+	}
+
+	x.mustPoll()
+	x.mustPoll()
+	x.fake.mine(10)
+	x.mustPoll()
+	x.mustPoll()
+	ids := agStrings(t, x.testEnv, "SELECT id::text FROM xmr_settlements WHERE order_id=$1", order)
+	if len(ids) != 1 {
+		t.Fatalf("order has %d settlements, want its one refund", len(ids))
+	}
+	id, _ := strconv.ParseInt(ids[0], 10, 64)
+	s := x.settlement(id)
+	want := []string{"claimant:" + refund + ":" + strconv.FormatInt(xmrListingPrice-s.Fee, 10)}
+	if s.Kind != "refund" || s.State != "confirmed" || !slices.Equal(x.outputsOf(id), want) {
+		t.Fatalf("refund: %+v outputs %v, want confirmed paying %v", s, x.outputsOf(id), want)
+	}
+	read() // the sentence still reads true once it is paid
+}
+
 // A buyer banned while the refund of their cancelled order, and of their order decided for them, is still to be built
 // gets each refund exactly once, to the refund address they pinned at checkout. The ban changes neither refund
 // settlement nor how the market classifies that address (xmrAddressUse). DB integration against the simulated Monero
