@@ -602,7 +602,8 @@ type CaptchaAdminView struct {
 // registration held a password slot) and RegisterBusy (registrations refused for want of a slot) are the current windows' counts,
 // Trips how many times it turned on since this process started; Where names the ingress and Effective says the mode
 // lets the signal act. LastTripAt and LastTrip are the stored record of the last time it turned on and which count did
-// (PM109-3), "" with no record. The limits are the constants, for the page's copy.
+// (PM109-3), "" with no record. RegisterBusyTotal and RegisterBusyLast are the refused registrations since this process
+// started and when the last was (PM109-6). The limits are the constants, for the page's copy.
 type SignInAttackView struct {
 	Where                                string
 	LastTripAt, LastTrip                 string
@@ -610,6 +611,8 @@ type SignInAttackView struct {
 	Since, Until                         string
 	Failures, Busy, Trips                int
 	HeldBusy, RegisterBusy               int
+	RegisterBusyTotal                    int
+	RegisterBusyLast                     string
 	FailureLimit, BusyLimit, HoldMinutes int
 	HeldBusyLimit                        int
 	HoldPosts                            int // simultaneous sign-in posts that trip it: the password slots and BusyLimit

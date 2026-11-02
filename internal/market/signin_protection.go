@@ -110,6 +110,9 @@ type signInAttack struct {
 	// Per signInAttackBusyWindow: sign-ins refused while a registration held a slot, and registrations refused for want of one.
 	heldBusy, registerBusy int
 	heldFrom, registerFrom time.Time
+	// Registrations refused for want of a slot since this process started, and when the last was (PM109-6).
+	registerBusyTotal int
+	registerBusyLast  time.Time
 }
 
 func (s *signInAttack) active(now time.Time) bool { return now.Before(s.until) }
@@ -171,6 +174,8 @@ func (s *signInAttack) noteRegisterBusy(now time.Time) {
 		s.registerBusy, s.registerFrom = 0, now
 	}
 	s.registerBusy++
+	s.registerBusyTotal++
+	s.registerBusyLast = now
 }
 
 func (s *signInAttack) view(now time.Time) SignInAttackView {
@@ -190,6 +195,10 @@ func (s *signInAttack) view(now time.Time) SignInAttackView {
 	}
 	if now.Sub(s.registerFrom) < signInAttackBusyWindow {
 		v.RegisterBusy = s.registerBusy
+	}
+	v.RegisterBusyTotal = s.registerBusyTotal
+	if !s.registerBusyLast.IsZero() {
+		v.RegisterBusyLast = s.registerBusyLast.UTC().Format(signInAttackTime)
 	}
 	return v
 }

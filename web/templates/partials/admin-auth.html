@@ -15,7 +15,7 @@
 <dt>TOTP second factor</dt>
 <dd>Optional for each account</dd>
 </div>
-</dl>{{template "signin-attack-state" .Public}}<p class="help">In the current one-minute windows: {{.Public.HeldBusy}} of {{.Public.HeldBusyLimit}} sign-ins refused while a registration held a password slot, and {{.Public.RegisterBusy}} registrations refused because no slot was free. Counted in this process only, and a restart clears them.</p>{{if .HasPrivate}}{{template "signin-attack-state" .Private}}{{end}}
+</dl>{{template "signin-attack-state" .Public}}<p class="help">In the current one-minute windows: {{.Public.HeldBusy}} of {{.Public.HeldBusyLimit}} sign-ins refused while a registration held a password slot, and {{.Public.RegisterBusy}} registrations refused because no slot was free. Since this process started: {{.Public.RegisterBusyTotal}} registrations refused because no slot was free{{with .Public.RegisterBusyLast}}, the last at {{.}}{{end}}. Counted in this process only, and a restart clears them. Refused registrations send no notification.</p>{{if .HasPrivate}}{{template "signin-attack-state" .Private}}{{end}}
 <form class="stack" method="post" action="/admin/captcha">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="form_nonce" value="{{formNonce "/admin/captcha"}}">
