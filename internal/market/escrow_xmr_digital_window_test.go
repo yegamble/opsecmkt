@@ -578,7 +578,7 @@ func countContaining(list []string, part string) int {
 // refunded; the action still refuses a forged post without the tick, a buyer before the ship-by time still gets no form,
 // and a form shown at zero is refused once the deposit is back. A deposit back after the cancel goes by a stray refund.
 func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
-	const nothing = "No counted coins are in this escrow, so cancelling refunds nothing unless the deposit returns"
+	const nothing = "No counted coins are in this escrow, so cancelling refunds nothing now"
 	vanish := func(x *xmrEscrowEnv, order string) {
 		x.t.Helper()
 		x.dropTransfer(hex64("fund " + order))
@@ -603,6 +603,11 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		if !containsAll(form, `name="amount_seen" value="0"`, `name="payout_confirmed" value="confirmed"`, nothing, "stray refund") {
 			x.t.Fatalf("the cancel form with no counted coins:\n%s", form)
 		}
+		// A-770: the stock sentence stays, the coins sentence does not sit above a tick saying nothing is sent.
+		if !containsAll(form, "of stock.", xmrListedAgainRefund, "a stray refund is") {
+			x.t.Fatalf("the cancel form does not say what happens if the deposit is listed again:\n%s", form)
+		}
+		mustNotContain(x.t, form, "The coins in this escrow go back", "builds the refund transaction", "deposit returns")
 	}
 	post := func(x *xmrEscrowEnv, order, sess string, extra url.Values) (int, string) {
 		x.t.Helper()
@@ -645,7 +650,7 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		if code, body := post(x, order, x.vendorSess, ticked); code != 409 || x.state(order) != statePaid || !strings.Contains(body, "review again") {
 			t.Fatalf("a form at zero once the deposit is back: %d %s %s", code, x.state(order), body)
 		}
-		if form := cancelForm(x, order, x.vendorSess); strings.Contains(form, nothing) || !strings.Contains(form, `name="amount_seen" value="`+strconv.FormatInt(xmrListingPrice, 10)+`"`) {
+		if form := cancelForm(x, order, x.vendorSess); strings.Contains(form, nothing) || !containsAll(form, `name="amount_seen" value="`+strconv.FormatInt(xmrListingPrice, 10)+`"`, "The coins in this escrow go back to the buyer's refund address given at checkout") {
 			t.Fatalf("the form with the deposit back:\n%s", form)
 		}
 		// Gone again, the cancel goes through and nothing is sent.
@@ -748,9 +753,12 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 			}
 			dispute := agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
 			_, admin := x.user("zero_judge_"+outcome, "admin")
-			if page := x.page("/moderator", admin); !containsAll(page, `action="/resolve"`, `name="amount_seen" value="0"`) {
+			page := html.UnescapeString(x.page("/moderator", admin))
+			if !containsAll(page, `action="/resolve"`, `name="amount_seen" value="0"`, "no counted coins are in this escrow, so nothing is sent now", xmrListedAgainRefund, "The market sends nothing now") {
 				t.Fatalf("the staff form at zero:\n%s", page)
 			}
+			// A-770: neither outcome nor the tick says these coins are sent.
+			mustNotContain(t, page, "The market sends these coins", "the escrowed 0", "On its next pass after you resolve", "Resolving requests the settlement")
 			resolve := func(seen string) url.Values {
 				return url.Values{"id": {dispute}, "outcome": {outcome}, "resolution": {"Decided from the evidence both parties sent."},
 					"payout_confirmed": {"confirmed"}, "amount_seen": {seen}, "reply_seen": {"0"}, "password": {testPassword}}
@@ -765,6 +773,102 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 			if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
 				t.Fatalf("%d settlements on a decision of no counted coins", n)
 			}
+			// A-770: the panel and the Resolved notice say nothing is sent, and what happens if the deposit is listed again.
+			vsess := x.sessOf(order, roleVendor)
+			for _, who := range []string{roleBuyer, roleVendor} {
+				n := x.noticesOf(x.partyOf(order, who), order)
+				if !anyContains(n, "is now Resolved", "No counted coins are in this escrow, so nothing is sent now", "if the network lists the deposit again") {
+					t.Fatalf("the %s's notices for %s: %q", who, outcome, n)
+				}
+				p := x.panel(order, x.sessOf(order, who))
+				mustContain(t, p, "no deposit to this escrow", "so nothing is sent now")
+				mustNotContain(t, p, "the coins in this escrow go back", "by a refund the market builds and sends", "the vendor claims the escrowed coins", "Funded")
+			}
+			txid, addr := hex64("fund "+order), addressOf(x, order)
+			if outcome == "refund" {
+				mustContain(t, x.panel(order, sess), xmrListedAgainRefund)
+				// What it said: the deposit listed again goes by a stray refund, and no ordinary refund appears.
+				x.fake.payAddress(addr, txid, xmrListingPrice, 30)
+				x.mustPoll()
+				x.mustPoll()
+				if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='stray_refund'", order); n != 1 || agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1 AND kind='refund'", order) != 0 {
+					t.Fatalf("the deposit listed again: %v; events %q", x.xmrSettlements(order), x.events(order))
+				}
+				p := x.panel(order, sess)
+				mustContain(t, p, "no deposit to this escrow counted when the dispute was decided", "by a stray refund")
+				mustNotContain(t, p, "so nothing is sent now", xmrListedAgainRefund)
+				continue
+			}
+			// PM-E1: a claim at zero is accepted, says it waits, stays requested and pays once the deposit is listed again.
+			mustContain(t, x.panel(order, vsess), "The vendor can claim", "if the network lists the deposit again")
+			form := x.panel(order, vsess)
+			form = form[strings.Index(form, "Claim the escrowed coins"):]
+			mustContain(t, form, "No deposit to this escrow counts now, so the market sends nothing now")
+			w := x.do("POST", "/escrow-xmr/claim", vsess, url.Values{"order_id": {order}, "address": {testXMRAddr("claim "+order, true)}, "password": {testPassword}})
+			if w.Code != 303 {
+				t.Fatalf("a claim at zero: %d %s", w.Code, w.Body.String())
+			}
+			if n := html.UnescapeString(userPageNotice(t, x.testEnv, w, vsess, w.Header().Get("Location"))); !strings.Contains(n, notices["escrow-xmr-claim-waits"].text) {
+				t.Fatalf("the claim's notice: %s", n)
+			}
+			for _, when := range []string{"before a pass", "after one pass", "after two passes"} {
+				if s := x.settlementOf(order, "release"); s.State != "requested" {
+					t.Fatalf("the release %s: %+v", when, s)
+				}
+				p := x.panel(order, vsess)
+				mustContain(t, p, "no deposit to this escrow counts now, so nothing is sent now", "if the network lists the deposit again")
+				mustNotContain(t, p, "requested when the order was shipped pays the vendor", "sends it on its next pass")
+				x.mustPoll()
+			}
+			if ev := x.events(order); !anyContains(ev, "no deposit to this escrow counts now") || anyContains(ev, "and sends it. Nothing is sent yet") {
+				t.Fatalf("the claim's event at zero: %q", ev)
+			}
+			x.fake.payAddress(addr, txid, xmrListingPrice, 30)
+			x.mustPoll()
+			x.mustPoll()
+			if s := x.settlementOf(order, "release"); s.State != "relayed" {
+				t.Fatalf("the release with the deposit listed again: %+v", s)
+			}
+			mustNotContain(t, x.panel(order, vsess), "so nothing is sent now", "no deposit to this escrow counts now")
+		}
+	})
+
+	// A-770: a party's concession at zero states the same: nothing is sent now, and how a deposit listed again goes.
+	t.Run("concede", func(t *testing.T) {
+		for _, c := range []struct{ party, outcome, to, again string }{
+			{roleBuyer, "release", stateCompleted, "it goes to the vendor"},
+			{roleVendor, "refund", stateCancelled, xmrListedAgainRefund},
+		} {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			order, buyer := x.paidXMRPhysical(x.physical(x.vendor))
+			if code, body := x.xmrDispute(order, buyer); code != 303 {
+				t.Fatalf("dispute: %d %s", code, body)
+			}
+			x.dropTransfer(hex64("fund " + order))
+			x.mustPoll()
+			dispute := agStr(x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)
+			sess, other := x.sessOf(order, c.party), roleVendor
+			if c.party == roleVendor {
+				other = roleBuyer
+			}
+			raw := x.page("/order?id="+order, sess)
+			page := html.UnescapeString(raw)
+			mustContain(t, page, "no counted coins are in this escrow, so nothing is sent now", c.again)
+			mustNotContain(t, page, "the escrowed 0", "Funded", "The decision is paid from this escrow")
+			x.check(x.do("POST", "/disputes/concede", sess, concessionForm(dispute, c.outcome, renderedFormNonce(t, raw, "/disputes/concede"), 0)), 303)
+			if x.state(order) != c.to {
+				t.Fatalf("the conceded order is %s", x.state(order))
+			}
+			if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
+				t.Fatalf("%d settlements on a concession of no counted coins", n)
+			}
+			if n := x.noticesOf(x.partyOf(order, other), order); !anyContains(n, "is now "+stateLabel(c.to), "No counted coins are in this escrow, so nothing is sent now", "if the network lists the deposit again") {
+				t.Fatalf("the %s's notices: %q", other, n)
+			}
+			after := html.UnescapeString(x.page("/order?id="+order, sess))
+			mustNotContain(t, after, "Funded and completed", "receives the refund", "receives the release", "The coins in this escrow go back", "the vendor claims the escrowed coins")
+			mustContain(t, after, "if the network lists the deposit again", "No counted coins are in this escrow, so nothing is sent now")
 		}
 	})
 
@@ -826,6 +930,98 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 			t.Fatalf("the form's own post: %d %s", code, body)
 		}
 		wantClosedNothingSent(x, order)
+	})
+}
+
+// A-770: a paid order whose credited deposit is no longer listed stays paid, and its panel says so in hedged words: no
+// Funded, no refund of "the escrow", and the deposit row says what to check; with two deposits and one gone too. Once the
+// deposit is listed again the panel is exactly what it was. Physical and digital, before and after the deadline, so the
+// sentences of the cancel the buyer may use are read too.
+func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
+	hedged := func(t *testing.T, p string) {
+		t.Helper()
+		mustContain(t, p, "may have been dropped or replaced on the network", "whatever is counted then is refunded",
+			"Check this transaction in your own wallet", "If the network lists it again, it counts again")
+		mustNotContain(t, p, "Funded", "the escrow is refunded", "the escrow is then refunded", "claim the coins")
+	}
+	for _, kind := range []string{"physical", "digital"} {
+		t.Run(kind, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			var order, sess string
+			if kind == "physical" {
+				order, sess = x.paidXMRPhysical(x.physical(x.vendor))
+			} else {
+				order, sess = x.undeliveredXMR()
+			}
+			before := x.panel(order, sess)
+			mustContain(t, before, "Funded", "the escrow is refunded")
+			mustNotContain(t, before, "may have been dropped", "whatever is counted")
+			txid, addr := hex64("fund "+order), agStr(x.testEnv, "SELECT address FROM escrows WHERE order_id=$1", order)
+			x.dropTransfer(txid)
+			x.mustPoll()
+			x.mustPoll()
+			if x.state(order) != statePaid {
+				t.Fatalf("the order is %s", x.state(order))
+			}
+			hedged(t, x.panel(order, sess))
+			if vendor := x.panel(order, x.sessOf(order, roleVendor)); !containsAll(vendor, "may have been dropped", "The buyer can check this transaction in their own wallet", "If the network lists it again, it counts again") {
+				t.Fatalf("the vendor's panel:\n%s", vendor)
+			}
+			x.fake.payAddress(addr, txid, xmrListingPrice, 10)
+			x.mustPoll()
+			if after := x.panel(order, sess); after != before {
+				t.Fatalf("the panel with the deposit listed again differs:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+			// Past the deadline, gone again: the same words, and the cancel offered to the buyer says what it refunds.
+			x.dropTransfer(txid)
+			x.mustPoll()
+			x.forceDeadline(order, "ship_by=now()-interval '1 minute'")
+			p := x.panel(order, sess)
+			hedged(t, p)
+			mustContain(t, p, "whatever is counted then is refunded to the buyer's refund address")
+		})
+	}
+	t.Run("two deposits, one gone", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		if x.state(order) != statePaid {
+			t.Fatalf("funded in two deposits: %s", x.state(order))
+		}
+		sess := x.sessOf(order, roleBuyer)
+		x.dropTransfer(second)
+		x.mustPoll()
+		x.mustPoll()
+		p := x.panel(order, sess)
+		hedged(t, p)
+		mustContain(t, p, "0.25 XMR")
+		if n := strings.Count(p, "Check this transaction in your own wallet"); n != 1 {
+			t.Fatalf("%d deposit rows say to check; only the missing one should:\n%s", n, p)
+		}
+		// The vendor's cancel form has coins to refund, so it states them.
+		form := html.UnescapeString(x.page("/order?id="+order, x.vendorSess))
+		mustContain(t, form, "Cancelling refunds the 0.25", "The coins in this escrow go back to the buyer's refund address given at checkout")
+	})
+	// A vanished extra deposit on an order the rest still pays for in full is not a short order: it still reads Funded.
+	t.Run("an extra deposit gone", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		extra := hex64("extra " + order)
+		x.fake.payAddress(addr, hex64("fund "+order), xmrListingPrice, 10)
+		x.fake.payAddress(addr, extra, xmrListingPrice/4, 10)
+		x.mustPoll()
+		sess := x.sessOf(order, roleBuyer)
+		x.dropTransfer(extra)
+		x.mustPoll()
+		p := x.panel(order, sess)
+		mustContain(t, p, "Funded", "the escrow is refunded", "Conflicted or missing — not counted")
+		mustNotContain(t, p, "may have been dropped", "whatever is counted", "Check this transaction")
 	})
 }
 
