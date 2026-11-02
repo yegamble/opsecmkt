@@ -1070,10 +1070,11 @@ type XMREscrowOrderView struct {
 	// holdRefunded: the order was cancelled from completed or resolved by an administrator's held-release refund (A-652f)
 	holdRefunded bool
 	// NothingCounted: a deposit was seen, none counts now and no settlement has its transaction, so nothing is sent now.
-	// shortCounted: a paid order that a missing deposit left with too little counted. refundAsked: a refund was requested.
-	// leftOut: a deposit is left out for a stray refund (A-770).
-	NothingCounted                     bool
-	shortCounted, refundAsked, leftOut bool
+	// ShortCounted: a paid, shipped, delivered or completed order that a missing deposit left with too little counted and
+	// no settlement has its transaction. refundAsked: a refund was requested. leftOut: a deposit is left out for a stray
+	// refund (A-770).
+	NothingCounted, ShortCounted bool
+	refundAsked, leftOut         bool
 }
 
 // XMREscrowCheckoutView offers Monero escrow checkout on an XMR draft (escrow_xmr_create.go): Reason says why it cannot

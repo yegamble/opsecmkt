@@ -25,6 +25,7 @@ const (
 	xmrListedAgainClaim  = "if the network lists the deposit again, it goes to the vendor, who claims it on the order page with a fresh address, and the market builds the release from this order's escrow account and sends it once it has confirmed"
 	xmrListedAgainLive   = "if the network lists the deposit again, it goes to the vendor by the release already requested, which the market builds and sends once the deposit has confirmed"
 	xmrDepositMissing    = "Conflicted or missing — not counted"
+	xmrMaybeDropped      = "a deposit to this escrow may have been dropped or replaced on the network: it is not counted now, so less than the price counts"
 )
 
 // xmrZeroNotice ends the notice of a decision or concession that found no counted coins (xmrAtZero): live says a release
@@ -38,6 +39,15 @@ func xmrZeroNotice(outcome string, live bool) string {
 		again = xmrListedAgainClaim
 	}
 	return sentenceStart(xmrNothingSent) + ": " + again + "."
+}
+
+// xmrCountedZero is xmrAtZero for an action whose form states no amount: it reads the amount counted now.
+func xmrCountedZero(ctx context.Context, q rowQuerier, orderID string) (zero, live bool, err error) {
+	var sum, left int64
+	if err = q.QueryRowContext(ctx, escrowCountedSQL, orderID).Scan(&sum, &left); err != nil {
+		return false, false, err
+	}
+	return xmrAtZero(ctx, q, orderID, sum)
 }
 
 // xmrAtZero reports whether a form that stated seen says order is a Monero escrow with no counted coins and no settlement
@@ -148,27 +158,19 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	// A-770: a paid order that a missing deposit left with too little counted. Its state stays paid (the watcher does not
-	// unfund an order), and the deposit counts again if the wallet lists it again, so its copy is hedged. Nothing is
-	// counted (xmrSettlementViews clears it once a settlement has its transaction): nothing is sent now.
-	short := false
-	if o.State == statePaid && received+pending < required {
-		check := "The buyer can check this transaction in their own wallet."
-		if d.OrderViewer == roleBuyer {
-			check = "Check this transaction in your own wallet."
-		}
-		for i := range v.Deposits {
-			if v.Deposits[i].State == xmrDepositMissing {
-				short = true
-				v.Deposits[i].State += ". " + check + " If the network lists it again, it counts again."
-			}
-		}
+	// A-770: an order a missing deposit left with too little counted. Its state stays (the watcher does not unfund an
+	// order), and the deposit counts again if the wallet lists it again, so its copy is hedged. ShortCounted and
+	// NothingCounted (nothing is sent now) are cleared by xmrSettlementViews once a settlement has its transaction.
+	missing := false
+	for i := range v.Deposits {
+		missing = missing || v.Deposits[i].State == xmrDepositMissing
 	}
+	short := o.State == statePaid && missing && received+pending < required
+	v.ShortCounted = missing && received+pending < required && (o.State == statePaid || o.State == stateShipped || o.State == stateDelivered || o.State == stateCompleted)
 	v.NothingCounted, v.refundAsked, v.leftOut = received+pending == 0 && len(v.Deposits) > 0, refundAsked, leftOutSeen > 0
-	v.shortCounted = short
 	funded, refunded, thenRefunded, claimCoins := "Funded", xmrRefunded(short, "the escrow is refunded"), xmrRefunded(short, "the escrow is then refunded"), "claim the coins"
 	if short {
-		funded, claimCoins = "Paid, but a deposit to this escrow may have been dropped or replaced on the network: it is not counted now, so less than the price counts", "claim whatever is counted then"
+		funded, claimCoins = "Paid, but "+xmrMaybeDropped, "claim whatever is counted then"
 	}
 	v.Confirmed, v.Unconfirmed, v.Remaining, v.NeedsTopUp = amount(received, 12), amount(pending, 12), amount(remaining, 12), remaining > 0
 	for _, s := range []*string{&v.Confirmed, &v.Unconfirmed, &v.Remaining} {
@@ -248,6 +250,25 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	if v.Settlements, err = a.xmrSettlementViews(ctx, d, v); err != nil {
 		return err
+	}
+	if v.ShortCounted { // A-770
+		check := "The buyer can check this transaction in their own wallet."
+		if d.OrderViewer == roleBuyer {
+			check = "Check this transaction in your own wallet."
+		}
+		for i := range v.Deposits {
+			if v.Deposits[i].State == xmrDepositMissing {
+				v.Deposits[i].State += ". " + check + " If the network lists it again, it counts again."
+			}
+		}
+		switch o.State {
+		case stateShipped:
+			v.Status = "Shipped, but " + xmrMaybeDropped
+		case stateDelivered:
+			v.Status = "Delivered, but " + xmrMaybeDropped
+		case stateCompleted:
+			v.Status = "Completed, but " + xmrMaybeDropped
+		}
 	}
 	if v.NothingCounted { // A-770
 		switch o.State {
@@ -456,13 +477,13 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	case o.State == statePaid && recheckAsked && (shipByOpen || cancelWait.Valid): // A-714: the buyer's cancel waits (noShipCancel)
 		v.NextStep += " The buyer's cancel waits while this market's records are being reconciled after a restore from backup: the vendor may have shipped or delivered this order after that backup was taken. It is offered 72 hours after the market has rechecked its escrow deadlines, if the order has not been shipped or delivered by then; reload this page later."
 	case o.State == statePaid && cancelWait.Valid && outage: // A-730
-		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ": " + outageWhy + ", and the vendor may not have been able to ship or deliver this order in that time, so has until then to do so. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.shortCounted, "the escrow is refunded") + " to the buyer's refund address."
+		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ": " + outageWhy + ", and the vendor may not have been able to ship or deliver this order in that time, so has until then to do so. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.ShortCounted, "the escrow is refunded") + " to the buyer's refund address."
 	case o.State == statePaid && cancelWait.Valid: // A-720: so does it in the vendor's grace after the recheck
-		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ", after this market's restore from backup: the vendor may have shipped or delivered this order after that backup was taken, and has until then to do so again. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.shortCounted, "the escrow is refunded") + " to the buyer's refund address."
+		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ", after this market's restore from backup: the vendor may have shipped or delivered this order after that backup was taken, and has until then to do so again. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.ShortCounted, "the escrow is refunded") + " to the buyer's refund address."
 	case o.State == statePaid && o.Kind == "physical" && shipByOpen:
-		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and " + xmrRefunded(v.shortCounted, "the escrow is then refunded") + " to the buyer's refund address."
+		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and " + xmrRefunded(v.ShortCounted, "the escrow is then refunded") + " to the buyer's refund address."
 	case o.State == statePaid && shipByOpen:
-		v.NextStep += " The delivery deadline has passed and the content is not delivered: the buyer may now cancel it, and " + xmrRefunded(v.shortCounted, "the escrow is then refunded") + " to the buyer's refund address."
+		v.NextStep += " The delivery deadline has passed and the content is not delivered: the buyer may now cancel it, and " + xmrRefunded(v.ShortCounted, "the escrow is then refunded") + " to the buyer's refund address."
 	case (o.State == stateShipped || o.State == stateDelivered) && releaseAt.Valid:
 		remaining := time.Duration(left.Float64 * float64(time.Second))
 		// closed: lateDispute's rule, so the page offers no dispute the action would refuse (PM-4).
@@ -483,7 +504,7 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		}
 		v.NextStep = xmrDeadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused)
 		if v.NothingCounted { // A-770
-			v.NextStep += " No deposit to this escrow counts now, so until the network lists the deposit again the market has no coins to send."
+			v.NextStep += " No deposit to this escrow counts now, so nothing is sent now: until the network lists the deposit again the market has no coins to send."
 		}
 	case o.State == stateDisputed && releaseAt.Valid:
 		v.NextStep += " The release deadline of " + utcUntil(releaseAt.Time) + " no longer applies: opening the dispute cancelled it for good."

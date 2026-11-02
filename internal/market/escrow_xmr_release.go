@@ -166,13 +166,13 @@ func xmrEscrowClaimAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		// A-770: a claim at zero counted is accepted and waits (xmrCreditedHold); it says so.
-		var counted, left int64
-		if err = c.Tx.QueryRowContext(ctx, escrowCountedSQL, o.ID).Scan(&counted, &left); err != nil {
+		zero, _, err := xmrCountedZero(ctx, c.Tx, o.ID)
+		if err != nil {
 			return actionResult{}, err
 		}
 		note := xmrClaimNote
 		notice := "escrow-xmr-claim"
-		if counted == 0 {
+		if zero {
 			note = xmrClaimWaitsNote
 			notice = "escrow-xmr-claim-waits"
 		}
@@ -219,8 +219,16 @@ func xmrEscrowShipAction(c *actionCtx) (actionResult, error) {
 		if err != nil {
 			return actionResult{}, err
 		}
-		ctx = withNoticeDetail(ctx, o.ID, stateShipped, "Release deadline: "+utcUntil(deadline)+". Confirm receipt on the order page once the goods have arrived; if they have not arrived, open a dispute before then. "+
-			"If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor: if you cannot confirm receipt, you need do nothing.")
+		detail := "Release deadline: " + utcUntil(deadline) + ". Confirm receipt on the order page once the goods have arrived; if they have not arrived, open a dispute before then. " +
+			"If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor: if you cannot confirm receipt, you need do nothing."
+		zero, _, err := xmrCountedZero(ctx, c.Tx, o.ID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if zero { // A-770
+			detail += " No deposit to this escrow counts now, so nothing is sent then unless the network lists the deposit again and it has confirmed."
+		}
+		ctx = withNoticeDetail(ctx, o.ID, stateShipped, detail)
 		if _, err = c.A.transition(ctx, c.Tx, o.ID, statePaid, stateShipped, c.User, note); err == errConflict {
 			return actionResult{}, shipConflict(c, o.ID) // P2-R5: the buyer's no-ship cancel took the order row first
 		} else if err != nil {
@@ -321,6 +329,18 @@ func xmrConfirmReceiptAction(c *actionCtx) (actionResult, error) {
 		if state == stateDelivered { // A-709: a digital order has no release yet; its vendor claims
 			notice = "escrow-xmr-received"
 			detail, note = "The buyer confirmed receipt (Monero escrow): claim the escrowed coins on the order page with a fresh address.", xmrConfirmedDigital
+		}
+		zero, live, err := xmrCountedZero(ctx, c.Tx, o.ID)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if zero { // A-770: the order completes, and its release waits for a deposit the network lists again (xmrCreditedHold)
+			notice = "escrow-xmr-confirm-waits"
+			if state == stateDelivered {
+				notice = "escrow-xmr-receive-waits"
+			}
+			detail = "The buyer confirmed receipt (Monero escrow). " + xmrZeroNotice("release", live)
+			note = "Receipt confirmed by the buyer (Monero escrow): the order is completed. " + xmrZeroNotice("release", live) + " This cannot be undone."
 		}
 		// A-652d: while the vendor is banned the release is held (xmrReleaseHeld), so the notes say so. A ban committed
 		// after this read leaves the usual wording; the order page then shows the hold.

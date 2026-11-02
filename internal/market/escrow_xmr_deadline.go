@@ -358,6 +358,10 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 		lead = digitalWindowNote
 	}
 	note := lead + " (" + utcUntil(at) + "): no dispute was opened by then, so the order is completed (Monero escrow). "
+	zero, live, err := xmrCountedZero(ctx, tx, orderID)
+	if err != nil {
+		return false, err
+	}
 	if banned, err := orderVendorBanned(ctx, tx, orderID); err != nil {
 		return false, err
 	} else if banned {
@@ -366,6 +370,8 @@ func (a *App) xmrReleaseIfDue(ctx context.Context, tx *sql.Tx, orderID string) (
 			return false, err
 		}
 		note += xmrHeldNote + " " + holdRefundLater(days) // PAY90-3, A-652f
+	} else if zero { // A-770
+		note += xmrZeroNotice("release", live)
 	} else if state == stateDelivered {
 		note += "The vendor claims the escrowed coins from the order page."
 		ctx = withNoticeDetail(ctx, orderID, stateCompleted, xmrClaimCue) // A-710's cue: the vendor has to claim

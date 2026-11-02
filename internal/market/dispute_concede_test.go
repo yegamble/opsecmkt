@@ -14,6 +14,40 @@ func concessionForm(id, outcome, nonce string, seen int64) url.Values {
 	}, seen)
 }
 
+// QA-A770-2: a concession at zero counted writes the dispute once, so it adds as many moderation jobs as one with coins.
+func TestConcessionAtZeroAddsNoExtraModerationJob(t *testing.T) {
+	for _, c := range []struct{ outcome, party string }{{"release", roleBuyer}, {"refund", roleVendor}} {
+		t.Run(c.outcome, func(t *testing.T) {
+			x := newXMREscrowEnv(t)
+			x.mustPoll()
+			agExec(x.testEnv, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
+			added := func(zero bool) int {
+				t.Helper()
+				order, buyer := x.undeliveredXMR()
+				if code, body := x.xmrDispute(order, buyer); code != 303 {
+					t.Fatalf("dispute: %d %s", code, body)
+				}
+				seen := int64(xmrListingPrice)
+				if zero {
+					x.dropTransfer(hex64("fund " + order))
+					x.mustPoll()
+					seen = 0
+				}
+				dispute := agStrings(t, x.testEnv, "SELECT id FROM disputes WHERE order_id=$1", order)[0]
+				sess := x.sessOf(order, c.party)
+				page := x.page(orderPage(order), sess)
+				before := agInt(x.testEnv, "SELECT count(*) FROM moderation_jobs")
+				x.check(x.do("POST", "/disputes/concede", sess, concessionForm(dispute, c.outcome, renderedFormNonce(t, page, "/disputes/concede"), seen)), 303)
+				return agInt(x.testEnv, "SELECT count(*) FROM moderation_jobs") - before
+			}
+			coins, nothing := added(false), added(true)
+			if coins == 0 || nothing != coins {
+				t.Fatalf("moderation jobs added: %d with coins, %d at zero", coins, nothing)
+			}
+		})
+	}
+}
+
 func TestConcessionMoneroEscrowWatcherSettlement(t *testing.T) {
 	for _, outcome := range []string{"release", "refund"} {
 		t.Run(outcome, func(t *testing.T) {
