@@ -30,6 +30,7 @@ type XMRSettlementView struct {
 	SettledByHand                    bool   // the administrator's form closing a failed one the market never sends (A-613)
 	HandSettled                      string // to staff only: who dismissed it or marked it settled by hand, when, and their note
 	reorgSafe, stored, handSettled   bool
+	inputTotal                       int64  // what its stored transaction spends
 	claims                           bool   // it claims a deposit (payments.xmr_settlement_id; PAY613-4)
 	kind, state, wait, reRequestText string // reRequestText: the newest re-request's state and reason
 }
@@ -65,7 +66,7 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 			s.HandSettled = "Marked settled by hand " + record
 		}
 		if s.stored = s.TxHash != ""; s.stored {
-			s.Fee, s.InputTotal = amount(fee, 12), amount(total, 12)
+			s.Fee, s.InputTotal, s.inputTotal = amount(fee, 12), amount(total, 12), total
 			v.NothingCounted, v.ShortCounted = false, false // A-770: a transaction exists, so "nothing is sent" would be false
 		}
 		out = append(out, s)

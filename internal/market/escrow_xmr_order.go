@@ -109,7 +109,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	// unspent counts the deposits that do not count for the order and that no settlement spends yet (A-435).
 	var received, pending, afterCloseSeen, leftOutSeen, unspent int64
 	remaining := required
-	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,xmr_settlement_id IS NOT NULL FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
+	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,xmr_settlement_id IS NOT NULL,credited FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		var dep PaymentDeposit
 		var amt int64
 		var locked, afterClose, leftOut, outside, settled bool
-		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &settled); err != nil {
+		if err = rows.Scan(&dep.TxID, &amt, &dep.Confirmations, &locked, &afterClose, &leftOut, &outside, &settled, &dep.credited); err != nil {
 			rows.Close()
 			return err
 		}
@@ -160,7 +160,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	// A-770: an order a missing deposit left with too little counted. Its state stays (the watcher does not unfund an
 	// order), and the deposit counts again if the wallet lists it again, so its copy is hedged. ShortCounted and
-	// NothingCounted (nothing is sent now) are cleared by xmrSettlementViews once a settlement has its transaction.
+	// NothingCounted (nothing is sent now) are cleared by xmrSettlementViews once a settlement has its transaction;
+	// xmrReleaseBuiltShort then says what that transaction spends.
 	missing := false
 	for i := range v.Deposits {
 		missing = missing || v.Deposits[i].State == xmrDepositMissing
@@ -251,11 +252,11 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if v.Settlements, err = a.xmrSettlementViews(ctx, d, v); err != nil {
 		return err
 	}
+	check := "The buyer can check this transaction in their own wallet."
+	if d.OrderViewer == roleBuyer {
+		check = "Check this transaction in your own wallet."
+	}
 	if v.ShortCounted { // A-770
-		check := "The buyer can check this transaction in their own wallet."
-		if d.OrderViewer == roleBuyer {
-			check = "Check this transaction in your own wallet."
-		}
 		for i := range v.Deposits {
 			if v.Deposits[i].State == xmrDepositMissing {
 				v.Deposits[i].State += ". " + check + " If the network lists it again, it counts again."
@@ -268,6 +269,14 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 			v.Status = "Delivered, but " + xmrMaybeDropped
 		case stateCompleted:
 			v.Status = "Completed, but " + xmrMaybeDropped
+		}
+	}
+	if short := a.xmrReleaseBuiltShort(o, v.Settlements, required); short != "" && (o.State == stateCompleted || o.State == stateResolved) { // QA-A770-5
+		v.Status = stateLabel(o.State) + ", but " + short
+		for i := range v.Deposits {
+			if v.Deposits[i].State == xmrDepositMissing && v.Deposits[i].credited {
+				v.Deposits[i].State += ". " + check + " The release was built without it. " + xmrMissingFate("release")
+			}
 		}
 	}
 	if v.NothingCounted { // A-770
@@ -331,6 +340,26 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	d.Transitions = kept
 	return nil
+}
+
+// xmrReleaseBuiltShort says how the newest release with a stored transaction was built, if it spends less than required
+// ("" otherwise): past xmrMissingWait a release is built without a credited deposit the wallet stopped listing
+// (xmrCreditedHold), and only its input total tells, also once that deposit is listed again.
+func (a *App) xmrReleaseBuiltShort(o *Order, settlements []*XMRSettlementView, required int64) string {
+	for _, s := range settlements { // newest first
+		if s.kind != "release" || !s.stored {
+			continue
+		}
+		if s.inputTotal >= required {
+			return ""
+		}
+		how := "the release was built from less than the price"
+		if s.state == "relayed" || s.state == "confirmed" {
+			how = "the release is paid from less than the price"
+		}
+		return how + ": it spends " + a.escrowAmount(o, s.inputTotal) + " of the " + a.escrowAmount(o, required) + " price, and was built without a deposit that counted when the order was funded."
+	}
+	return ""
 }
 
 // xmrRefunded is what a refund sentence of a paid order says is refunded: funded, or with too little counted (A-770) what

@@ -1154,6 +1154,150 @@ func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
 		mustContain(t, p, "Funded and completed")
 		mustNotContain(t, p, "may have been dropped", "Check this transaction")
 	})
+	// QA-A770-5: past the wait the release is built from the deposit that remains. It does not read Funded, says it was
+	// paid from less than the price, and the row says what becomes of the deposit (xmrMissingFate), which no longer counts
+	// again. Listed again it stays with staff, and the release it missed is still short.
+	t.Run("built short past the wait", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		sess := x.sessOf(order, roleBuyer)
+		if code, body := x.xmrShip(order, x.vendorSess, testXMRAddr("claim "+order, true), testPassword); code != 303 {
+			t.Fatalf("ship: %d %s", code, body)
+		}
+		x.dropTransfer(second)
+		x.mustPoll()
+		if code, body := x.xmrConfirm(order, sess, testPassword); code != 303 {
+			t.Fatalf("confirm: %d %s", code, body)
+		}
+		x.fake.mine(int(2 * x.A.escrowXMR.confirmations))
+		x.mustPoll()
+		x.mustPoll()
+		if s := x.settlementOf(order, "release"); s.State != "relayed" || s.InputTotal != xmrListingPrice/2 {
+			t.Fatalf("the release past the wait: %+v", s)
+		}
+		const short = "Completed, but the release is paid from less than the price: it spends 0.25 fakechain XMR of the 0.5 fakechain XMR price, and was built without a deposit that counted when the order was funded."
+		fate := "The release was built without it. " + xmrMissingFate("release")
+		p := x.panel(order, sess)
+		mustContain(t, p, short, xmrDepositMissing+". Check this transaction in your own wallet. "+fate)
+		mustNotContain(t, p, "Funded", "may have been dropped", "it counts again")
+		vendor := x.panel(order, x.vendorSess)
+		mustContain(t, vendor, short, xmrDepositMissing+". The buyer can check this transaction in their own wallet. "+fate)
+		mustNotContain(t, vendor, "Funded", "may have been dropped", "it counts again")
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 30)
+		x.mustPoll()
+		p = x.panel(order, sess)
+		mustContain(t, p, short)
+		mustNotContain(t, p, "Funded", xmrDepositMissing)
+	})
+	t.Run("decided for the vendor, built short past the wait", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		sess := x.sessOf(order, roleBuyer)
+		if code, body := x.xmrShip(order, x.vendorSess, testXMRAddr("claim "+order, true), testPassword); code != 303 {
+			t.Fatalf("ship: %d %s", code, body)
+		}
+		x.dropTransfer(second)
+		x.mustPoll()
+		x.disputeAndResolve(order, "release")
+		x.fake.mine(int(2 * x.A.escrowXMR.confirmations))
+		x.mustPoll()
+		x.mustPoll()
+		if s := x.settlementOf(order, "release"); s.State != "relayed" || s.InputTotal != xmrListingPrice/2 {
+			t.Fatalf("the release past the wait: %+v", s)
+		}
+		p := x.panel(order, sess)
+		mustContain(t, p, "Resolved, but the release is paid from less than the price", "The release was built without it. "+xmrMissingFate("release"))
+		mustNotContain(t, p, "Funded", "it counts again")
+	})
+	// A release built in full whose deposit is gone afterwards spent the price: it reads as funded, with no hedge, because a
+	// transaction exists (ShortCounted is cleared).
+	t.Run("gone after a full release", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		sess := x.sessOf(order, roleBuyer)
+		if code, body := x.xmrShip(order, x.vendorSess, testXMRAddr("claim "+order, true), testPassword); code != 303 {
+			t.Fatalf("ship: %d %s", code, body)
+		}
+		if code, body := x.xmrConfirm(order, sess, testPassword); code != 303 {
+			t.Fatalf("confirm: %d %s", code, body)
+		}
+		x.mustPoll()
+		x.mustPoll()
+		if s := x.settlementOf(order, "release"); s.State != "relayed" || s.InputTotal != xmrListingPrice {
+			t.Fatalf("the full release: %+v", s)
+		}
+		mustContain(t, x.panel(order, sess), "Funded and completed")
+		x.dropTransfer(second)
+		x.mustPoll()
+		if n := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations<0", order); n != 1 {
+			t.Fatalf("%d deposits read missing", n)
+		}
+		p := x.panel(order, sess)
+		mustContain(t, p, "Funded and completed", "<td>"+xmrDepositMissing+"</td>")
+		mustNotContain(t, p, "less than the price", "may have been dropped", "Check this transaction", "it counts again")
+	})
+	// One of two deposits to a delivered order gone: the delivered status and the confirm form are hedged.
+	t.Run("delivered, one of two gone", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.digital(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		if x.state(order) != stateDelivered {
+			t.Fatalf("funded in two deposits: %s", x.state(order))
+		}
+		sess := x.sessOf(order, roleBuyer)
+		funded := x.panel(order, sess)
+		mustContain(t, funded, "Funded and delivered")
+		mustNotContain(t, funded, "may have been dropped", "Check this transaction")
+		x.dropTransfer(second)
+		x.mustPoll()
+		p := x.panel(order, sess)
+		mustContain(t, p, "Delivered, but a deposit to this escrow may have been dropped or replaced on the network", "Check this transaction in your own wallet", "If the network lists it again, it counts again")
+		mustContain(t, p[strings.Index(p, `id="xmr-escrow-confirm"`):], "the release pays what is counted when it is built")
+		mustNotContain(t, p, "Funded")
+	})
+	// One of two deposits to a paid physical order gone: Mark shipped tells the vendor to check before sending the goods.
+	t.Run("Mark shipped, one of two gone", func(t *testing.T) {
+		const check = "A deposit to this escrow may have been dropped or replaced on the network, so less than the price counts now: check the deposit before you send the goods."
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.physical(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		form := func() string {
+			t.Helper()
+			p := x.panel(order, x.vendorSess)
+			i := strings.Index(p, `id="xmr-escrow-ship"`)
+			if i < 0 {
+				t.Fatalf("no Mark shipped form:\n%s", p)
+			}
+			return p[i:]
+		}
+		mustNotContain(t, form(), check)
+		x.dropTransfer(second)
+		x.mustPoll()
+		mustContain(t, form(), check)
+	})
 	// A vanished extra deposit on an order the rest still pays for in full is not a short order: it still reads Funded.
 	t.Run("an extra deposit gone", func(t *testing.T) {
 		x := newXMREscrowEnv(t)

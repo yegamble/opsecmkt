@@ -727,6 +727,7 @@ type PaymentDeposit struct {
 	Amount        string
 	Confirmations int64
 	State         string
+	credited      bool // counted toward the order's funding (Monero escrow panel)
 }
 
 // PurchaseBlock (A-444) is why a listing cannot be bought in Currency while its intake is escrow only, and Fix what
