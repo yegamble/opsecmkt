@@ -19,6 +19,8 @@ existing documented operations workflow.
 
 No migration or configuration. New `settings` rows, written when they first apply: `sign_in_attack_last_public` and `sign_in_attack_last_private` hold the count that last turned the attack signal on and when, with no handle, account or client. *Security & access* shows them, and the notification now names the count.
 
+A staff member named as the staff contact, or no longer named, now gets a notification, and the audit row says so. Nothing is sent for a contact saved before this version.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.

@@ -321,7 +321,8 @@ func cleanStaffContact(raw string) (string, error) {
 }
 
 // staffContactAction saves the staff contact. The administrator confirms with their password (and authenticator
-// code when enrolled); the change is audited old→new. Saving the value already in force changes nothing (409).
+// code when enrolled); the change is audited old→new. Saving the value already in force changes nothing (409), so
+// concurrent saves of one value, which serialise on the setting's row, make one change and one notice.
 func staffContactAction(c *actionCtx) (actionResult, error) {
 	want, err := cleanStaffContact(c.Form.Get(settingStaffContact))
 	if err != nil {
@@ -343,12 +344,54 @@ func staffContactAction(c *actionCtx) (actionResult, error) {
 		if err := setSetting(c, settingStaffContact, want); err != nil {
 			return actionResult{}, err
 		}
+		told, err := tellStaffContactChange(c, old, want)
+		if err != nil {
+			return actionResult{}, err
+		}
 		quoted := func(v string) string {
 			if v == "" {
 				return "(not set)"
 			}
 			return "“" + v + "”"
 		}
-		return actionResult{Redirect: "/admin/site", Notice: "staff-contact", Audit: "Staff contact changed from " + quoted(old) + " to " + quoted(want)}, nil
+		return actionResult{Redirect: "/admin/site", Notice: "staff-contact", Audit: "Staff contact changed from " + quoted(old) + " to " + quoted(want) + told}, nil
 	})
+}
+
+// PM109-4: what a staff member reads when named or no longer named. Fixed text, naming no one.
+const (
+	staffContactNamedNotice   = "An administrator named you as this market's staff contact. Your handle is now shown on public pages, including sign-in, and people locked out of an account may write to you. Staff never ask for a password, recovery codes or private key."
+	staffContactNamedNoKey    = "Your account's key cannot receive encrypted messages, so a message to you is refused: save a usable key on your account page."
+	staffContactUnnamedNotice = "An administrator removed you as this market's staff contact. Your handle is no longer shown as the way to reach the staff."
+)
+
+// tellStaffContactChange notifies, inside the saving transaction, the active staff member named by want and the one named
+// by old (PM109-4), and returns what the audit row adds. A bare handle with no active staff account is no one's staff
+// contact (A-766), so it tells no one, and an administrator who names or removes themselves has just done it.
+func tellStaffContactChange(c *actionCtx, old, want string) (string, error) {
+	ctx, told := c.Ctx(), ""
+	tell := func(contact, body, audit string) error {
+		if !staffContactNeedsAccount(contact) {
+			return nil
+		}
+		id, canReceive, err := staffContactAccount(ctx, c.Tx, contact)
+		if err != nil || id == "" || id == c.User.ID {
+			return err
+		}
+		if contact == want && !canReceive {
+			body += " " + staffContactNamedNoKey
+		}
+		if _, err = insertNotification(ctx, c.Tx, id, body, ""); err != nil {
+			return err
+		}
+		told += audit
+		return nil
+	}
+	if err := tell(want, staffContactNamedNotice, "; told the staff member named"); err != nil {
+		return "", err
+	}
+	if err := tell(old, staffContactUnnamedNotice, "; told the staff member no longer named"); err != nil {
+		return "", err
+	}
+	return told, nil
 }
