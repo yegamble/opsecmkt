@@ -605,8 +605,12 @@ func TestOperatorForcedAndOffModes(t *testing.T) {
 	session := randomToken()
 	for _, path := range []string{"/login", "/register"} {
 		page := html.UnescapeString(e.body("GET", path, session, nil, 200))
-		mustContain(t, page, "captcha-image", "There is no audio or text alternative.")
+		mustContain(t, page, "captcha-image", "There is no audio or text alternative.", "reload the page for a new one")
 		mustNotContain(t, page, attackImageCopy)
+		// A form rendered again holds what was typed, so nothing on it says to reload (A-758).
+		stale := html.UnescapeString(e.body("POST", path, session, signInForm("dm_forced", testPassword, "captcha_id", randomToken(), "captcha", "WRONG1"), 400))
+		mustContain(t, stale, "Answer the new one below.", "captcha-image", `value="dm_forced"`, "a wrong answer gets a new one")
+		mustNotContain(t, stale, "reload", "Go back")
 		if captchaQuestion.MatchString(page) {
 			t.Fatalf("%s asks a question while the image is forced", path)
 		}
