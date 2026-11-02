@@ -406,7 +406,7 @@ PM-3 is the "public-stagenet run of the physical journey (fund → ship with cla
 
 ### Leg: real outages (DA104-E1)
 
-**No runner.** The tests behind these (`TestXMROutageMovesNearDeadlines` and others) use a database and a simulated wallet RPC, with no real outage. Run these after leg 3's claim has confirmed, with no settlement mid-send.
+**No runner.** The tests behind these (`TestXMROutageMovesNearDeadlines` and others) use a database and a simulated wallet RPC, with no real outage; `TestXMROutageRealProcessDatabaseCut` cuts a real server process's database connections at a TCP proxy, with PostgreSQL still running, no clock moved and the stored step written back by the test. Run these after leg 3's claim has confirmed, with no settlement mid-send.
 
 **(a) The application is down.** Fund a digital order, O, a couple of hours after leg 3's order, so that leg 3 finishes first, and let it sit **Delivered**. When its order page says the window ends in about 30 minutes, stop the application. Leave it down until the window has passed and over the threshold has elapsed, then start it.
 
