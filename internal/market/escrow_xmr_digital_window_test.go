@@ -4,6 +4,7 @@ import (
 	"context"
 	"html"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,18 @@ func (x *xmrEscrowEnv) escrowTime(order, column string) time.Time {
 		x.t.Fatalf("%s of %s: %v", column, shortID(order), err)
 	}
 	return at
+}
+
+// deliverForm is the vendor's Deliver form on order's page, as the vendor reads it.
+func (x *xmrEscrowEnv) deliverForm(order string) string {
+	x.t.Helper()
+	body := html.UnescapeString(x.page("/order?id="+order, x.vendorSess))
+	_, form, found := strings.Cut(body, `action="/orders/deliver"`)
+	if !found {
+		x.t.Fatalf("no Deliver form:\n%s", body)
+	}
+	form, _, _ = strings.Cut(form, "</form>")
+	return form
 }
 
 func near(t *testing.T, what string, got, want time.Time) {
@@ -872,6 +885,27 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		}
 	})
 
+	// UI113-1: Deliver is final, so a manual digital order's form warns at zero as Mark shipped does, and only then.
+	t.Run("Deliver, nothing counted", func(t *testing.T) {
+		const warn = "No deposit to this escrow counts now, so nothing is sent now: check the deposit before you deliver, because if it is not listed again, nothing is paid to you."
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, sess := x.fundedXMR(x.manualDigital(x.vendor))
+		funded := x.deliverForm(order)
+		mustContain(t, funded, "Delivering is final", `aria-describedby="order-deliver-help"`, `id="order-deliver-help"`)
+		mustNotContain(t, funded, warn, "may have been dropped")
+		mustContain(t, x.panel(order, sess), "Funded")
+		vanish(x, order)
+		form := x.deliverForm(order)
+		mustContain(t, form, warn, "Delivering is final", `aria-describedby="order-deliver-help"`)
+		mustNotContain(t, form, "may have been dropped")
+		for _, viewer := range []string{sess, x.vendorSess} {
+			p := x.panel(order, viewer)
+			mustContain(t, p, "Paid; no deposit to this escrow counts now")
+			mustNotContain(t, p, "Funded", "less than the price")
+		}
+	})
+
 	// QA-A770-1: the Mark shipped form, the shipped panel and the confirm at zero say nothing is sent, and what follows if
 	// the deposit is listed again; so does the shipped notice.
 	t.Run("ship", func(t *testing.T) {
@@ -882,6 +916,11 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		txid := hex64("fund " + order)
 		vanish(x, order)
 		p := x.panel(order, x.vendorSess)
+		// UI113-4: the status at zero says none counts, not that less than the price does.
+		for _, panel := range []string{p, x.panel(order, sess)} {
+			mustContain(t, panel, "Paid; no deposit to this escrow counts now")
+			mustNotContain(t, panel, "Funded", "less than the price")
+		}
 		form := p[strings.Index(p, `id="xmr-escrow-ship"`):]
 		form = form[:strings.Index(form, "</section>")]
 		mustContain(t, form, zero+", so nothing is sent now", "if the network lists the deposit again", "nothing is paid to you")
@@ -971,6 +1010,73 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		}
 	})
 
+	// PAY113-4: the reminder at zero says what the completion will: nothing is sent now. Funded, its text is what it was.
+	t.Run("reminder", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		zero, _, _ := x.shippedXMR(x.physical(x.vendor))
+		funded, _, _ := x.shippedXMR(x.physical(x.vendor))
+		x.dropTransfer(hex64("fund " + zero))
+		x.mustPoll()
+		x.forceDeadline(zero, "release_at=now()+interval '1 hour'")
+		x.forceDeadline(funded, "release_at=now()+interval '1 hour'")
+		if err := x.A.xmrRemindDeadlines(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		const sentence = "No counted coins are in this escrow, so nothing is sent now: " + xmrListedAgainLive + "."
+		for _, who := range []string{roleBuyer, roleVendor} {
+			if n := x.noticesOf(x.partyOf(zero, who), zero); !anyContains(n, "until", sentence) {
+				t.Fatalf("the %s's reminder at zero: %q", who, n)
+			}
+			n := x.noticesOf(x.partyOf(funded, who), funded)
+			if anyContains(n, "so nothing is sent now") {
+				t.Fatalf("the %s's reminder with coins: %q", who, n)
+			}
+		}
+		short := shortID(funded)
+		until := utcUntil(x.releaseAt(funded))
+		if n := x.noticesOf(x.partyOf(funded, roleBuyer), funded); !slices.Contains(n, "Order "+short+": Reminder — you have until "+until+" to use Confirm receipt on the order page if the goods have arrived, or to open a dispute if they have not. If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor; a dispute can no longer be opened after it.") {
+			t.Fatalf("the buyer's reminder with coins changed: %q", n)
+		}
+		if n := x.noticesOf(x.partyOf(funded, roleVendor), funded); !slices.Contains(n, "Order "+short+": the buyer has until "+until+" to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and the market releases the coins in this Monero escrow to you.") {
+			t.Fatalf("the vendor's reminder with coins changed: %q", n)
+		}
+	})
+
+	// PAY113-4: the recheck's notice at zero too, for a shipped order and a delivered one, whichever asked for it. Funded, its text
+	// is what it was.
+	t.Run("recheck notice", func(t *testing.T) {
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		shipped, _, _ := x.shippedXMR(x.physical(x.vendor))
+		delivered, _ := x.deliveredXMR(x.digital(x.vendor))
+		funded, _, _ := x.shippedXMR(x.physical(x.vendor))
+		x.dropTransfer(hex64("fund " + shipped))
+		x.dropTransfer(hex64("fund " + delivered))
+		x.mustPoll()
+		for _, o := range []string{shipped, delivered, funded} {
+			x.forceDeadline(o, "release_at=now()+interval '1 hour'")
+		}
+		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2)", xmrReleaseRecheckKey, xmrRecheckOutage)
+		if err := x.A.xmrRecheckReleaseDeadlines(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for order, again := range map[string]string{shipped: xmrListedAgainLive, delivered: xmrListedAgainClaim} {
+			for _, who := range []string{roleBuyer, roleVendor} {
+				if n := x.noticesOf(x.partyOf(order, who), order); !anyContains(n, "so it was moved to", "No counted coins are in this escrow, so nothing is sent now: "+again+".") {
+					t.Fatalf("the %s's recheck notice at zero: %q", who, n)
+				}
+			}
+		}
+		moved := "Order " + shortID(funded) + ": " + outageWhy + ", and the release deadline of this order has passed or ends within 72 hours, so it was moved to " + utcUntil(x.releaseAt(funded)) + ". "
+		if n := x.noticesOf(x.partyOf(funded, roleBuyer), funded); !slices.Contains(n, moved+"Use Confirm receipt on the order page if the goods have arrived, or open a dispute before then if they have not. If you do neither, the order completes at that time and the market releases the coins in this Monero escrow to the vendor.") {
+			t.Fatalf("the buyer's recheck notice with coins changed: %q", n)
+		}
+		if n := x.noticesOf(x.partyOf(funded, roleVendor), funded); !slices.Contains(n, moved+"The buyer has until then to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and the market releases the coins in this Monero escrow to you.") {
+			t.Fatalf("the vendor's recheck notice with coins changed: %q", n)
+		}
+	})
+
 	t.Run("buyer", func(t *testing.T) {
 		x := newXMREscrowEnv(t)
 		x.mustPoll()
@@ -980,6 +1086,7 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 		if form := cancelForm(x, order, sess); form != "" {
 			t.Fatalf("a buyer before the ship-by time got a form:\n%s", form)
 		}
+		mustContain(t, x.panel(order, sess), "Paid; no deposit to this escrow counts now") // UI113-4
 		if code, body := post(x, order, sess, ticked); code == 303 || x.state(order) != statePaid {
 			t.Fatalf("a buyer's post before the ship-by time: %d %s %s", code, x.state(order), body)
 		}
@@ -1039,9 +1146,16 @@ func TestXMREscrowCancelFormAfterDepositVanished(t *testing.T) {
 func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
 	hedged := func(t *testing.T, p string) {
 		t.Helper()
-		mustContain(t, p, "may have been dropped or replaced on the network", "whatever is counted then is refunded",
+		mustContain(t, p, "whatever is counted then is refunded",
 			"Check this transaction in your own wallet", "If the network lists it again, it counts again")
 		mustNotContain(t, p, "Funded", "the escrow is refunded", "the escrow is then refunded", "claim the coins")
+	}
+	// UI113-4: with the only deposit gone, none counts: not "less than the price".
+	hedgedZero := func(t *testing.T, p string) {
+		t.Helper()
+		hedged(t, p)
+		mustContain(t, p, "Paid; no deposit to this escrow counts now")
+		mustNotContain(t, p, "may have been dropped or replaced on the network", "less than the price")
 	}
 	for _, kind := range []string{"physical", "digital"} {
 		t.Run(kind, func(t *testing.T) {
@@ -1063,8 +1177,8 @@ func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
 			if x.state(order) != statePaid {
 				t.Fatalf("the order is %s", x.state(order))
 			}
-			hedged(t, x.panel(order, sess))
-			if vendor := x.panel(order, x.sessOf(order, roleVendor)); !containsAll(vendor, "may have been dropped", "The buyer can check this transaction in their own wallet", "If the network lists it again, it counts again") {
+			hedgedZero(t, x.panel(order, sess))
+			if vendor := x.panel(order, x.sessOf(order, roleVendor)); !containsAll(vendor, "Paid; no deposit to this escrow counts now", "The buyer can check this transaction in their own wallet", "If the network lists it again, it counts again") {
 				t.Fatalf("the vendor's panel:\n%s", vendor)
 			}
 			x.fake.payAddress(addr, txid, xmrListingPrice, 10)
@@ -1077,7 +1191,7 @@ func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
 			x.mustPoll()
 			x.forceDeadline(order, "ship_by=now()-interval '1 minute'")
 			p := x.panel(order, sess)
-			hedged(t, p)
+			hedgedZero(t, p)
 			mustContain(t, p, "whatever is counted then is refunded to the buyer's refund address")
 		})
 	}
@@ -1098,7 +1212,7 @@ func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
 		x.mustPoll()
 		p := x.panel(order, sess)
 		hedged(t, p)
-		mustContain(t, p, "0.25 XMR")
+		mustContain(t, p, "Paid, but a deposit to this escrow may have been dropped or replaced on the network: it is not counted now, so less than the price counts", "0.25 XMR") // UI113-4: short keeps it
 		if n := strings.Count(p, "Check this transaction in your own wallet"); n != 1 {
 			t.Fatalf("%d deposit rows say to check; only the missing one should:\n%s", n, p)
 		}
@@ -1297,6 +1411,26 @@ func TestXMREscrowPaidOrderDepositVanishedTellsBuyer(t *testing.T) {
 		x.dropTransfer(second)
 		x.mustPoll()
 		mustContain(t, form(), check)
+	})
+	// UI113-1: the same for a paid manual digital order's Deliver form, which is final.
+	t.Run("Deliver, one of two gone", func(t *testing.T) {
+		const check = "A deposit to this escrow may have been dropped or replaced on the network, so less than the price counts now: check the deposit before you deliver."
+		x := newXMREscrowEnv(t)
+		x.mustPoll()
+		order, addr := x.freshCheckout(x.manualDigital(x.vendor))
+		first, second := hex64("first "+order), hex64("second "+order)
+		x.fake.payAddress(addr, first, xmrListingPrice/2, 10)
+		x.fake.payAddress(addr, second, xmrListingPrice-xmrListingPrice/2, 10)
+		x.mustPoll()
+		funded := x.deliverForm(order)
+		mustContain(t, funded, "Delivering is final")
+		mustNotContain(t, funded, check, "nothing is paid to you")
+		x.dropTransfer(second)
+		x.mustPoll()
+		form := x.deliverForm(order)
+		mustContain(t, form, check, "Delivering is final")
+		mustNotContain(t, form, "nothing is paid to you")
+		mustContain(t, x.panel(order, x.vendorSess), "Paid, but a deposit to this escrow may have been dropped")
 	})
 	// A vanished extra deposit on an order the rest still pays for in full is not a short order: it still reads Funded.
 	t.Run("an extra deposit gone", func(t *testing.T) {

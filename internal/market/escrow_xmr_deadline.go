@@ -538,6 +538,9 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SELECT 1 FROM orders WHERE id=$1 FOR NO KEY UPDATE", orderID); err != nil { // PAY113-4: what is counted, below
+		return err
+	}
 	var buyer, vendor string
 	var at time.Time
 	var banned bool
@@ -558,6 +561,12 @@ func (a *App) xmrRemindOne(ctx context.Context, orderID string) error {
 		notes = [][2]string{
 			{buyer, short + "Reminder — the vendor's account is closed. You have until " + until + " to open a dispute if the goods have not arrived, or to use Confirm receipt on the order page if they have. If you do neither, the order completes at that time and " + xmrBanHeldPayment + "; a dispute can no longer be opened after it."},
 			{vendor, short + "the buyer has until " + until + " to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time, and its release is held while your account is closed."},
+		}
+	} else if zero, live, err := xmrCountedZero(ctx, tx, orderID); err != nil {
+		return err
+	} else if zero { // PAY113-4, as the completion says (xmrReleaseIfDue)
+		for i := range notes {
+			notes[i][1] += " " + xmrZeroNotice("release", live)
 		}
 	}
 	for _, n := range notes {
@@ -683,12 +692,16 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		if state == stateDelivered { // A-709: a digital order's dispute window
 			check, outcome, vendorOutcome = "if the delivered content works, or open a dispute before then if it does not", "the vendor can claim the coins in this Monero escrow", "you can claim the coins in this Monero escrow from the order page"
 		}
-		closed, vendorClosed := "", ""
+		closed, vendorClosed, nothingSent := "", "", ""
 		if banned, err := orderVendorBanned(ctx, tx, id); err != nil { // PAY101-6: after the row lock, as a ban locks the order first
 			return err
 		} else if banned {
 			closed, outcome = banDeadlineNote+". ", xmrBanHeldPayment
 			vendorClosed, vendorOutcome = "Your account is closed. ", xmrBanHeldPayment
+		} else if zero, live, err := xmrCountedZero(ctx, tx, id); err != nil {
+			return err
+		} else if zero { // PAY113-4, as the completion says (xmrReleaseIfDue)
+			nothingSent = " " + xmrZeroNotice("release", live)
 		}
 		note, why := strings.ToUpper(what[:1])+what[1:]+" moved to "+until+" after a restore from backup (Monero escrow): the deadline in the restored records has passed or ends within 72 hours, so the buyer has 72 hours from this recheck to confirm receipt or open a dispute.", "this market restored its records from a backup"
 		if outage {
@@ -702,8 +715,8 @@ func (a *App) xmrRecheckReleaseDeadlines(ctx context.Context) error {
 		}
 		moved := "Order " + shortID(id) + ": " + why + ", and the " + what + " of this order has passed or ends within 72 hours, so it was moved to " + until + ". "
 		for _, n := range [][2]string{
-			{buyer, moved + closed + "Use Confirm receipt on the order page " + check + ". If you do neither, the order completes at that time and " + outcome + "."},
-			{vendor, moved + vendorClosed + "The buyer has until then to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and " + vendorOutcome + "."},
+			{buyer, moved + closed + "Use Confirm receipt on the order page " + check + ". If you do neither, the order completes at that time and " + outcome + "." + nothingSent},
+			{vendor, moved + vendorClosed + "The buyer has until then to confirm receipt or open a dispute. If the buyer does neither, the order completes at that time and " + vendorOutcome + "." + nothingSent},
 		} {
 			if _, err = insertNotification(ctx, tx, n[0], n[1], id); err != nil {
 				return err

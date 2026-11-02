@@ -287,6 +287,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	if v.NothingCounted { // A-770
 		switch o.State {
+		case statePaid: // UI113-4
+			v.Status = "Paid; no deposit to this escrow counts now"
 		case stateShipped:
 			v.Status = "Shipped; no deposit to this escrow counts now"
 		case stateDelivered:
