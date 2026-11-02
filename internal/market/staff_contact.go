@@ -54,7 +54,7 @@ func init() {
 }
 
 // staffContactSentence is the plain-text form for a refusal: "Contact the market staff: <contact>." or, unset,
-// askOperator. contact is what readers may see (staffContactShown), not the raw setting.
+// askOperator. contact is what readers may see, not the raw setting (staffContactReaderSentence checks it).
 func staffContactSentence(contact string) string {
 	if contact == "" {
 		return askOperator
