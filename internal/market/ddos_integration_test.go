@@ -117,7 +117,7 @@ func TestCaptchaForeignIDsAndSweep(t *testing.T) {
 		t.Fatal("a refused id was recorded")
 	}
 	agExec(e, "INSERT INTO captcha_spent(id,expires) VALUES('old',now()-interval '2 minutes'),('margin',now()-interval '10 seconds'),('live',now()+interval '5 minutes')")
-	if err := e.A.sweepCaptchaSpent(context.Background()); err != nil {
+	if err := e.A.sweepExpiredChallenges(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := agStr(e, "SELECT string_agg(id,',' ORDER BY id) FROM captcha_spent"); got != "live,margin" {
@@ -128,6 +128,61 @@ func TestCaptchaForeignIDsAndSweep(t *testing.T) {
 	time.Sleep(2100 * time.Millisecond)
 	if w := login(id); w.Code != 400 {
 		t.Fatalf("id used after its expiry: %d", w.Code)
+	}
+}
+
+// A-749: the minute sweep removes abandoned PGP challenges past the same margin as spent CAPTCHA ids, with
+// retention off, and the refusal to a swept challenge is the one an expired, unswept challenge already gets.
+func TestPGPChallengeSweep(t *testing.T) {
+	e := newTestApp(t)
+	key, public := testPGPKey(t, "sweep-owner")
+	id, s := e.keylessUser("sweep_pgp", "buyer")
+	e.check(e.do("POST", "/account", s, url.Values{"pgp": {public}, "password": {testPassword}}), 303)
+	e.check(e.do("POST", "/pgp/challenge", s, url.Values{"kind": {"sign"}}), 303)
+	proof := testClearsign(t, key, agStr(e, "SELECT challenge FROM pgp_challenges WHERE user_id=$1", id))
+	agExec(e, "UPDATE pgp_challenges SET expires=now()-interval '40 days' WHERE user_id=$1", id)
+	const refusal = "No open challenge. Start a new one; challenges expire after 30 minutes."
+	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, refusal)
+
+	// One row per case, each its own browser session.
+	row := func(label, expires string) {
+		t.Helper()
+		agExec(e, "INSERT INTO pgp_challenges(user_id,kind,fingerprint,challenge,expires,session_hash) VALUES($1,'sign','test',$2,now()+$3::interval,$2)", id, label, expires)
+	}
+	row("old", "-2 minutes")
+	row("margin", "-10 seconds")
+	row("live", "5 minutes")
+	if err := e.A.sweepExpiredChallenges(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := agStr(e, "SELECT string_agg(challenge,',' ORDER BY challenge) FROM pgp_challenges"); got != "live,margin" {
+		t.Fatalf("after the sweep: %q", got)
+	}
+
+	// The account sees the same thing after the row has gone.
+	agExpect(e, "/pgp/verify", s, url.Values{"signature": {proof}}, 409, refusal)
+	if page := e.body("GET", "/pgp", s, nil, 200); strings.Contains(page, "Expires 20") {
+		t.Fatal("/pgp showed a swept challenge")
+	}
+	if agStr(e, "SELECT (pgp_verified_at IS NULL)::text FROM users WHERE id=$1", id) != "true" {
+		t.Fatal("a swept challenge verified the key")
+	}
+
+	// A table that cannot be swept does not stop the other, and the failure still reaches the log line as a class.
+	for _, c := range []struct{ broken, swept, column, seed string }{
+		{"captcha_spent", "pgp_challenges", "challenge", "INSERT INTO pgp_challenges(user_id,kind,fingerprint,challenge,expires,session_hash) VALUES('" + id + "','sign','test','stale',now()-interval '2 minutes','stale')"},
+		{"pgp_challenges", "captcha_spent", "id", "INSERT INTO captcha_spent(id,expires) VALUES('stale',now()-interval '2 minutes')"},
+	} {
+		agExec(e, c.seed)
+		agExec(e, "ALTER TABLE "+c.broken+" RENAME TO "+c.broken+"_off")
+		err := e.A.sweepExpiredChallenges(context.Background())
+		agExec(e, "ALTER TABLE "+c.broken+"_off RENAME TO "+c.broken)
+		if pgCode(err) != "42P01" || errorCause(err) != "42P01" {
+			t.Fatalf("%s unavailable: %v (class %q)", c.broken, err, errorCause(err))
+		}
+		if n := agInt(e, "SELECT count(*) FROM "+c.swept+" WHERE "+c.column+"='stale'"); n != 0 {
+			t.Fatalf("%s unavailable: %s was not swept (%d left)", c.broken, c.swept, n)
+		}
 	}
 }
 
