@@ -1569,4 +1569,25 @@ func TestXMREscrowCancelledOnlyDepositLockedPromisesNoRefund(t *testing.T) {
 	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
 		t.Fatalf("%d settlements on the cancelled order", n)
 	}
+
+	// QA111-2: one locked beside one the wallet no longer lists: the missing one goes by a stray refund if it returns, so the
+	// page does not say that what was seen is locked and not refunded. Weakening the case to lockedSeen > 0 fails here.
+	both, bothAddr := x.freshCheckout(x.digital(x.vendor))
+	lockedTx, gone := hex64("locked "+both), hex64("missing "+both)
+	x.fake.payAddress(bothAddr, lockedTx, xmrListingPrice, 50)
+	x.fake.setTransfer(lockedTx, func(t *fakeXMRTransfer) { t.UnlockTime = 3000 })
+	x.fake.payAddress(bothAddr, gone, 1000, 0)
+	x.mustPoll()
+	x.dropTransfer(gone)
+	x.mustPoll()
+	bothSess := x.sessOf(both, roleBuyer)
+	if code, body := x.xmrPost("/orders/cancel", bothSess, url.Values{"order_id": {both}, "from": {stateAwaitingPayment}}); code != 303 {
+		t.Fatalf("cancel with a locked and a missing deposit: %d %s", code, body)
+	}
+	if locked, missing := agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND locked", both), agInt(x.testEnv, "SELECT count(*) FROM payments WHERE order_id=$1 AND confirmations<0", both); locked != 1 || missing != 1 {
+		t.Fatalf("the deposits: %d locked, %d missing", locked, missing)
+	}
+	p := x.panel(both, bothSess)
+	mustContain(t, p, "Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded.", xmrDepositMissing)
+	mustNotContain(t, p, "not refunded automatically. Market staff were notified.")
 }
