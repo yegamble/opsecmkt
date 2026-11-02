@@ -33,6 +33,7 @@ func TestAdminWarnsWhenCaptchaHasNoAccountFreeContact(t *testing.T) {
 		t.Errorf("the warning is shown %d times", strings.Count(page, captchaWarningMark))
 	}
 
+	e.user("capwarn_mod", "moderator")
 	setting("staff_contact", "capwarn_mod")
 	mustContain(t, adminPage(), captchaWarningMark, captchaWarningHandle)
 

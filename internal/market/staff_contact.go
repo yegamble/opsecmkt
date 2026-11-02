@@ -40,8 +40,11 @@ const (
 const (
 	staffContactWarnEmpty    = "No staff contact is set."
 	staffContactWarnNotStaff = "The staff contact is a handle that is not an active moderator or administrator."
-	staffContactWarnNoKey    = "The staff contact's account has no PGP key that can receive encrypted messages."
-	staffContactWarnClosed   = "The staff contact is a bare handle while new registrations are closed."
+	// staffContactNotStaffEffect follows staffContactWarnNotStaff on /admin/site (staffContactHealth) and in the CAPTCHA
+	// warning on /admin/security (captchaContactLoader, PM-N2).
+	staffContactNotStaffEffect = "Every place that names the contact says “" + askOperator + "” instead, without this handle, so someone locked out has no one to write to."
+	staffContactWarnNoKey      = "The staff contact's account has no PGP key that can receive encrypted messages."
+	staffContactWarnClosed     = "The staff contact is a bare handle while new registrations are closed."
 )
 
 func init() {
@@ -205,11 +208,21 @@ func staffContactNeedsAccount(contact string) bool { return handlePattern.MatchS
 // captchaContactLoader (admin page, A-517) sets d.CaptchaNoContact while the image is being shown on the public sign-in
 // (A-725: forced, or in the default mode under the attack signal) and the staff contact is unset or a bare handle: a
 // person who cannot read the image (it has no audio or text alternative) then has no way to ask anyone for help
-// without first getting past it.
-func captchaContactLoader(_ context.Context, a *App, _ *http.Request, d *PageData) error {
+// without first getting past it. d.CaptchaContactNotStaff says so when the handle is not active staff (PM-N2): readers
+// then see no contact at all.
+func captchaContactLoader(ctx context.Context, a *App, _ *http.Request, d *PageData) error {
 	contact := d.Settings[settingStaffContact]
 	shown := a.captchaKindFor(context.Background(), captchaModeOf(d.Settings["captcha_required"]), false) == captchaKindImage
 	d.CaptchaNoContact = shown && (contact == "" || staffContactNeedsAccount(contact))
+	if d.CaptchaNoContact && contact != "" {
+		id, _, err := staffContactAccount(ctx, a.db, contact)
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			d.CaptchaContactNotStaff = "t" + staffContactWarnNotStaff[1:] + " " + staffContactNotStaffEffect
+		}
+	}
 	return nil
 }
 
@@ -244,7 +257,7 @@ func staffContactHealth(ctx context.Context, q rowQuerier, contact string, regis
 	case err != nil:
 		return nil, err
 	case id == "":
-		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, "Every place that names the contact says “" + askOperator + "” instead, without this handle, so someone locked out has no one to write to. Save the handle of an active staff account, or another address."})
+		warnings = append(warnings, StaffContactWarning{staffContactWarnNotStaff, staffContactNotStaffEffect + " Save the handle of an active staff account, or another address."})
 	case !canReceive:
 		warnings = append(warnings, StaffContactWarning{staffContactWarnNoKey, "A message to it is refused (no key saved, or the saved one is unreadable, expired or revoked, or has no current encryption subkey), so the sign-in page does not offer to message it. Ask that account to save a key that can, or save another address."})
 	}

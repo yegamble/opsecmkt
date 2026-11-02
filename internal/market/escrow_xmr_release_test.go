@@ -464,3 +464,32 @@ func TestXMREscrowConfirmReceiptStepUp(t *testing.T) {
 		}
 	}
 }
+
+// QA-A770-4: a release claimed after a decision for the vendor was never requested at shipment, so the panel does not say
+// it was; a physical order decided before it shipped is the case. One requested at shipment reads as it did.
+func TestXMREscrowResolvedReleaseSaysWhenRequested(t *testing.T) {
+	const atShipment = "The dispute was decided for the vendor: the release to the vendor requested when the order was shipped pays the vendor; the market builds it from this order's escrow account and sends it. The release deadline no longer applies."
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	t.Run("claimed after the decision", func(t *testing.T) {
+		order, sess := x.paidXMRPhysical(x.physical(x.vendor))
+		x.disputeAndResolve(order, "release")
+		if code, body := x.xmrClaim(order, x.vendorSess, testXMRAddr("claim "+order, true), testPassword); code != 303 {
+			t.Fatalf("claim: %d %s", code, body)
+		}
+		if n := agInt(x.testEnv, "SELECT count(*) FROM order_events WHERE order_id=$1 AND to_state=$2", order, stateShipped); n != 0 {
+			t.Fatalf("%d shipped events", n)
+		}
+		for _, viewer := range []string{sess, x.vendorSess} {
+			p := x.panel(order, viewer)
+			mustContain(t, p, "The dispute was decided for the vendor: the release the vendor claimed pays the vendor; the market builds it from this order's escrow account and sends it.")
+			mustNotContain(t, p, "was shipped", "release deadline")
+		}
+	})
+	t.Run("requested at shipment", func(t *testing.T) {
+		order, sess, _ := x.shippedXMR(x.physical(x.vendor))
+		x.disputeAndResolve(order, "release")
+		mustContain(t, x.panel(order, sess), atShipment)
+		mustNotContain(t, x.panel(order, sess), "the release the vendor claimed")
+	})
+}
