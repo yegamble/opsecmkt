@@ -107,7 +107,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		return err
 	}
 	// unspent counts the deposits that do not count for the order and that no settlement spends yet (A-435).
-	var received, pending, afterCloseSeen, leftOutSeen, unspent int64
+	var received, pending, afterCloseSeen, leftOutSeen, lockedSeen, unspent int64
 	remaining := required
 	rows, err := a.db.QueryContext(ctx, "SELECT txid,amount,confirmations,locked,after_close,escrow_left_out,spent_outside,xmr_settlement_id IS NOT NULL,credited FROM payments WHERE order_id=$1 ORDER BY created,id", o.ID)
 	if err != nil {
@@ -124,7 +124,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		dep.Amount = amount(amt, 12)
 		switch {
 		case locked:
-			dep.State = "Locked (it has an unlock time) — not counted; market staff were notified"
+			dep.State, lockedSeen = "Locked (it has an unlock time) — not counted; market staff were notified", lockedSeen+1
 		case dep.Confirmations < 0:
 			dep.State = xmrDepositMissing
 		case afterClose:
@@ -239,6 +239,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		// Nothing is read while Monero escrow is unavailable, so an empty ledger proves nothing.
 		v.Status = "Cancelled. This escrow cannot be checked right now because Monero escrow is unavailable, so a deposit to it may not be shown here."
 		v.Unread = "Not read while Monero escrow is unavailable"
+	case o.State == stateCancelled && lockedSeen > 0 && lockedSeen == int64(len(v.Deposits)): // BE110-2: xmrLeaveOutUncounted leaves a locked one alone
+		v.Status = "Cancelled; no deposit to this escrow counted: a deposit with an unlock time is not counted and is not refunded automatically. Market staff were notified."
 	case o.State == stateCancelled && len(v.Deposits) > 0: // BE103-1: seen, but none counted, so not "nothing was received"
 		v.Status = "Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded. " + sentenceStart(xmrListedAgainRefund) + "."
 	case o.State == stateCancelled:
@@ -488,12 +490,13 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	o := d.Order
 	var releaseAt, cancelWait sql.NullTime
 	var left sql.NullFloat64
-	var shipByOpen, rechecked, live, tooFew, claimDue, recheckAsked, outage bool
+	var shipByOpen, rechecked, live, tooFew, claimDue, recheckAsked, outage, wasShipped bool
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
 		`+xmrLiveOutcomeSQL("es.order_id")+`,
 		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2),`+xmrClaimDueSQL("o")+`,
-		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked, &cancelWait, &outage); err != nil {
+		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`,
+		EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=es.order_id AND e.to_state=$4)
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey, stateShipped).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked, &cancelWait, &outage, &wasShipped); err != nil {
 		return err
 	}
 	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
@@ -547,6 +550,8 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		v.NextStep = "The dispute was decided for the vendor, but " + xmrNothingCounts + ": " + xmrListedAgainLive + ". The release deadline no longer applies."
 	case o.State == stateResolved && outcome == "release" && v.NothingCounted:
 		v.NextStep = "The dispute was decided for the vendor, but " + xmrNothingCounts + ": if the network lists the deposit again, it goes to the vendor. The vendor can claim on this page with a fresh address, and the market builds the release and sends it once the deposit has confirmed."
+	case o.State == stateResolved && outcome == "release" && live && !wasShipped: // QA-A770-4: claimed after the decision
+		v.NextStep = "The dispute was decided for the vendor: the release the vendor claimed pays the vendor; the market builds it from this order's escrow account and sends it."
 	case o.State == stateResolved && outcome == "release" && live:
 		v.NextStep = "The dispute was decided for the vendor: the release to the vendor requested when the order was shipped pays the vendor; the market builds it from this order's escrow account and sends it. The release deadline no longer applies."
 	case o.State == stateResolved && outcome == "release":

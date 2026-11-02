@@ -1542,3 +1542,31 @@ func TestXMRDisputeFormHiddenAfterDeadline(t *testing.T) {
 		}
 	}
 }
+
+// BE110-2: a deposit with an unlock time never goes back by a stray refund (xmrLeaveOutUncounted filters NOT locked), so
+// a cancelled order whose only deposit is locked does not promise one.
+func TestXMREscrowCancelledOnlyDepositLockedPromisesNoRefund(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, addr := x.freshCheckout(x.digital(x.vendor))
+	txid := hex64("locked " + order)
+	x.fake.payAddress(addr, txid, xmrListingPrice, 50)
+	x.fake.setTransfer(txid, func(t *fakeXMRTransfer) { t.UnlockTime = 3000 })
+	x.mustPoll()
+	if n := x.notified(x.admin, "unlock time"); n == 0 || x.state(order) != stateAwaitingPayment {
+		t.Fatalf("the locked deposit: order %s, %d staff notices", x.state(order), n)
+	}
+	sess := x.sessOf(order, roleBuyer)
+	if code, body := x.xmrPost("/orders/cancel", sess, url.Values{"order_id": {order}, "from": {stateAwaitingPayment}}); code != 303 {
+		t.Fatalf("cancel: %d %s", code, body)
+	}
+	for range 2 {
+		p := x.panel(order, sess)
+		mustContain(t, p, "Cancelled; no deposit to this escrow counted: a deposit with an unlock time is not counted and is not refunded automatically. Market staff were notified.")
+		mustNotContain(t, p, "stray refund", "goes back", "nothing was refunded")
+		x.mustPoll()
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", order); n != 0 {
+		t.Fatalf("%d settlements on the cancelled order", n)
+	}
+}
