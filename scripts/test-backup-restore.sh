@@ -19,6 +19,9 @@ app_source_db="opsecmkt_ops_${suffix}_app_source"
 app_target_db="opsecmkt_ops_${suffix}_app_target"
 # A copy made without scripts/restore.sh (plain pg_dump/pg_restore, as a snapshot or point-in-time recovery would).
 app_manual_db="opsecmkt_ops_${suffix}_app_manual"
+# A-772: a default install that never enrolled retention, and the restored copy of its backup.
+never_source_db="opsecmkt_ops_${suffix}_never_source"
+never_target_db="opsecmkt_ops_${suffix}_never_target"
 server_pid=''
 
 # Reuse the production URL parser, substituting psql only after validation.
@@ -63,7 +66,7 @@ cleanup() {
   trap - EXIT
   stop_app
   if ((status)) && [[ -f $work/app.log ]]; then echo '--- application log ---' >&2; cat "$work/app.log" >&2; fi
-  for database in "$source_db" "$target_db" "$app_source_db" "$app_target_db" "$app_manual_db"; do
+  for database in "$source_db" "$target_db" "$app_source_db" "$app_target_db" "$app_manual_db" "$never_source_db" "$never_target_db"; do
     pg '' -q -c "DROP DATABASE IF EXISTS $database" >/dev/null 2>&1 || true
   done
   rm -rf "$work"
@@ -75,6 +78,8 @@ pg '' -q -c "CREATE DATABASE $target_db ENCODING 'UTF8' TEMPLATE template0"
 pg '' -q -c "CREATE DATABASE $app_source_db ENCODING 'UTF8' TEMPLATE template0"
 pg '' -q -c "CREATE DATABASE $app_target_db ENCODING 'UTF8' TEMPLATE template0"
 pg '' -q -c "CREATE DATABASE $app_manual_db ENCODING 'UTF8' TEMPLATE template0"
+pg '' -q -c "CREATE DATABASE $never_source_db ENCODING 'UTF8' TEMPLATE template0"
+pg '' -q -c "CREATE DATABASE $never_target_db ENCODING 'UTF8' TEMPLATE template0"
 pg "$source_db" -q -c "CREATE TABLE a_first (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO a_first VALUES (1, 'Crème brûlée — 東京 🔒'); CREATE TABLE z_conflict (id integer PRIMARY KEY); INSERT INTO z_conflict VALUES (42);"
 
 # Only the generated scratch database names replace the supplied URL path.
@@ -97,7 +102,11 @@ export AGE_RECIPIENT AGE_IDENTITY
 AGE_RECIPIENT=$(age-keygen -y "$work/identity")
 AGE_IDENTITY="$work/identity"
 backup="$work/backup.dump.age"
-scripts/backup.sh "$backup" > "$work/backup.log"
+# A-772: the warning that a never-enrolled backup cannot reopen. A dump without a settings table is not a market's:
+# restore.sh sets no retention gate on it, so the warning would be false.
+unenrolled_warning='cannot reopen once the original database is lost'
+scripts/backup.sh "$backup" > "$work/backup.log" 2> "$work/backup.err"
+if grep -q -e "$unenrolled_warning" -e 'could not check' "$work/backup.err"; then echo 'backup.sh warned about enrollment for a database with no settings table' >&2; exit 1; fi
 # The success line names the database dumped, never the URL or its password.
 grep -q "of database $source_db (BACKUP_DATABASE_URL) saved to" "$work/backup.log"
 grep -Eq 'client: pg_dump \(PostgreSQL\) [0-9]' "$work/backup.log"
@@ -163,7 +172,9 @@ fi
 pg "$source_db" -q -c "DROP TABLE a_first, z_conflict; CREATE TABLE settings (key text PRIMARY KEY, value text NOT NULL); INSERT INTO settings VALUES ('payments_recovery_required','false');"
 pg "$target_db" -q -c 'DROP TABLE z_conflict;'
 legacy_backup="$work/legacy.dump.age"
-scripts/backup.sh "$legacy_backup"
+scripts/backup.sh "$legacy_backup" > "$work/legacy-backup.log" 2> "$work/legacy-backup.err"
+[[ -s $legacy_backup && -s $legacy_backup.retention.json ]]
+grep -q "^warning: .*$unenrolled_warning" "$work/legacy-backup.err"
 scripts/restore.sh "$legacy_backup" <<< 'RESTORE' > "$work/legacy-restore.log"
 [[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='payments_recovery_required'") == true ]]
 [[ $(pg "$target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
@@ -184,11 +195,13 @@ CGO_ENABLED=0 go build -trimpath -o "$work/server" ./cmd/server
 app_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 source_retention_state="$work/source-retention-state"
 restored_retention_state="$work/current-restored-retention-state"
+# RETENTION_ENABLED and the retention directory default to on and the source's or the restored copy's.
 start_app() {
-  local current_retention_state=$source_retention_state
+  local current_retention_state=$source_retention_state enabled=${2:-on}
   [[ $1 == "$app_source_db" ]] || current_retention_state=$restored_retention_state
+  [[ -z ${3:-} ]] || current_retention_state=$3
   (exec env -i PATH="$PATH" DATABASE_URL="$(connection_url "$1")" SETUP_TOKEN='ops-restore-test-bootstrap-token-0123456789' \
-    RETENTION_ENABLED=on RETENTION_STATE_DIR="$current_retention_state" COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/server") >> "$work/app.log" 2>&1 &
+    RETENTION_ENABLED="$enabled" RETENTION_STATE_DIR="$current_retention_state" COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" "$work/server") >> "$work/app.log" 2>&1 &
   server_pid=$!
   python3 - "http://127.0.0.1:$app_port/healthz" "$server_pid" <<'PY'
 import os, sys, time, urllib.request
@@ -260,7 +273,10 @@ app_backup="$work/app.dump.age"
 # when it was taken, in UTC. A custom-format dump keeps the wall-clock time of the zone pg_dump ran in, and
 # pg_restore --list labels it with its own, so both scripts run those tools in UTC.
 backup_started=$(date -u +%s)
-TZ=Asia/Tokyo BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup"
+TZ=Asia/Tokyo BACKUP_DATABASE_URL=$(connection_url "$app_source_db") scripts/backup.sh "$app_backup" > "$work/app-backup.log" 2> "$work/app-backup.err"
+# A-772: this database enrolled when the application first started on it, so nothing is said about enrollment.
+[[ $(pg "$app_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='retention_instance_id' AND value <> ''") == 1 ]]
+if grep -q -e "$unenrolled_warning" -e 'could not check' -e 'enroll' "$work/app-backup.err"; then echo 'backup.sh warned about enrollment on an enrolled database' >&2; exit 1; fi
 # The deletion ledger is current external state copied separately, never restored
 # from the rolled-back database backup. A missing current ledger must fail closed.
 cp -R "$source_retention_state" "$restored_retention_state"
@@ -300,12 +316,10 @@ source_audit=$(pg "$app_source_db" -Atq -c "$audit_all")
 restore_audit="-:Payout recovery gate set by scripts/restore.sh; held 1 restored Monero escrow settlement(s) with a stored transaction until an administrator confirms each relay; all outbound payouts paused until an administrator clears the gate"
 [[ $(pg "$app_target_db" -Atq -c "$audit_all") == "$source_audit|$restore_audit" ]]
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
-# A missing current ledger and an attempt to switch retention off both refuse
-# startup before any user/payment traffic; neither clears the restore gate.
-for retention_mode in missing disabled; do
-  if [[ $retention_mode == missing ]]; then enabled=on; else enabled=off; fi
-  env -i PATH="$PATH" DATABASE_URL="$(connection_url "$app_target_db")" SETUP_TOKEN='ops-restore-test-bootstrap-token-0123456789' \
-    RETENTION_ENABLED="$enabled" RETENTION_STATE_DIR="$work/missing-retention-state" COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" \
+# expect_refused_start DATABASE ENABLED DIRECTORY: the server exits, naming retention, and the restore gate stays set.
+expect_refused_start() {
+  env -i PATH="$PATH" DATABASE_URL="$(connection_url "$1")" SETUP_TOKEN='ops-restore-test-bootstrap-token-0123456789' \
+    RETENTION_ENABLED="$2" RETENTION_STATE_DIR="$3" COOKIE_SECURE=false ADDR="127.0.0.1:$app_port" \
     python3 - "$work/server" "$work/refused-retention.log" <<'PY'
 from pathlib import Path
 import subprocess, sys
@@ -317,8 +331,12 @@ Path(sys.argv[2]).write_text(result.stdout + result.stderr)
 assert result.returncode != 0, 'Restored application ignored the retention restore gate'
 assert 'retention' in result.stdout + result.stderr, 'Startup failed for a different reason'
 PY
-  [[ $(pg "$app_target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
-done
+  [[ $(pg "$1" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == true ]]
+}
+# A missing current ledger and an attempt to switch retention off both refuse
+# startup before any user/payment traffic; neither clears the restore gate.
+expect_refused_start "$app_target_db" on "$work/missing-retention-state"
+expect_refused_start "$app_target_db" off "$work/missing-retention-state"
 # The server starts on the restored database, applies nothing again and leaves the held settlements alone.
 start_app "$app_target_db"
 stop_app
@@ -331,6 +349,78 @@ BACKUP_DATABASE_URL=$(connection_url "$app_target_db") scripts/backup.sh "$work/
 [[ $(pg "$app_target_db" -Atq -c "SELECT string_agg(version || ':' || name || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$migrations" ]]
 [[ $(pg "$app_target_db" -Atq -c "$pooled_rows") == 0:0 ]]
 [[ $(pg "$app_target_db" -Atq -c "$xmr_state") == "$xmr_restored" ]]
+
+# A-772: a default install never enrolls. The server migrates this database with retention off, as install.sh leaves it.
+start_app "$never_source_db" off "$work/never-retention-state"
+stop_app
+[[ $(pg "$never_source_db" -Atq -c "SELECT count(*) FROM settings WHERE key='retention_instance_id'") == 0 ]]
+never_url=$(connection_url "$never_source_db")
+never_password=$(python3 -c 'import sys; from urllib.parse import urlsplit; print(urlsplit(sys.argv[1]).password or "")' "$never_url")
+# no_connection_detail FILE...: nothing printed names the URL or its password.
+no_connection_detail() {
+  if grep -q -e '://' "$@"; then echo 'backup.sh printed a connection URL' >&2; exit 1; fi
+  if [[ -n $never_password ]] && grep -qF -e "$never_password" "$@"; then echo 'backup.sh printed the database password' >&2; exit 1; fi
+}
+# Each run warns, and the backup still succeeds, with the action on the line.
+never_backup="$work/never.dump.age"
+for run in "$never_backup" "$work/never-again.dump.age"; do
+  BACKUP_DATABASE_URL=$never_url scripts/backup.sh "$run" > "$work/never-backup.log" 2> "$work/never-backup.err"
+  [[ -s $run && -s $run.retention.json ]]
+  grep -q 'saved to' "$work/never-backup.log"
+  grep -q "^warning: .*$unenrolled_warning" "$work/never-backup.err"
+  grep -qF -- 'RETENTION_ENABLED=on' "$work/never-backup.err"
+  grep -qF -- '-enroll-retention' "$work/never-backup.err"
+  grep -qF -- 'docs/retention.md' "$work/never-backup.err"
+  no_connection_detail "$work/never-backup.log" "$work/never-backup.err"
+done
+# A check that cannot read the database neither fails the backup nor says it is enrolled, and says why not without
+# repeating psql's error, which can name the host. The earlier gate and size checks read through the real client.
+mkdir "$work/psql-unreadable"
+real_psql=$(command -v psql)
+cat > "$work/psql-unreadable/psql" <<SH
+#!/usr/bin/env bash
+if [[ " \$* " == *' --file=- '* ]]; then
+  sql=\$(cat)
+  if [[ \$sql == *retention_instance_id* ]]; then
+    echo 'psql: error: connection to server at "secret-host.example" failed: postgres://user:leaked@secret-host.example/db' >&2
+    exit 2
+  fi
+  exec "$real_psql" "\$@" <<< "\$sql"
+fi
+exec "$real_psql" "\$@"
+SH
+chmod 700 "$work/psql-unreadable/psql"
+PATH="$work/psql-unreadable:$PATH" BACKUP_DATABASE_URL=$never_url scripts/backup.sh "$work/never-unreadable.dump.age" > "$work/never-unreadable.log" 2> "$work/never-unreadable.err"
+[[ -s $work/never-unreadable.dump.age ]]
+grep -q '^warning: could not check' "$work/never-unreadable.err"
+if grep -q -e "$unenrolled_warning" -e 'secret-host' -e 'leaked' "$work/never-unreadable.err"; then echo 'the unreadable enrollment check leaked its error or guessed' >&2; exit 1; fi
+no_connection_detail "$work/never-unreadable.log" "$work/never-unreadable.err"
+# What the warning says is so. With the original lost, its restored copy starts neither way and cannot enroll.
+RESTORE_DATABASE_URL=$(connection_url "$never_target_db") scripts/restore.sh "$never_backup" <<< 'RESTORE' > "$work/never-restore.log"
+expect_refused_start "$never_target_db" off "$work/never-empty-state"
+expect_refused_start "$never_target_db" on "$work/never-empty-state"
+if env -i PATH="$PATH" DATABASE_URL="$(connection_url "$never_target_db")" RETENTION_ENABLED=on RETENTION_STATE_DIR="$work/never-empty-state" \
+  "$work/server" -enroll-retention > "$work/never-enroll-restored.log" 2>&1; then
+  echo 'a restored copy enrolled itself' >&2; exit 1
+fi
+grep -q 'refuses a pending or invalid restore gate' "$work/never-enroll-restored.log"
+# And so is the action: enrolling the original ends the warning, and the older backup adopts the original's current
+# ledger, so the restored copy starts.
+env -i PATH="$PATH" DATABASE_URL="$never_url" RETENTION_ENABLED=on RETENTION_STATE_DIR="$work/never-enrolled-state" \
+  "$work/server" -enroll-retention > "$work/never-enroll.log"
+BACKUP_DATABASE_URL=$never_url scripts/backup.sh "$work/never-enrolled.dump.age" > "$work/never-enrolled.log" 2> "$work/never-enrolled.err"
+if grep -q -e "$unenrolled_warning" -e 'could not check' "$work/never-enrolled.err"; then echo 'backup.sh still warned after enrollment' >&2; exit 1; fi
+cp -R "$work/never-enrolled-state" "$work/never-restored-state"
+start_app "$never_target_db" on "$work/never-restored-state"
+stop_app
+[[ $(pg "$never_target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == false ]]
+# The guides state the consequence and the action, under the heading the warning names.
+grep -q '^### Backups of a never-enrolled database$' docs/retention.md
+for guide in docs/retention.md docs/operator-guide.md docs/install/production.md; do
+  grep -q 'cannot reopen once the original database is lost' "$guide"
+  grep -qF -- '-enroll-retention' "$guide"
+  grep -q 'no other path exists today' "$guide"
+done
 
 # runbook_sql NAME [FILE] prints the psql here-document (or the sql block) that follows the marker
 # <!-- runbook-sql: NAME --> in FILE (the runbook by default).
@@ -529,4 +619,4 @@ for step in review confirm; do
   [[ $(wallet_cleanup "$step" ops_admin escrow-202601-07) == 'INSERT 0 0' ]]
   unchanged_cleanup "$cleanup_confirmed" $((audit_total + 2))
 done
-echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, pooled rows refused by migration 108, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, audited gate clear refusing unknown handles, audited wallet cleanup review and confirmation).'
+echo 'Encrypted backup/restore regressions passed (Unicode, overwrite refusal, wrong key, transaction rollback, Monero escrow held, its free accounts retired, its wallets closed and its sweep asked for, restore audit row, pooled rows refused by migration 108, application schema restore and restart, manual UPGRADING.md protection after a plain pg_dump/pg_restore copy, audited gate clear refusing unknown handles, audited wallet cleanup review and confirmation, the never-enrolled backup warning and its unreadable, enrolled and restored legs).'

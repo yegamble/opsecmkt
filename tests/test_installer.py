@@ -30,6 +30,7 @@ STATUS = 'compose exec -T app /app/server -status'
 # The one-off -status container: init reads an external database with it before starting anything.
 PROBE = 'compose run --rm -T --no-deps app -status'
 STAFF_WARNING = 'warning: 2 active staff account(s) have no second factor'
+RETENTION_WARNING = 'warning: this database has never enrolled retention'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
                'BITCOIN_RPC_PASSWORD', 'BITCOIN_RPC_AUTH', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
@@ -331,6 +332,9 @@ def print_status():
     if os.environ.get('INSTALLER_TEST_STAFF_WITHOUT_FACTOR'):
         print('compose chatter on stderr', file=sys.stderr)
         print(f"warning: {os.environ['INSTALLER_TEST_STAFF_WITHOUT_FACTOR']} active staff account(s) have no second factor", file=sys.stderr)
+    # Like -status (A-772): an installed market with no retention instance id.
+    if flag('INSTALLER_TEST_UNENROLLED'):
+        print('warning: this database has never enrolled retention (fixture)', file=sys.stderr)
     sys.exit(0)
 if args == ['compose', 'version']:
     sys.exit(0)
@@ -2167,6 +2171,32 @@ time.sleep(60)
         result = self.command('upgrade', '--no-backup')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('active staff', result.stdout + result.stderr)
+
+    def test_status_warns_about_a_never_enrolled_database_and_never_guesses(self):
+        # A-772: the running app and the one-off container both reach the operator, on stderr; stdout stays clean.
+        values = installed_env()
+        self.set_installed(True)
+        for extra in ({}, {'INSTALLER_TEST_APP_DOWN': '1'}):
+            with self.subTest(extra=extra):
+                self.write_env(values)
+                result = self.command('status', extra_env={'INSTALLER_TEST_UNENROLLED': '1', **extra})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(RETENTION_WARNING, result.stderr)
+                self.assertNotIn('warning:', result.stdout)
+                self.assertIn('Setup: complete', result.stdout)
+                self.assertNotIn('Retention enrollment:', result.stdout)
+                self.assert_no_secret_printed(result, values)
+        # Enrolled: nothing is said.
+        self.write_env(values)
+        result = self.command('status')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('retention', (result.stdout + result.stderr).lower())
+        # The database cannot be read: status says enrollment is unknown, gives no warning and claims nothing.
+        result = self.command('status', extra_env={'INSTALLER_TEST_APP_DOWN': '1', 'INSTALLER_TEST_STATUS_FAIL': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Retention enrollment: unknown', result.stdout)
+        self.assertNotIn(RETENTION_WARNING, result.stderr)
+        self.assert_no_secret_printed(result, values)
 
     def test_every_app_status_caller_still_parses_with_a_staff_warning(self):
         values = installed_env()

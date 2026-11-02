@@ -2351,6 +2351,8 @@ preservation exception or dedicated escrow recovery material follows the policy'
 [Enable retention maintenance](retention.md) for database expiry and restore replay, and schedule the backup/export expiry helper daily at every copy location.
 The backup script writes an original-deadline sidecar; restore requires the current external retention state before the server can reopen.
 
+**A default install has not enrolled, so its backups cannot reopen once the original database is lost.** `RETENTION_ENABLED` defaults to `off`, and a restored database then refuses to start in every configuration, and refuses to enroll; no other path exists today. `scripts/backup.sh` warns on every run and still succeeds, and `./scripts/install.sh status` warns too. While the original exists, read [Before enabling](retention.md#before-enabling), set `RETENTION_ENABLED=on` in `.env`, run `docker compose run --rm app -enroll-retention`, then `docker compose up -d`, and keep the retention state apart from the database and its backups. Enrollment starts the retention lifecycle and cannot be undone; backups taken earlier can then reopen with that state too ([details](retention.md#backups-of-a-never-enrolled-database)).
+
 Install [age](https://age-encryption.org/) and Python 3, then generate an identity offline (`age-keygen -o backup-key.txt`). Store the private key separately from backups and use its public recipient for encryption:
 
 ```sh
@@ -2394,7 +2396,7 @@ Without `BACKUP_DATABASE_URL`, the script dumps the internal database through `d
 
 **External databases:** `BACKUP_DATABASE_URL` is used exactly as given; the script does not look at `DATABASE_URL`. When you switch `DATABASE_URL` to a restored database, point `BACKUP_DATABASE_URL` (in your backup job or cron entry) at that database too, or every later backup silently dumps the old one. The success line names the database it dumped; check it. `BACKUP_DUMP_ENCODING=SQL_ASCII` (the dump holds each text as the bytes stored, unconverted) is only for moving a database that is not UTF8 into a UTF8 one ([UPGRADING.md section 42](../UPGRADING.md#42-database-encoding-must-be-utf8-a-481)); the script refuses any other value. Leave it unset in backup jobs.
 
-Restore into an explicitly named **empty** destination. Stop the application first. For the internal database (the default deployment, which publishes no database port), keep the `db` service running and name a database inside it; client tools run in the container:
+Restore into an explicitly named **empty** destination, with the current retention state to hand: a backup of a [never-enrolled database](retention.md#backups-of-a-never-enrolled-database) has none, and its restored copy will not start. Stop the application first. For the internal database (the default deployment, which publishes no database port), keep the `db` service running and name a database inside it; client tools run in the container:
 
 ```sh
 docker compose stop app

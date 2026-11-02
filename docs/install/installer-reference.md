@@ -99,7 +99,7 @@ APP_PORT=8081 ./scripts/install.sh --local --admin alice
 
 ## status
 
-Show mode, service health, setup state, schema version, onion addresses and scanner state.
+Show mode, service health, setup state, schema version, onion addresses and scanner state. It warns when an installed market has never enrolled retention, because its backups then [cannot reopen once the original database is lost](../retention.md#backups-of-a-never-enrolled-database).
 
 **Command:** `./scripts/install.sh status`
 

@@ -174,6 +174,54 @@ esac
             self.assertIn('before current external retention state has been replayed', blocked.stderr)
             self.assertEqual(list(blocked_output.parent.glob('blocked.dump.age*')), [])
 
+    def test_never_enrolled_warning_never_fails_the_backup_or_guesses(self):
+        # A-772, through the internal Compose path: the enrollment answer decides the warning, and an unreadable or
+        # unknown answer says only that it could not check, without psql's own error.
+        unreadable = 'echo "psql: connection to postgres://user:leaked@secret-host.example failed" >&2; exit 2'
+        for answer, warned, doubtful in (('echo unenrolled', True, False), ('echo enrolled', False, False),
+                                         ('echo no-settings', False, False), ('echo garbled', False, True),
+                                         ('true', False, True), (unreadable, False, True)):
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as work:
+                bin_dir = Path(work) / 'bin'
+                bin_dir.mkdir()
+                docker = bin_dir / 'docker'
+                docker.write_text('''#!/bin/sh
+case " $* " in
+  *"--file=-"*)
+    sql=$(cat)
+    case "$sql" in
+      *retention_instance_id*) ''' + answer + ''' ;;
+      *) echo false ;;
+    esac ;;
+  *" pg_dump --version "*) echo "pg_dump (PostgreSQL) 17.6" ;;
+  *"pg_database_size(current_database())"*) echo 1024 ;;
+  *"--format=custom"*) echo synthetic-archive ;;
+  *) echo "unexpected docker invocation" >&2; exit 8 ;;
+esac
+''')
+                docker.chmod(0o700)
+                age = bin_dir / 'age'
+                age.write_text('#!/bin/sh\nprintf "age-encryption.org/v1\\n"\ncat\n')
+                age.chmod(0o700)
+                df = bin_dir / 'df'
+                df.write_text('#!/bin/sh\n' + df_stub() + '\n')
+                df.chmod(0o700)
+                output = Path(work) / 'backups' / 'internal.dump.age'
+                env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', AGE_RECIPIENT='age1test',
+                           BACKUP_INTERNAL_DATABASE='market', BACKUP_SPACE_HEADROOM_BYTES='0')
+                env.pop('DATABASE_URL', None)
+                env.pop('BACKUP_DATABASE_URL', None)
+                result = subprocess.run(['bash', str(BACKUP), str(output)], cwd=ROOT,
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(output.exists())
+                self.assertEqual('cannot reopen once the original database is lost' in result.stderr, warned)
+                self.assertEqual('could not check' in result.stderr, doubtful)
+                if warned:
+                    self.assertIn('docker compose run --rm app -enroll-retention', result.stderr)
+                self.assertNotIn('://', result.stdout + result.stderr)
+                self.assertNotIn('secret-host', result.stdout + result.stderr)
+
     def test_internal_backup_refuses_exported_database_url_override(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)

@@ -189,6 +189,8 @@ def exercise(repo, environment, second, second_environment, third, third_environ
     # status reports the completed setup and retires the token; setup-token then has nothing to show.
     code, output = installer(repo, environment, log_path, ['status'], 120)
     require(code == 0 and 'Setup: complete' in output, 'status did not report setup complete')
+    # A-772: this default install runs with retention off and never enrolled, and the real -status says so.
+    require('cannot reopen once the original database is lost' in output, 'status did not warn about a never-enrolled database')
     require('SETUP_TOKEN' not in env_values(repo), 'status left SETUP_TOKEN in .env after setup')
     code, output = installer(repo, environment, log_path, ['setup-token'], 120)
     require(code == 1 and token not in output, 'setup-token did not refuse after setup')
