@@ -39,6 +39,8 @@ Test-only controls (POST, JSON) on the escrow wallet-rpc's port, which the app n
   /test/xmr/deposit        {"address", "amount"} or {"outputs": [{"address", "amount"}]}
                                                        a transaction from outside paying them (piconero), in the pool
   /test/xmr/mine           {"blocks"}                 blocks: the first takes every pooled transaction
+  /test/xmr/forget-tx      {"txid"}                   neither the daemon nor any wallet lists that transaction any more,
+                                                       which is all the application sees of a reorganisation that took it
   /test/xmr/refuse-relay   {}                         the daemon refuses the next transaction relayed to it, and that
                                                        transaction each time it is relayed again (one monerod will not
                                                        take); a rebuilt one, with another hash, is taken
@@ -1005,6 +1007,11 @@ class WalletRPC:
                     raise ValueError('blocks: 1-1000')
                 c.mine(n)
                 return {'height': c.height}
+            if path == '/test/xmr/forget-tx':
+                if c.txs.pop(data.get('txid'), None) is None:
+                    raise ValueError('no such transaction')
+                c.pool = [h for h in c.pool if h != data.get('txid')]
+                return {'ok': True}
             if path == '/test/xmr/refuse-relay':
                 c.refuse_next = True
                 return {'ok': True}
