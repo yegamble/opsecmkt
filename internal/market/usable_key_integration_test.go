@@ -3,6 +3,7 @@ package market
 import (
 	"bytes"
 	"html"
+	"net/url"
 
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 const (
 	noUsableKeyNote  = "cannot receive encrypted messages"
 	noUsableKeyPay   = "Payment unavailable. This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one."
-	noUsableKeyPaid  = "message the vendor or open a dispute"
+	noUsableKeyPaid  = "Never send it unencrypted. Open a dispute."
 	sendAddressLabel = "Send encrypted shipping details"
 )
 
@@ -200,4 +201,29 @@ func TestPaidOrderVendorKeyStopsBeingUsable(t *testing.T) {
 	digital := p.testEnv.order(p.buyer.ID, p.product(p.vendor.ID, "digital"), "XMR", statePaid)
 	b = html.UnescapeString(p.body("GET", "/order?id="+digital, p.buyerSess, nil, 200))
 	mustNotContain(t, b, noUsableKeyPaid, sendAddressLabel)
+}
+
+// TestPaidEscrowOrderUnusableVendorKeyOpensDispute (A-748): the no-key panel names only a dispute, so that dispute must
+// open on a funded physical escrow order whatever is wrong with the vendor's key, and the message route stays refused.
+func TestPaidEscrowOrderUnusableVendorKeyOpensDispute(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	_, usable := testPGPKey(t, "dispute_vendor_ok")
+	for variant, armored := range map[string]string{"expired key": testUnusableKeys(t, "dispute_vendor")["expired key"], "no key": ""} {
+		x.setKey(x.vendor, usable)
+		order, buyer := x.fundedXMR(x.physical(x.vendor))
+		x.setKey(x.vendor, armored)
+		page := html.UnescapeString(x.page("/order?id="+order, buyer))
+		mustContain(t, page, noUsableKeyPaid, `action="/disputes"`)
+		if w := x.do("POST", "/orders/message", buyer, url.Values{"order_id": {order}, "body": {encryptToRecipients(t, "addr", x.commercePGP)}}); w.Code != 409 {
+			t.Fatalf("%s: message answered %d, want 409", variant, w.Code)
+		}
+		if w := x.do("POST", "/disputes", buyer, url.Values{"order_id": {order}, "reason": {"The vendor key stopped working so the address cannot be sent."}}); w.Code != 303 {
+			t.Fatalf("%s: dispute answered %d: %s", variant, w.Code, w.Body.String())
+		}
+		if s := x.state(order); s != stateDisputed {
+			t.Fatalf("%s: state %s after the dispute", variant, s)
+		}
+		mustNotContain(t, html.UnescapeString(x.page("/order?id="+order, buyer)), noUsableKeyPaid)
+	}
 }

@@ -80,7 +80,7 @@ store retains the first validated result for its stable identity.
 | `--model-socket` | `MODERATION_MODEL_SOCKET`; absolute `.sock` path |
 | `--weights` | `MODERATION_WEIGHTS_PATH`; reviewed local weights file |
 | `--weights-sha256`, `--model-id` | `MODERATION_WEIGHTS_SHA256`, `MODERATION_MODEL_ID`; weights pin and bounded operator inventory label |
-| `--prompt-version`, `--model-timeout` | `moderation-v6`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
+| `--prompt-version`, `--model-timeout` | `moderation-v7`, `20s`; prompt must match this build, timeout 1 through 30 seconds |
 | `--sla`, `--confidence-floor` | `24h`, `0.9`; deadline is based on enqueue time, expiry means `HOLD` |
 | `--new-actor-days`, `--abuse-threshold` | `14`, `5`; development policy values, not production measurements |
 | `--escalation-recipient`, `--signing-key` | Optional OpenPGP public recipient and separate Ed25519 worker seed; both or neither, as described in the [runbook](moderation-escalation-runbook.md#encrypted-offline-packets) |
@@ -142,7 +142,7 @@ use rather than absent, and no warning.
 
 ## Optional local inference
 
-Turning a model on removes no item from the human queue. At `moderation-v6` a
+Turning a model on removes no item from the human queue. At `moderation-v7` a
 model result can add reason codes and raise an item to `ESCALATE_ADMIN`; it can
 never clear one. Staff the queue before you enable it.
 
@@ -189,7 +189,7 @@ env -i PATH=/usr/bin:/bin ./opsecmkt moderation-worker \
   --enabled --database-url-file /secure/moderation/database-url \
   --model --model-socket /run/moderation/inference.sock \
   --weights /models/model.gguf --weights-sha256 REVIEWED_LOWERCASE_SHA256 \
-  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v6
+  --model-id REVIEWED_MODEL_LABEL --prompt-version moderation-v7
 ```
 
 Replace example paths and pins with the controller's actual read-only mounts
@@ -288,7 +288,7 @@ write verb is not seen.
 
 ## Proposal protocol
 
-The `moderation-v6` model response has exactly these seven JSON fields. Additional fields, missing fields,
+The `moderation-v7` model response has exactly these seven JSON fields. Additional fields, missing fields,
 unknown enums, invalid bounds and unrelated evidence references are refused.
 
 | Field | Meaning |
@@ -303,7 +303,10 @@ unknown enums, invalid bounds and unrelated evidence references are refused.
 
 Stage A may report only `SPAM_TEMPLATE`, `SCAM_TEMPLATE`, `OFF_PLATFORM_CONTACT`,
 `INJECTION_SUSPECTED`, `HUMAN_REVIEW` (each at most once, in that order) or
-`NO_FINDING` alone. Each grammar gives every reason code one optional slot in a
+`NO_FINDING` alone. Its fixed instructions define each of those codes once, say
+that an opinion about the product is never injection and call `NO_FINDING` the
+usual result; a definition is guidance for the model and changes no validation or
+routing (`TestStageAPromptDefinesEachReasonCode`). Each grammar gives every reason code one optional slot in a
 fixed order, so a constrained model cannot repeat a code; Go still refuses a
 repeat (`TestGrammarsCannotRepeatReasonCode`). Duplicate, price,
 completeness, normalization, novelty, actor, money, confidence, model-failure,
@@ -374,21 +377,30 @@ These figures come from the war-room's local-runtime instrument (iteration 94,
 an unpinned 7B Q4_0 model on llama.cpp b1-9ff0d7e90), not from a pinned
 production model or the shipped launcher on a deployed host:
 
-- Per item, Stage A's prompt was about 487 tokens (median) and Stage B's about
-  781. Generated replies were about 83 (Stage A) and 92 (Stage B) tokens with the
-  old canary, so about 60 and 70 with the short one. An item therefore costs about
-  1,270 prompt tokens and 130–175 generated tokens, against an output limit of 256
-  per stage and a prompt limit of 3,832 per stage.
+- Per item at `moderation-v6`, Stage A's prompt was about 487 tokens (median) and
+  Stage B's about 781. Generated replies were about 83 (Stage A) and 92 (Stage B)
+  tokens with the old canary, so about 60 and 70 with the short one.
+- `moderation-v7` lengthens Stage A's fixed instructions from 1,209 to 2,189 bytes,
+  or from 293 to 551 tokens by the model's own tokenizer (iteration 106, an unpinned
+  7B Q4_0 model). Stage A's prompt is then 739 tokens at the median, 756 at p95 and
+  806 at most; Stage B's is 771 at the median. A clean item costs about 1,510 prompt
+  tokens and 125 generated tokens. A flagged item generated at most 161 in Stage A
+  and skips Stage B. The limits are 256 output tokens per stage and 3,832 prompt
+  tokens per stage. Stage A has 3,832 tokens for its instructions and item together,
+  so long or token-dense items reach that limit, and human review without a model
+  proposal, slightly sooner.
 - One `--model-timeout` deadline (default 20 s, at most 30 s) covers both stages,
   including queueing behind the runtime's single slot. If prompt processing and
-  generation each get half of it, the runtime needs roughly 130 prompt tokens/s
-  and 13 generated tokens/s at the 20 s default (85 and 9 at the 30 s cap) for a
+  generation each get half of it, the runtime needs roughly 151 prompt tokens/s
+  and 12.5 generated tokens/s at the 20 s default (101 and 8.3 at the 30 s cap) for a
   median item; longer items need more. Anything slower is `MODEL_FAILURE`.
 - At the shipped launcher limits (`cpus: 2`, `--threads 2`) only models of about
-  1–2B parameters can plausibly meet that; the instrument's 7B Q4_0 model failed
-  12 of 12 items there. Measure the selected model on the shipped launcher before
-  enabling `--model`.
-- Model-stated confidence is uncalibrated. In moderation-v6 a model proposal is
+  1–2B parameters can plausibly meet that, which no run has measured. On a heavily
+  contended macOS host, without the launcher or its limits, the 7B Q4_0 model took a
+  median 50 s per v7 item on Metal and 97 s on two CPU threads (19 prompt and 6.4
+  generated tokens/s), so 0 of 12 items fit in 30 s. Measure the selected model on
+  the shipped launcher before enabling `--model`.
+- Model-stated confidence is uncalibrated. Since moderation-v6 a model proposal is
   never `AUTO_APPLY` at any confidence; every one waits for a human
   (`TestModelProposalNeverAutoApplies`). An opt-in gated on a measured evaluation
   report is separate work (A-692).
@@ -397,7 +409,7 @@ production model or the shipped launcher on a deployed host:
 
 | Disposition | Effect |
 | --- | --- |
-| `AUTO_APPLY` | Not produced in moderation-v6: a model proposal, even a confident `NO_ACTION`/`NO_FINDING`, waits for a human, and deterministic results never clear an item. Rows stored by earlier protocols keep it and show as automatic history; it never changed a marketplace entity |
+| `AUTO_APPLY` | Not produced since moderation-v6: a model proposal, even a confident `NO_ACTION`/`NO_FINDING`, waits for a human, and deterministic results never clear an item. Rows stored by earlier protocols keep it and show as automatic history; it never changed a marketplace entity |
 | `QUEUE_HUMAN` | Preserve the proposal for authorized review with a deadline |
 | `ESCALATE_ADMIN` | Mark the item for administrator attention on the existing protected surface |
 | `HOLD` | Preserve current marketplace state and evidence; take no proposed action |
@@ -768,7 +780,9 @@ generation terminates: those grammars let a runtime append whitespace without
 end, and on a real runtime every completion did. The moderation-v6 grammars
 passed the same pinned parser in 35 cases (10 accepted, 25 rejected), including
 refusals of any character after the closing brace, five whitespace characters in
-a row and a repeated reason code. A parser check still does not establish that a
+a row and a repeated reason code. moderation-v7 changes only Stage A's
+instructions: its grammar templates have the hashes recorded for those cases, but
+the native parser was not rerun for v7. A parser check still does not establish that a
 selected model terminates within budget at the shipped limits, or that its
 judgments are correct.
 

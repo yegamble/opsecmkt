@@ -24,6 +24,14 @@ func TestRegistrationCopyNamesWhoSeesThePGPKey(t *testing.T) {
 		page := html.UnescapeString(e.body("GET", "/register", "", nil, 200))
 		mustContain(t, page, warning, advice, `aria-describedby="pgp-visibility-help"`, `id="pgp-visibility-help"`)
 	}
+	// A-747: a seller's key is public on the vendor page unless the market is members-only.
+	page := html.UnescapeString(e.body("GET", "/register", "", nil, 200))
+	mustContain(t, page, "if you sell, anyone, without signing in, on your public vendor page.")
+	mustNotContain(t, page, "if you sell, every signed-in account")
+	agExec(e, `UPDATE settings SET value='members' WHERE key='site_access'`)
+	page = html.UnescapeString(e.body("GET", "/register", "", nil, 200))
+	mustContain(t, page, "if you sell, every signed-in account, and anyone without signing in if an administrator later makes the site public.")
+	mustNotContain(t, page, "on your public vendor page")
 }
 
 // A-716 (BUY98-2): the buyer's shipping panel on a paid physical order gives the steps of an encryption that writes no
@@ -37,11 +45,21 @@ func TestOrderCopyGivesShippingAddressSteps(t *testing.T) {
 	mustContain(t, html.UnescapeString(buyer),
 		"Send your shipping address",
 		"matches the fingerprint shown below",
+		"so it does not prove the key is",
+		"you are trusting this market with your address.",
+		"only if the fingerprint matched and you accept that trust",
+		"cannot read it as long as the key is really",
 		"end with Ctrl+D",
 		"no plaintext file is written",
 		"Or use your PGP application's import, then encrypt.",
 		"reads your address and can keep it; the market cannot delete their copy.",
 	)
+	// A-748: the terminal holds the block to paste, so closing it comes after the send.
+	plain := html.UnescapeString(buyer)
+	paste, closeTerminal := strings.Index(plain, "into Order correspondence below. Once"), strings.Index(plain, "close the terminal window")
+	if paste < 0 || closeTerminal < paste {
+		t.Fatalf("close instruction at %d must follow the paste step at %d", closeTerminal, paste)
+	}
 	vendor := x.page("/order?id="+order, x.vendorSess)
 	mustNotContain(t, vendor, "gpg --import vendor.asc", "the market cannot delete their copy")
 

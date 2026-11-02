@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"image/png"
 	"log"
 	"net/http"
@@ -17,7 +18,7 @@ func init() {
 	registerLoader("login", captchaLoader)
 	registerLoader("register", captchaLoader)
 	registerAction("/admin/captcha", actionSpec{Roles: []string{"admin"}, OwnTx: true, ConfirmedFormNonce: true, Run: captchaToggle})
-	registerBackground(captchaSpentSweeper)
+	registerBackground(expiredChallengeSweeper)
 	// The preview shows the default mode with no attack signal: /login has no human check.
 	registerPreview("register", func(d *PageData) {
 		d.Captcha = &CaptchaView{ID: "preview", Question: "What is seven plus five?"}
@@ -207,13 +208,13 @@ func captchaRetry(c *actionCtx, msg string) error {
 	}}
 }
 
-// captchaSpentSweepInterval is how often spent challenge ids past their expiry are deleted.
-var captchaSpentSweepInterval = time.Minute
+// challengeSweepInterval is how often expired challenge records are deleted.
+var challengeSweepInterval = time.Minute
 
-// captchaSpentSweeper deletes spent ids once they have expired. checkCaptcha refuses an expired id before
-// inserting (on the database clock), so deleting its row cannot reopen it; the one-minute margin absorbs a
-// database clock step.
-func captchaSpentSweeper(ctx context.Context, a *App) {
+// expiredChallengeSweeper deletes spent CAPTCHA ids and PGP challenges once they have expired. checkCaptcha refuses
+// an expired id before inserting (on the database clock), and every read of a PGP challenge requires expires>now(),
+// so deleting a row cannot reopen it or change the refusal; the one-minute margin absorbs a database clock step.
+func expiredChallengeSweeper(ctx context.Context, a *App) {
 	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
@@ -222,18 +223,22 @@ func captchaSpentSweeper(ctx context.Context, a *App) {
 			return
 		case <-t.C:
 		}
-		if err := a.sweepCaptchaSpent(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("captcha spent-id sweep: %s", errorCause(err)) // a class, never the driver's text (A-170)
+		if err := a.sweepExpiredChallenges(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("expired challenge sweep: %s", errorCause(err)) // a class, never the driver's text (A-170)
 		}
-		t.Reset(captchaSpentSweepInterval)
+		t.Reset(challengeSweepInterval)
 	}
 }
 
-func (a *App) sweepCaptchaSpent(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	_, err := a.db.ExecContext(ctx, "DELETE FROM captcha_spent WHERE expires<now()-interval '1 minute'")
-	return err
+// sweepExpiredChallenges attempts each table on its own time bound, so one that fails or stalls does not stop the other.
+func (a *App) sweepExpiredChallenges(ctx context.Context) error {
+	captchaCtx, cancelCaptcha := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelCaptcha()
+	_, captchaErr := a.db.ExecContext(captchaCtx, "DELETE FROM captcha_spent WHERE expires<now()-interval '1 minute'")
+	pgpCtx, cancelPGP := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelPGP()
+	_, pgpErr := a.db.ExecContext(pgpCtx, "DELETE FROM pgp_challenges WHERE expires<now()-interval '1 minute'")
+	return errors.Join(captchaErr, pgpErr)
 }
 
 func captchaToggle(c *actionCtx) (actionResult, error) {
