@@ -1149,7 +1149,7 @@ func TestXMROutageGraceOnlyAfterGapBegan(t *testing.T) {
 		}
 		return orders, sessions
 	}
-	os, ss := paid(6)
+	os, ss := paid(8)
 	before, inGap, soon := os[0], os[1], os[2]
 	x.forceDeadline(before, "ship_by=now()-interval '3 hours'")
 	x.forceDeadline(inGap, "ship_by=now()-interval '30 minutes'")
@@ -1157,6 +1157,8 @@ func TestXMROutageGraceOnlyAfterGapBegan(t *testing.T) {
 	x.forceDeadline(os[3], "ship_by=now()-interval '3 hours'") // the second round's
 	x.forceDeadline(os[4], "ship_by=now()-interval '3 hours'") // the host request's
 	x.forceDeadline(os[5], "ship_by=now()-interval '3 hours'") // the restore's
+	x.forceDeadline(os[6], "ship_by=now()-interval '3 hours'") // the watcher's request a restore overwrites
+	x.forceDeadline(os[7], "ship_by=now()-interval '3 hours'") // the host's request a found gap meets
 	x.setLastDeadlineStep("2 hours")
 	x.mustPoll()
 	x.wantRecheckRecorded(logs, "outage", 0)
@@ -1240,6 +1242,46 @@ func TestXMROutageGraceOnlyAfterGapBegan(t *testing.T) {
 	x.mustPoll()
 	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrCancelWaitFromKey); len(v) != 0 {
 		t.Fatalf("a restore kept the start of a later grace: %q", v)
+	}
+
+	// QA111-1: a restore's overwrite of a watcher's request does not narrow its grace by the gap row that request left: every
+	// order overdue waits, or a buyer's cancel opens during a restore's hold. Dropping "outage &&" from the gap's case fails here.
+	endGrace := func() {
+		t.Helper()
+		agExec(x.testEnv, "UPDATE settings SET value=to_char((now()-interval '1 minute') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') WHERE key=$1", xmrCancelWaitKey)
+	}
+	endGrace()
+	x.setLastDeadlineStep("2 hours")
+	x.A.xmrNoteDeadlineStepEarly(context.Background())
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrOutageGapFromKey); len(v) != 1 || x.recheckKey() != xmrRecheckOutage {
+		t.Fatalf("the watcher's request: gap row %q, request %q", v, x.recheckKey())
+	}
+	agExec(x.testEnv, "UPDATE settings SET value='true' WHERE key=$1", xmrReleaseRecheckKey) // restore.sh's overwrite
+	x.mustPoll()
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key IN ($1,$2)", xmrCancelWaitFromKey, xmrOutageGapFromKey); len(v) != 0 {
+		t.Fatalf("a restore's overwrite kept the gap's start: %q", v)
+	}
+	if code, body := x.xmrBuyerCancel(os[6], ss[6]); code != 409 || x.state(os[6]) != statePaid || !strings.Contains(html.UnescapeString(body), "restored its records from a backup") {
+		t.Fatalf("a restore's overwrite of a watcher's request: %d %s, order %s", code, body, x.state(os[6]))
+	}
+
+	// QA111-1: a host's pending request keeps no start when the watcher then finds a gap: the gap did not write that request, so
+	// its time is no start for it, and the order overdue before the gap still waits. n>=0 for n>0 in the check fails here.
+	endGrace()
+	if _, err := RequestDeadlineRecheck(context.Background(), x.DB); err != nil {
+		t.Fatal(err)
+	}
+	x.setLastDeadlineStep("2 hours")
+	x.A.xmrNoteDeadlineStepEarly(context.Background())
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key=$1", xmrOutageGapFromKey); len(v) != 0 {
+		t.Fatalf("a gap found under a host's request wrote a start: %q", v)
+	}
+	x.mustPoll()
+	if v := agStrings(t, x.testEnv, "SELECT value FROM settings WHERE key IN ($1,$2)", xmrCancelWaitFromKey, xmrOutageGapFromKey); len(v) != 0 {
+		t.Fatalf("a host's request, then a found gap, has a start: %q", v)
+	}
+	if code, body := x.xmrBuyerCancel(os[7], ss[7]); code != 409 || x.state(os[7]) != statePaid || !strings.Contains(html.UnescapeString(body), outageWhy) {
+		t.Fatalf("a host's request, then a found gap: %d %s, order %s", code, body, x.state(os[7]))
 	}
 }
 
