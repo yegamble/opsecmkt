@@ -1060,3 +1060,4 @@ Record `go test ./...`, relevant race tests, fresh-install and persistence resul
   explicitly, installs against retained services, and passes isolated restore and
   locked-boot checks. Configuration-bundle roundtrip tests are partial evidence
   ([steps](testnet-runbook.md#leg-replacement-application-host-a-698)).
+- [ ] A-771: `deploy recovery restore` takes `--app-bind` and `--backend-bind` for a replacement host, and the runbook's replacement leg runs in its written order (`TestRecoveryRestoreThenNewBindRendersNewAddress`, `TestRecoveryRestoreOmittedBindsKeepRetainedValues`, `TestRecoveryRestoreRefusesBadBindAndChangesNothing`, `TestRecoveryLegRestoreBindTLSReplaceRunsInWrittenOrder`). Fake encrypted host and fake Docker only: no host has run it (A-698).
