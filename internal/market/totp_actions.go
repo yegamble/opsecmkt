@@ -329,7 +329,11 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 	d.Security = s
 	// A recovery-code sign-in's one-shot notice (A-287), detailed from the current state.
 	if signin, ok := strings.CutPrefix(d.noticeCode, "signin-"); ok {
-		if n := recoverySignInNotice(signin, s, staffContactSentence(d.Settings[settingStaffContact])); n != "" {
+		contact, err := staffContactReaderSentence(ctx, a.db, d.Settings[settingStaffContact]) // A-766
+		if err != nil {
+			return err
+		}
+		if n := recoverySignInNotice(signin, s, contact); n != "" {
 			d.Notice = n
 		}
 		// The page the sign-in was for (A-126): a link on, only beside the notice. next is kept in the URL: it

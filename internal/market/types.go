@@ -123,8 +123,9 @@ type Notification struct {
 
 // StaffContactView is the administrator's staff contact (A-119, staff_contact.go): Text as saved, shown escaped;
 // Handle set only when a signed-in reader may be linked to /messages?to=<Handle>.
-// NeedsAccount: the contact is a bare handle, which only a signed-in user can message (A-517). Unreachable: a bare
-// handle no message can reach, so a signed-out reader is not told to message it (A-734).
+// NeedsAccount: the contact is a bare handle, which only a signed-in user can message (A-517). Unreachable: a staff
+// handle whose key cannot receive encrypted messages, so a signed-out reader is not told to message it (A-734). A bare
+// handle that is not active staff has no view at all (A-766, staffContactLoader).
 type StaffContactView struct {
 	Text, Handle              string
 	NeedsAccount, Unreachable bool
@@ -281,7 +282,8 @@ type PageData struct {
 	StaffListPublic bool
 	StaffList       []User
 	// StaffContact: /canary, /challenge, /login, /register, /notifications, /vendor-dashboard and /listing-edit (a
-	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset.
+	// taken-down listing, A-279), the administrator's staff contact (A-119, staff_contact.go); nil while unset or (A-766)
+	// a bare handle that is not active staff.
 	StaffContact *StaffContactView
 	// StaffContactWarnings: /admin/site and the overview's alert for it, what is wrong with the contact (A-734).
 	StaffContactWarnings []StaffContactWarning
