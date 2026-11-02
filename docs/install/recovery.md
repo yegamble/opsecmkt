@@ -52,7 +52,8 @@ intent for the invocation; it does not remotely fence or verify the old host.
 
 Prepare the replacement host using the [binary installation](binary.md) and
 [service topology](service-topology.md) instructions. Restore requires Linux and a
-fresh target whose existing ancestors contain no symlinks. The target filesystem
+fresh target whose parent directory already exists, with no symlink among its
+ancestors (`install -d -m 700 /srv/opsecmkt` makes the parent). The target filesystem
 must pass the persistent-storage check (tmpfs and ramfs are refused). Production
 also checks the current host's LUKS2 storage and swap policy before staging any
 private file; it requires the local Docker daemon for the normal storage probe.
@@ -62,8 +63,17 @@ transfer the resulting document directly through a protected stream to:
 ```sh
 opsecmkt deploy recovery restore \
   --dir /srv/opsecmkt/app \
-  --old-host-fenced
+  --old-host-fenced \
+  --app-bind 10.20.0.20:8080 \
+  --backend-bind 10.20.0.20:8443
 ```
+
+`--app-bind` and `--backend-bind` give a replacement host its own listener addresses: an explicit loopback or
+private IP and port, as `deploy init` takes them. An omitted flag keeps the retained value, so a restore without
+them on a host with another address keeps the old host's listeners, an address this host does not have. A bad
+value, or the same address for both, refuses and writes nothing; `--backend-bind` is refused on a development
+installation, which publishes no upload backend. Restore is the only command that sets them on an existing
+configuration: to correct one before installing, restore again into an absent directory.
 
 The complete offline-decrypted recovery JSON document must arrive on stdin. The
 command accepts no plaintext filename, private-key or password flag. Do not run
@@ -87,16 +97,27 @@ socket, dependency-report paths, project name and endpoint references still name
 the original deployment's locations. Restore does not create external state or
 rewrite those paths for the new host. Restore the database, wallets and retained
 state separately; follow the payment restore gate and reconcile recovery state
-before enabling transaction processing.
+before enabling transaction processing. A saved dependency-report directory must
+exist again before the next command: restore accepts its absence, and every later
+command refuses it.
 
 Production storage bindings are deliberately cleared, even if the same devices
 are attached. Recheck the restored paths and mounts, then explicitly bind the
-replacement host:
+replacement host. `deploy tls replace` and `deploy endpoint set` refuse until this
+has run, so replace a leaf after the bind:
 
 ```sh
-opsecmkt deploy plan --dir /srv/opsecmkt/app
 opsecmkt deploy storage bind --dir /srv/opsecmkt/app
+opsecmkt deploy tls replace --dir /srv/opsecmkt/app \
+  --tls-cert /srv/opsecmkt-inputs/app.pem --tls-key /srv/opsecmkt-inputs/app.key \
+  --upload-cert /srv/opsecmkt-inputs/backend.pem --upload-key /srv/opsecmkt-inputs/backend.key
+opsecmkt deploy plan --dir /srv/opsecmkt/app
+opsecmkt deploy doctor --dir /srv/opsecmkt/app
 ```
+
+Leave out `tls replace` unless a name in a leaf changed. `plan` prints both listeners; check they name this host.
+`doctor --start-check` needs the Compose file `install` writes, which the archive excludes, so it refuses before the
+first `install`.
 
 Installation/start remains refused until storage is rebound. Recreate the host's
 boot storage guard and independently review reboot readiness on the replacement

@@ -198,9 +198,11 @@ Supported `--current` service names are `postgresql`, `monerod`, `monero-wallet-
 
 The fixed release sources are PostgreSQL's `versions.json`, Go's JSON download feed, Tor's distribution directory, and the official Monero and Cisco-Talos ClamAV GitHub latest-release APIs. There is no arbitrary release URL flag. Direct queries expose the worker's source IP and query timing to those services; `--socks5` uses the explicitly configured SOCKS path instead. Ambient `HTTP_PROXY`/`HTTPS_PROXY` do not change this behavior. No application/database/payment credentials or endpoint identities are sent in the version report.
 
-Generate its independent signing identity on the worker/issuing machine, with existing destination directories:
+Generate its independent signing identity on the worker/issuing machine. The destination directories must exist first:
 
 ```sh
+install -d -m 700 ./worker-private
+install -d -m 755 ./worker-public ./reports
 ./opsecmkt keys generate audit --out ./worker-private/versions.seed \
   --public-out ./worker-public/versions.pub
 ./opsecmkt versions-worker --report ./reports/report.json \
@@ -224,6 +226,7 @@ All output paths must be distinct and their parent directories must already exis
 ### Application and signing secrets
 
 ```sh
+install -d -m 700 ./private ./public
 ./opsecmkt keys generate secret --out ./private/app.key
 ./opsecmkt keys generate audit --out ./private/audit.seed --public-out ./public/audit.pub
 ./opsecmkt keys import secret --in ./existing/app.key --out ./private/imported-app.key
@@ -236,6 +239,7 @@ All output paths must be distinct and their parent directories must already exis
 ### Offline OpenPGP recovery identity
 
 ```sh
+install -d -m 700 ./public ./offline
 ./opsecmkt keys generate pgp --name 'Escrow recovery' \
   --public-out ./public/escrow.asc --private-out ./offline/escrow-private.asc
 ./opsecmkt keys import pgp --in ./existing/public.asc --public-out ./public/imported.asc
@@ -248,6 +252,7 @@ Generation requires `--name`, `--public-out` and `--private-out`. Import require
 ### TLS CA, server and client identities
 
 ```sh
+install -d -m 700 ./public ./offline ./private
 ./opsecmkt keys generate tls-ca --name 'Upload service CA' \
   --cert-out ./public/upload-ca.pem --key-out ./offline/upload-ca.key
 ./opsecmkt keys generate tls-server --name 'Upload backend' --host app.internal,10.20.0.10 \
@@ -266,9 +271,10 @@ Server and client certificates have separate TLS usages. Use application/backend
 
 ### Onion service identities
 
-Generate separate identities on a trusted issuing machine. The parent `identities` directory must already exist; each target directory must be new:
+Generate separate identities on a trusted issuing machine. The parent `identities` directory must exist first; each target directory must be new:
 
 ```sh
+install -d -m 700 ./identities
 ./opsecmkt keys generate onion --out-dir ./identities/storefront
 ./opsecmkt keys generate onion --out-dir ./identities/administrator
 ```
@@ -299,6 +305,7 @@ Prefix generation stays in the foreground until it finds a match or is cancelled
 Generate each administrator's X25519 client identity on that administrator's machine:
 
 ```sh
+install -d -m 700 ./public ./private
 ./opsecmkt keys generate tor-client --public-out ./public/operator.auth \
   --private-out ./private/operator.key
 ```
@@ -335,6 +342,7 @@ Each lifecycle command has an equivalent root alias, such as `opsecmkt redeploy`
 | `redeploy --admin-tor-image IMAGE@sha256:DIGEST` | Same, for the private administrator Tor image only: persist it, update Compose and run `up -d --wait --wait-timeout 600 --no-deps tor-admin`. The identity volume, client authorization, application, keys and endpoints are unchanged. Refused without private administrator Tor. `redeploy` takes exactly one of `--app-image` and `--admin-tor-image`. |
 | `endpoint set --dir DIR --database-url-file FILE [--database-ca FILE]` | Replace only the imported external PostgreSQL URL and, with `--database-ca`, its CA (after a restore, point-in-time recovery or rollback). The URL file must be a regular mode-`0600` non-symlink file with a `postgres://` URL and `sslmode=verify-full`; `sslrootcert` is rewritten to the mounted CA as `init` does, and production host-separation rules apply. Takes the installation lock, refuses while an application container exists (`deploy down` first), rechecks production storage bindings, keeps every other key, endpoint, pin and the receipt byte-identical, prints no secret and starts nothing. Refused for a development installation's own Compose PostgreSQL. `deploy endpoint help` prints usage. |
 | `tls replace --dir DIR [--tls-cert FILE --tls-key FILE] [--upload-cert FILE --upload-key FILE] [--upload-ca FILE]` | Replace only the named TLS material the installation already uses, for example renewed one-year leaves. Each certificate needs its key (mode `0600`). Checks the pair, serverAuth/digitalSignature usages, validity and CA rules as `init` does. Same lock, stopped-application and storage checks as `endpoint set`; starts nothing (run `deploy up` afterwards). `deploy tls help` prints usage. |
+| `recovery restore --dir NEW_DIR [--old-host-fenced] [--app-bind IP:PORT] [--backend-bind IP:PORT]` | Restore application configuration from an offline-decrypted document on stdin into an absent directory; starts nothing. `--app-bind` and `--backend-bind` give a replacement host its own listeners, each an explicit loopback or private IP and port, and an omitted flag keeps the retained value. A bad value, or one address for both, refuses and writes nothing; `--backend-bind` is production only. Run `deploy storage bind` next. See [recover application configuration](recovery.md). |
 | `status` | Show all project containers and health. Does not report the database setup/schema status; use legacy `-status` for that. |
 | `down` | Stop/remove project containers/networks with a 60-second stop timeout. Retains all persistent volumes and private files; not a backup or erase command. |
 | `logs` | Development: at most 100 lines per service, no follow, bounded output with known secret/URL-credential redaction. Inspect before sharing. Production: explain that app Docker logging is disabled; use administrator diagnostics/status. |

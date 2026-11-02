@@ -77,6 +77,7 @@ encryption. To additionally create offline packets, give the controller a public
 OpenPGP recipient and a separate online Ed25519 report-signing seed:
 
 ```sh
+install -d -m 700 /secure/moderation /public/moderation
 ./opsecmkt keys generate audit \
   --out /secure/moderation/packet-signer.seed \
   --public-out /public/moderation/packet-signer.pub

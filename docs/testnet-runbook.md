@@ -220,7 +220,7 @@ Its source/offline checks are not a funded public result. The recorded public di
 
 ## Fresh stagenet market and rehearsals
 
-This is the owner's step list for A-699: retire the mainnet-configured, intake-paused market, build an empty stagenet market on the same hosts from the tagged build (which also does A-669's rebuild), then run the rehearsals A-562 and A-698 and the public journey PM-3 on it. A network switch in place is not possible: the network pin refuses it once escrow or bond wallet rows exist, and no command imports remote escrow material into an existing installation ([enable payments](install/enable-payments.md#native-production-with-separate-payment-services)). None of this has been run. Every `opsecmkt` flag below was checked against the source (`tests/test_runbook_rehearsals.py`), not on a host, so a refusal is a finding: stop and record it. Replace capitalized words with your own values, and keep private values in mode-`0600` files.
+This is the owner's step list for A-699: retire the mainnet-configured, intake-paused market, build an empty stagenet market on the same hosts from the tagged build (which also does A-669's rebuild), then run the rehearsals A-562 and A-698 and the public journey PM-3 on it. A network switch in place is not possible: the network pin refuses it once escrow or bond wallet rows exist, and no command imports remote escrow material into an existing installation ([enable payments](install/enable-payments.md#native-production-with-separate-payment-services)). None of this has been run. `tests/test_runbook_rehearsals.py` checks, with no host, that each `opsecmkt` flag below is one the built binary's help lists for that subcommand; it does not check a flag's value or that a command works at that point, so a refusal is a finding: stop and record it. Replace capitalized words with your own values, and keep private values in mode-`0600` files.
 
 ### What is retired
 
@@ -300,7 +300,9 @@ Prerequisite: A-694 to A-697 and the tag (A-680) have landed. The steps keep the
 4. **Make fresh identities** on the trusted machines: the storefront identity on the issuing machine, and the administrator's client key on that administrator's machine ([steps](install/tor.md#generate-the-administrators-client-key)). Copy only the `.auth` file to `admin-clients/`. `init` generates the administrator onion itself.
 
    ```sh
+   install -d -m 700 ./identities-stagenet
    ./opsecmkt keys generate onion --out-dir ./identities-stagenet/storefront
+   install -d -m 700 ./admin-public ./admin-private
    ./opsecmkt keys generate tor-client --public-out ./admin-public/stagenet.auth --private-out ./admin-private/stagenet.key
    ```
 
@@ -511,27 +513,45 @@ Then take the same steps on the production application host, at a time no order 
 
 ### Leg: replacement application host (A-698)
 
-Acceptance line: "A replacement production app host restores retained configuration, identities and current external retention state on verified encrypted storage, rebinds explicitly, installs against retained services, and passes isolated restore and locked-boot checks." **No runner**: the configuration-bundle round-trip tests are partial evidence. Follow [recover application configuration](install/recovery.md) and [rebuilding or replacing only the application](install/binary.md#rebuilding-or-replacing-only-the-application). The outage threshold will probably pass, so expect the recheck. Allow the spare host in the database's, payment proxy's and gateway's rules first.
+Acceptance line: "A replacement production app host restores retained configuration, identities and current external retention state on verified encrypted storage, rebinds explicitly, installs against retained services, and passes isolated restore and locked-boot checks." **No runner**: the configuration-bundle round-trip tests are partial evidence, and this order has never been run on a host: `TestRecoveryLegRestoreBindTLSReplaceRunsInWrittenOrder` runs the deploy commands below only on a fake encrypted host with a fake Docker. Follow [recover application configuration](install/recovery.md) and [rebuilding or replacing only the application](install/binary.md#rebuilding-or-replacing-only-the-application). The outage threshold will probably pass, so expect the recheck. Allow the spare host in the database's, payment proxy's and gateway's rules first.
 
-1. On the spare host, verify LUKS2, static addressing, host policy and the isolated restore above. Export the configuration again if it has changed.
+1. On the spare host, verify LUKS2, static addressing, host policy and the isolated restore above. That restore runs on loopback from copied key files, so it needs no address of this host and has none to change, while the live host keeps its own. It does not use `deploy recovery restore`: `--old-host-fenced` would be false until step 2. Install the tagged binary at `/usr/local/bin/opsecmkt` and configure the Docker context the installation names. Export the configuration again if it has changed.
 2. **Fence the old host**, and make sure it cannot resume the application or its onion: an administrator onion must never run from two hosts.
 
    ```sh
    /usr/local/bin/opsecmkt deploy down --dir /srv/opsecmkt/market-stagenet
    ```
 
-3. Decrypt offline and stream the recovery document directly to the new host. Copy the current retention directory through an authenticated encrypted channel. If hostnames change, reissue the leaf certificates, keeping CA keys offline, and install them with `deploy tls replace`. Then:
+3. **Move the retained state that the commands below read.** Copy the current retention directory through an authenticated encrypted channel to its saved path. Restore the public dependency-report directory at its saved path: restore accepts its absence, and every later command refuses it.
+4. **Restore with the spare host's own address.** Decrypt offline and stream the recovery document directly to the new host, into this command. `10.20.0.20` here is the spare host's private address; restore keeps the old host's listeners unless told otherwise, and they cannot be changed afterwards except by restoring again into an absent directory.
 
    ```sh
-   /usr/local/bin/opsecmkt deploy recovery restore --dir /srv/opsecmkt/market-stagenet --old-host-fenced
+   install -d -m 700 /srv/opsecmkt
+   /usr/local/bin/opsecmkt deploy recovery restore --dir /srv/opsecmkt/market-stagenet --old-host-fenced --app-bind 10.20.0.20:8080 --backend-bind 10.20.0.20:8443
+   ```
+
+5. **Bind the storage.** `tls replace` refuses until this has run.
+
+   ```sh
    /usr/local/bin/opsecmkt deploy storage bind --dir /srv/opsecmkt/market-stagenet
+   ```
+
+6. **Replace the leaves, only if a name in them changed.** The name `app.internal` stays, since restore has no flag for the saved `--app-host`, and a leaf issued as in [production section 3](install/production.md#3-prepare-application-and-gateway-identities) names only that, so skip this. A leaf that also names the old address needs reissuing, keeping CA keys offline, with the files in a new mode-`0700` directory on this host's encrypted storage, here `/srv/opsecmkt-inputs-stagenet`.
+
+   ```sh
+   /usr/local/bin/opsecmkt deploy tls replace --dir /srv/opsecmkt/market-stagenet --tls-cert /srv/opsecmkt-inputs-stagenet/app.pem --tls-key /srv/opsecmkt-inputs-stagenet/app.key --upload-cert /srv/opsecmkt-inputs-stagenet/backend.pem --upload-key /srv/opsecmkt-inputs-stagenet/backend.key
+   ```
+
+7. **Check and install.** `plan` prints both listeners: stop unless they name this host. `--start-check` needs the Compose file `install` writes, which the archive excludes, so it refuses here; a production `install` that does not become ready runs the same check and prints the refusal.
+
+   ```sh
    /usr/local/bin/opsecmkt deploy plan --dir /srv/opsecmkt/market-stagenet
-   /usr/local/bin/opsecmkt deploy doctor --dir /srv/opsecmkt/market-stagenet --start-check
+   /usr/local/bin/opsecmkt deploy doctor --dir /srv/opsecmkt/market-stagenet
    /usr/local/bin/opsecmkt deploy install --dir /srv/opsecmkt/market-stagenet
    ```
 
-4. Expect the same administrator onion, retained from `onion-admin/` into a fresh volume; a populated identity volume with another address refuses, and is never overwritten. Point the gateway at the new private address, and repeat the probes and Tor clients of the previous leg, a gateway upload, and a small funded order that reaches a confirmed settlement.
-5. **Locked boot.** Reboot the replacement, unlock by hand, and expect services to return with no other action, the storage check that `install` set up passing, and readiness again. Re-acknowledge reboot control if you use it.
+8. Expect the same administrator onion, retained from `onion-admin/` into a fresh volume; a populated identity volume with another address refuses, and is never overwritten. On the gateway host, make the name in the unit's `--app-url` and `--backend-url` resolve to the spare host's private address, by private DNS or the hosts file; if the unit names an address instead, change both URLs, and the leaves must name that address. Confirm it from the gateway, then restart `opsecmkt-gateway` so that no old connection remains. Repeat the probes and Tor clients of the previous leg, a gateway upload, and a small funded order that reaches a confirmed settlement.
+9. **Locked boot.** Reboot the replacement, unlock by hand, and expect services to return with no other action, the storage check that `install` set up passing, and readiness again. Re-acknowledge reboot control if you use it.
 
 **Record:** the deployment notes and verification.md in role names: dates, each step's result, and that the old host stayed fenced. Keep it fenced until the owner decides its fate, which is another approval.
 
