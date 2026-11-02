@@ -15,7 +15,7 @@ import (
 const (
 	noUsableKeyNote  = "cannot receive encrypted messages"
 	noUsableKeyPay   = "Payment unavailable. This vendor has no usable encryption key, so you could not send your shipping address. Ask them to add one."
-	noUsableKeyPaid  = "message the vendor or open a dispute"
+	noUsableKeyPaid  = "Never send it unencrypted. Open a dispute."
 	sendAddressLabel = "Send encrypted shipping details"
 )
 

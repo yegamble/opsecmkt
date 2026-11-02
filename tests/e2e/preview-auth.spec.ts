@@ -50,6 +50,7 @@ for (const path of ['/login', '/register']) {
       await expect(page.locator('main p.staff-contact')).toHaveText('Selling needs an approved vendor application. Ask the operator of this market.');
       // A-716: beside the PGP field, who sees the key and what it shows.
       await expect(page.locator('#pgp-visibility-help')).toContainText('Every vendor you trade with or message sees this key, including its user IDs (names and email addresses) and creation date.');
+      await expect(page.locator('#pgp-visibility-help')).toContainText('if you sell, anyone, without signing in, on your public vendor page.');
       await expect(page.locator('#pgp-visibility-help')).toContainText('Use a new key made only for this market, with a pseudonym and no real email.');
     }
     await noScriptsNoOverflow(page);
