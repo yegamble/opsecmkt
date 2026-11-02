@@ -228,8 +228,16 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          "docker compose logs app | grep 'deadline recheck'", 'monero escrow deadline recheck: cause=outage moved=N',
                          'keeps no application logs', '/srv/opsecmkt-inputs/database-restored.url',
                          'Each repeat that moves a deadline notifies', 'no request has been made',
-                         'an order overdue before the gap began'):
+                         'an order overdue before the gap began',
+                         # QA112-5: a pause of one host is an outage too, and the claim is reasoning.
+                         "A pause of only the application or database host is also an outage, and its recheck can wait until that host's clock is corrected; this is reasoning, not measured (A-765)"):
                 self.assertIn(want, flat, name)
+            # QA112-1: no guide says a peerless daemon stops nothing without the restricted RPC's exception.
+            self.assertNotIn('not synced or without peers', flat, name)
+            if name != 'docs/testnet-runbook.md':
+                self.assertIn("A restricted RPC", flat, name)
+                self.assertIn("cannot show its peers, so a synced one with an old tip waits, at most 72 hours: check the daemon's peers", flat, name)
+                self.assertIn("the administrators' notice", flat, name)
             self.assertNotIn('writes the request and nothing else', flat, name)
             self.assertNotIn('So that one can be seen', flat, name)
         # OPS105-1: after a native rollback database.url still names the upgraded database.

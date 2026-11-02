@@ -1523,7 +1523,7 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	jump := x.simDBClock()
-	_, admin := x.user("xclock_"+randomToken()[:6], "admin")
+	adminID, admin := x.user("xclock_"+randomToken()[:6], "admin")
 	physical := x.physical(x.vendor)
 	order, _, _ := x.shippedXMR(physical)
 	paid, paidSess := x.paidXMRPhysical(physical)
@@ -1531,6 +1531,10 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 	x.forceDeadline(paid, "ship_by=now()-interval '1 minute'")
 	was := x.releaseAt(order)
 	logs := captureLog(t)
+	adminNotices := func() int {
+		t.Helper()
+		return agInt(x.testEnv, "SELECT count(*) FROM notifications WHERE body LIKE 'A Monero escrow deadline recheck%' AND user_id=$1", adminID)
+	}
 
 	jump("30 days")
 	for range 3 {
@@ -1546,6 +1550,10 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 		}
 		if rows := x.recheckRecords(); len(rows) != 0 {
 			t.Fatalf("a recheck recorded while the clocks disagree: %q", rows)
+		}
+		// QA112-2: a deferred pass is no recheck, so it tells no administrator; the panel says why it waits.
+		if n := adminNotices(); n != 0 {
+			t.Fatalf("%d administrator notices while the clocks disagree", n)
 		}
 	}
 	// One line for the change, whatever the passes, with the reason and nothing of the database's or the wallet's.
@@ -1582,6 +1590,13 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 		t.Fatalf("the panel after agreement:\n%s", s)
 	}
 	x.wantRecheckRecorded(logs, "outage", 1, order)
+	// QA112-2, QA112-4: exactly one notice after agreement, reading as any recheck's, with nothing of the clocks.
+	if n := adminNotices(); n != 1 {
+		t.Fatalf("%d administrator notices after agreement, want 1", n)
+	}
+	if body := agStr(x.testEnv, "SELECT body FROM notifications WHERE body LIKE 'A Monero escrow deadline recheck%' AND user_id=$1", adminID); body != "A Monero escrow deadline recheck ran after an outage. Admin > Payments shows how many deadlines it moved and any hold on buyers' no-ship cancels." {
+		t.Fatalf("the notice of a recheck with the clocks agreeing: %q", body)
+	}
 
 	// The stated tolerance, either way, on an operator's request as on a found gap: past 5 minutes it waits, within them it runs.
 	for _, c := range []struct {
@@ -1685,7 +1700,7 @@ func TestXMROutageRecheckDaemonTip(t *testing.T) {
 	}{
 		{"not synced", func(f *fakeXMREscrow) { f.unsynced, f.tipAge = true, 30*24*time.Hour }, func(f *fakeXMREscrow) { f.unsynced, f.tipAge = false, 0 }},
 		{"tip unreadable", func(f *fakeXMREscrow) { f.tipErr = true }, func(f *fakeXMREscrow) { f.tipErr = false }},
-		{"no peers", func(f *fakeXMREscrow) { f.peers, f.tipAge = 0, 30*24*time.Hour }, func(f *fakeXMREscrow) { f.peers, f.tipAge = 8, 0 }},
+		{"unrestricted, no peers", func(f *fakeXMREscrow) { f.peers, f.tipAge = 0, 30*24*time.Hour }, func(f *fakeXMREscrow) { f.peers, f.tipAge = 8, 0 }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			near()
@@ -1695,6 +1710,25 @@ func TestXMROutageRecheckDaemonTip(t *testing.T) {
 			moved(c.name)
 		})
 	}
+	// QA112-1: a restricted RPC, the documented production form, cannot show its peers (notSynced does not read the count), so a
+	// synced one with an old tip is the disagreement above, unlike an unrestricted daemon with no peers: it waits, bounded by
+	// TestXMROutageRecheckWaitBound, and a fresh tip ends the wait.
+	t.Run("restricted, no peers, old tip waits", func(t *testing.T) {
+		near()
+		was := x.releaseAt(order)
+		x.fake.edit(func(f *fakeXMREscrow) { f.restricted, f.peers, f.tipAge = true, 0, 30*24*time.Hour })
+		defer x.fake.edit(func(f *fakeXMREscrow) { f.restricted, f.peers, f.tipAge = false, 8, 0 })
+		recheck()
+		if !x.releaseAt(order).Equal(was) || x.recheckKey() != xmrRecheckOutage {
+			t.Fatalf("restricted with an old tip: %s, was %s, request %q", x.releaseAt(order), was, x.recheckKey())
+		}
+		if s := x.recheckPanel(admin); !strings.Contains(s, daemonApartLine) {
+			t.Fatalf("the panel, restricted with an old tip:\n%s", s)
+		}
+		x.fake.edit(func(f *fakeXMREscrow) { f.tipAge = 0 })
+		recheck()
+		moved("restricted with a fresh tip")
+	})
 	t.Run("unreachable", func(t *testing.T) {
 		near()
 		x.fake.fault("get_info", fakeXMRDrop)
@@ -1746,7 +1780,7 @@ func TestXMROutageRecheckWaitBound(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	jump := x.simDBClock()
-	_, admin := x.user("xclockb_"+randomToken()[:6], "admin")
+	adminID, admin := x.user("xclockb_"+randomToken()[:6], "admin")
 	order, _, _ := x.shippedXMR(x.physical(x.vendor))
 	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
 	was := x.releaseAt(order)
@@ -1797,6 +1831,10 @@ func TestXMROutageRecheckWaitBound(t *testing.T) {
 	}
 	if s := x.recheckPanel(admin); !containsAll(s, "No deadline recheck is pending.", "It ran with the clocks still apart") {
 		t.Fatalf("the panel past the bound:\n%s", s)
+	}
+	// QA112-4: the administrators' notice says so too, one fixed clause, with no difference or date.
+	if body := agStr(x.testEnv, "SELECT body FROM notifications WHERE body LIKE 'A Monero escrow deadline recheck%' AND user_id=$1", adminID); body != "A Monero escrow deadline recheck ran after an outage, with the clocks still apart. Admin > Payments shows how many deadlines it moved and any hold on buyers' no-ship cancels." {
+		t.Fatalf("the notice past the bound: %q", body)
 	}
 }
 
