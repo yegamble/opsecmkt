@@ -383,12 +383,22 @@ func staffContactAction(c *actionCtx) (actionResult, error) {
 	})
 }
 
-// PM109-4: what a staff member reads when named or no longer named. Fixed text, naming no one.
+// PM109-4: what a staff member reads when named or no longer named. Fixed text, naming no one. A-781 PRIV-2: the contact
+// is a recipient every signed-in account may open (messageRecipient), and /messages?to= shows it the armored key only when
+// the key can receive (A-83), so exactly one of the two key sentences is true.
 const (
 	staffContactNamedNotice   = "An administrator named you as this market's staff contact. Your handle is now shown on public pages, including sign-in, and people locked out of an account may write to you. Staff never ask for a password, recovery codes or private key."
+	staffContactNamedKey      = "Your PGP public key, with its user IDs, is now shown to every signed-in account."
 	staffContactNamedNoKey    = "Your account's key cannot receive encrypted messages, so a message to you is refused: save a usable key on your account page."
 	staffContactUnnamedNotice = "An administrator removed you as this market's staff contact. Your handle is no longer shown as the way to reach the staff."
 )
+
+func staffContactNamedBody(canReceive bool) string {
+	if canReceive {
+		return staffContactNamedNotice + " " + staffContactNamedKey
+	}
+	return staffContactNamedNotice + " " + staffContactNamedNoKey
+}
 
 // tellStaffContactChange notifies, inside the saving transaction, the active staff member named by want and the one named
 // by old (PM109-4), and returns what the audit row adds. A bare handle with no active staff account is no one's staff
@@ -403,8 +413,8 @@ func tellStaffContactChange(c *actionCtx, old, want string) (string, error) {
 		if err != nil || id == "" || id == c.User.ID {
 			return err
 		}
-		if contact == want && !canReceive {
-			body += " " + staffContactNamedNoKey
+		if contact == want {
+			body = staffContactNamedBody(canReceive)
 		}
 		if _, err = insertNotification(ctx, c.Tx, id, body, ""); err != nil {
 			return err
@@ -416,6 +426,51 @@ func tellStaffContactChange(c *actionCtx, old, want string) (string, error) {
 		return "", err
 	}
 	if err := tell(old, staffContactUnnamedNotice, "; told the staff member no longer named"); err != nil {
+		return "", err
+	}
+	return told, nil
+}
+
+// lockStaffContact keeps the setting from being saved until the caller commits, for a change to an account's role or
+// suspension that tellStaffContactInForce will follow. With the save (staffContactAction, which takes this row FOR UPDATE)
+// one of the two then runs after the other has committed and reads what it did, so the pair tells the account exactly once.
+// The row is created first because FOR SHARE locks nothing that is absent. It goes before the target's row: a save holds
+// this row while its notification's foreign key waits on a role change's FOR UPDATE.
+func lockStaffContact(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,'') ON CONFLICT(key) DO NOTHING", settingStaffContact); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "SELECT 1 FROM settings WHERE key=$1 FOR SHARE", settingStaffContact)
+	return err
+}
+
+// tellStaffContactInForce notifies target, an account that this transaction is moving into (named) or out of being active
+// staff, when the saved setting is its handle: since A-766 the setting stays as saved while the handle is not active staff,
+// so such a change starts or ends the contact with nobody saving it (A-781). The caller knows the role and calls this while
+// the account's other state is as it will stay (after a restore, before a suspension), so that an account suspended
+// throughout is told nothing, and it holds lockStaffContact. It returns what the audit row adds, as tellStaffContactChange.
+func tellStaffContactInForce(ctx context.Context, tx *sql.Tx, target string, named bool) (string, error) {
+	contact, err := staffContactSetting(ctx, tx)
+	if err != nil || !staffContactNeedsAccount(contact) {
+		return "", err
+	}
+	var active bool
+	err = tx.QueryRowContext(ctx, "SELECT suspended_at IS NULL AND closed_at IS NULL AND retention_restricted_at IS NULL FROM users WHERE id=$1 AND handle=$2", target, contact).Scan(&active)
+	if err == sql.ErrNoRows || err == nil && !active {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	body, told := staffContactUnnamedNotice, "; told the staff member no longer named"
+	if named {
+		canReceive, err := userCanReceiveEncrypted(ctx, tx, target)
+		if err != nil {
+			return "", err
+		}
+		body, told = staffContactNamedBody(canReceive), "; told the staff member named"
+	}
+	if _, err = insertNotification(ctx, tx, target, body, ""); err != nil {
 		return "", err
 	}
 	return told, nil
