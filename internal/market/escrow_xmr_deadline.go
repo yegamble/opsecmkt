@@ -593,8 +593,8 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 	if err != nil {
 		return "", recheckRequestFailed(err)
 	}
-	const next = " The Monero escrow watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. "
-	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns. Confirm on Admin > Payments that it shows pending or has just run: this command writes only to the database its URL names."
+	const next = " With Monero escrow on, the watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. With ESCROW_XMR off the request stays pending until the first pass after it is on again, and a buyer's no-ship cancel past its time waits until then. "
+	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns, and run this once more when public access returns, so a buyer does not come back with minutes left. Confirm on Admin > Payments that it shows pending or has just run: this command writes only to the database its URL names."
 	if n, err := r.RowsAffected(); err != nil {
 		return "", recheckRequestFailed(err)
 	} else if n > 0 {

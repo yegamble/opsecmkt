@@ -200,6 +200,12 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          'this command is not available there',
                          'confirm on **Admin → Payments**',
                          'Repeat it within every 72 hours until ingress returns',
+                         'run it once more when ingress returns',
+                         'the request stays pending until the first pass after it is on again',
+                         "a buyer's no-ship cancel past its time waits until then",
+                         'the jump plus 72 hours',
+                         'market-wide',
+                         'no form undoes it',
                          'It cannot undo a completion',
                          "A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended"
                          if name != 'docs/testnet-runbook.md' else
@@ -210,6 +216,9 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          'If it was off for longer than the threshold, the recheck runs on the first pass after it is on again'):
                 self.assertIn(want, flat, name)
             self.assertNotIn('The recheck runs on the first pass after it is on again', flat, name)
+            # QA108-1: a false recheck is not bounded by 72 hours, and A-763 leaves cases where a cancel can still relay.
+            self.assertNotIn('a delay of up to 72 hours', flat, name)
+            self.assertNotIn('with no coins moved', flat, name)
             self.assertNotIn('./private/database.url ./opsecmkt -request-deadline-recheck', flat, name)
         # OPS105-1: after a native rollback database.url still names the upgraded database.
         rollback = ' '.join(UPGRADING[UPGRADING.index('### Rolling back a native installation'):

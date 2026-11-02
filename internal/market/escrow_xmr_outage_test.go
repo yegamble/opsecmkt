@@ -1012,6 +1012,22 @@ func TestXMROutageManualRequestAfterCompletion(t *testing.T) {
 	}
 }
 
+// A-761: the last request before public access returns can leave a buyer minutes. One more on return restores the grace.
+func TestXMROutageRecheckOnReturnRestoresFullGrace(t *testing.T) {
+	x := newXMREscrowEnv(t)
+	x.mustPoll()
+	order, _, _ := x.shippedXMR(x.physical(x.vendor))
+	x.forceDeadline(order, "release_at=now()+interval '1 hour'")
+	out, err := RequestDeadlineRecheck(context.Background(), x.DB)
+	if err != nil || !strings.HasPrefix(out, "Deadline recheck now pending (outage).") {
+		t.Fatalf("request: %q, %v", out, err)
+	}
+	x.mustPoll()
+	if d := x.releaseAt(order).Sub(x.dbNow()); d < 71*time.Hour || x.state(order) != stateShipped || x.recheckKey() != "" {
+		t.Fatalf("after the request on return: %s left, order %s, request %q", d, x.state(order), x.recheckKey())
+	}
+}
+
 // PAY101-11: the check does not wait for the watcher's lock. With another process holding it the pass does no work, yet
 // the request is set, so a dispute is accepted and a cancel refused. Processes checking at once ask once: the second
 // waits on the row and then reads the first's new time.
@@ -1084,7 +1100,7 @@ func TestAdminPaymentsDeadlineRecheck(t *testing.T) {
 		block, _, _ := strings.Cut(after, "<h3")
 		return block
 	}
-	if s := section(); !containsAll(s, "No deadline recheck is pending.", "No deadline recheck has been recorded.", "-request-deadline-recheck") || strings.Contains(s, "<form") {
+	if s := section(); !containsAll(s, "No deadline recheck is pending.", "No deadline recheck has been recorded.", "-request-deadline-recheck", "and run it once more when access returns") || strings.Contains(s, "<form") {
 		t.Fatalf("nothing pending or recorded:\n%s", s)
 	}
 	order, _, _ := x.shippedXMR(x.physical(x.vendor))

@@ -1735,9 +1735,11 @@ DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline
 On a native installation, name the host-readable URL file of the [production layout](install/production.md) for the database the installation uses now. After a [native rollback](../UPGRADING.md#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request.
 
 The command works with the app running and writes the request and nothing else. It prints whether the recheck is now pending
-or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. The
-next pass consumes the request. Repeat it within every 72 hours until ingress returns, since each request moves only deadlines
-within 72 hours of it. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
+or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. With
+Monero escrow on, the next pass consumes the request; with `ESCROW_XMR=off` the request stays pending until the first pass after
+it is on again, and a buyer's no-ship cancel past its time waits until then. Repeat it within every 72 hours until ingress returns,
+since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
+come back with minutes left of the last request's 72 hours. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
 order deadlines it moved.
 
@@ -1757,7 +1759,8 @@ requests a refund, which relays once a watcher runs:
   period runs none.
 
 Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
-than the threshold gives a false recheck: a delay of up to 72 hours and a notice, with no coins moved. So that one can be seen,
+than the threshold gives a false recheck. A jump delays every release deadline and dispute window it reaches, and the buyer's cancel
+grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. So that one can be seen,
 each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order.
 
 Tested against a database and a simulated wallet RPC, with no public network and no real outage.
