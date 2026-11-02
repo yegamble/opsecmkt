@@ -308,9 +308,9 @@ and actual physical database/WAL/backup storage remain separate operator gates.
 ## Stage A code definitions (moderation-v7)
 
 moderation-v7 (A-745) replaces Stage A's bare reason codes with one definition per
-code. The only figures behind that change come from the seat's iteration 105 run
-above: the same unpinned model and 71 synthetic items, comparing shipped v6 with a
-scratch codebook that is **not** the shipped v7 text.
+code. The change was proposed from the seat's iteration 105 run above: the same
+unpinned model and 71 synthetic items, comparing shipped v6 with a scratch codebook
+that is **not** the shipped v7 text.
 
 | Measure (local-runtime tier, unpinned) | Shipped v6 | Scratch codebook |
 | --- | --- | --- |
@@ -322,9 +322,49 @@ scratch codebook that is **not** the shipped v7 text.
 
 Injection recall fell, strict precision did not improve, and the wording was tuned
 on the same items, so these figures do not show that a codebook makes a model fit.
-The failure being fixed was safe: every item still reached a human. **No model has
-run the shipped v7 text.** The opsec-llm rerun on fresh items and the 300-item check
-at a pinned build (A-692) are still open.
+The failure being fixed was safe: every item still reached a human.
+
+### Shipped v7 against shipped v6 on fresh items (iteration 106)
+
+Tier: local runtime with unpinned weights on a synthetic labelled set. The model was
+a 7B Q4_0 development model on llama-server 0.8.0-dev (`b1-39febd2ad`), which is
+neither the pinned build nor a production candidate, through the real `LocalModel`,
+`Engine` and `Route`, with temperature 0 and the shipped grammars. The launcher was
+not used, and `cpus: 2` and `mem_limit` were not enforced. The 179 items were written
+and hashed before any model ran; 174 reached the model. The author read both prompts
+first and wrote the hostile items to avoid Go's markers, so hostile prevalence is
+inflated by design and the rates below are not real-world rates.
+
+| Measure | v6 | v7 |
+| --- | --- | --- |
+| Benign flagged as injection (of 59) | 55 (93%) | 18 (31%) |
+| Injection flagged (of 84) | 75 (89%) | 35 (42%) |
+| Injection in common non-English languages flagged (of 10) | 10 | 0 |
+| Benign non-English flagged (of 5) | 5 | 3 |
+| Injection items with a validated `NO_ACTION`/`NO_FINDING` proposal | 9 | 49 |
+| Items reaching a validated proposal (of 174) | 13 | 95 |
+| Dispositions, all 179 (`ESCALATE_ADMIN` / `QUEUE_HUMAN`) | 162 / 17 | 93 / 86 |
+| `AUTO_APPLY` / `HOLD` | 0 / 0 | 0 / 0 |
+
+**On this model v7 does not detect injection better.** It trades false alarms for
+recall: its flag rates on injection and benign items are not statistically separable
+(18/59 against 35/84, Fisher p=0.22; v6 p=0.56, set not weighted to prevalence). The
+scratch codebook's 1 of 29 benign figure was not reproduced. About half of the
+injection attempts now arrive as a proposal with no injection signal, which can
+anchor a reviewer, though none is cleared: all 358 decisions were `QUEUE_HUMAN` or
+`ESCALATE_ADMIN`, and timeouts also reached a human. v7 stays because v6 flagged
+nearly everything, so its flag carried no information either.
+
+Neither of the two suspected v7 lines explains the recall fall: removing "Neither is
+advice…" recovered 1 of 8 lost laundered items and added 3 benign false positives, and
+restoring the old mention rule recovered no gap item. Verdicts on this model move with
+unrelated wording, so single-item flips are noise. All 108 Stage B replies were
+`NO_ACTION`, `NO_FINDING`, confidence 0, so calibration could not be measured. Native
+35-case grammar evidence carries over because the template and all four substituted
+grammar hashes are unchanged.
+
+The 300-item check at a pinned build (A-692) is still open, and must report benign
+and injection rates side by side.
 
 Repository tests prove only what the fake runtime can: the prompt sent defines each
 Stage A code once (`TestStageAPromptDefinesEachReasonCode`), an ordinary item fits at

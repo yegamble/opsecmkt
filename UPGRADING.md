@@ -25,8 +25,10 @@ nothing else changes.
 With `--model` on, only Stage A's instructions change: they define each reason code once, say that an opinion about the
 product is never injection, and call `NO_FINDING` the usual result. Grammars, Go validation, routing and authority are
 the same, so a model result still waits for a human. The longer instructions use more of each item's token budget; see
-[Token budget, throughput and model size](docs/moderation-agent.md#token-budget-throughput-and-model-size). No model
-has run this text yet, so re-run your selected model's checks after upgrading rather than assuming fewer false alarms.
+[Token budget, throughput and model size](docs/moderation-agent.md#token-budget-throughput-and-model-size). On an
+unpinned development model it cut false alarms but also caught fewer injection attempts
+([evidence](docs/evidence/moderation-agent-validation.md#stage-a-code-definitions-moderation-v7)), so re-run your
+selected model's checks after upgrading and report both rates.
 Stored decisions keep their bytes and their recorded `prompt_version`. A `--replay` treats v7 as a new policy, so an
 eligible snapshot gets a new decision beside its older one.
 

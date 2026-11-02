@@ -116,9 +116,11 @@ measured fit for use at the shipped launcher limits; see
 
 Stage A defines each of its reason codes once (A-745, `moderation-v7`,
 `TestStageAPromptDefinesEachReasonCode`). This changes instructions only: no
-grammar, Go validation, routing or authority change. No model has run the shipped
-v7 text, so its effect on false alarms is unmeasured; the only figures come from a
-scratch codebook on an unpinned development model
+grammar, Go validation, routing or authority change. On an unpinned development
+model and 179 synthetic items, v7 flagged fewer benign items than v6 (18 of 59 against
+55 of 59) and fewer injection items (35 of 84 against 75 of 84), and its flag rates on
+the two were not statistically separable, so this does not show better detection or
+fitness of any model. No pinned or production model has run it
 ([evidence](evidence/moderation-agent-validation.md#stage-a-code-definitions-moderation-v7)).
 
 The model does not judge listings by text (owner directive, A-651, first in

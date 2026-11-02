@@ -380,23 +380,26 @@ production model or the shipped launcher on a deployed host:
 - Per item at `moderation-v6`, Stage A's prompt was about 487 tokens (median) and
   Stage B's about 781. Generated replies were about 83 (Stage A) and 92 (Stage B)
   tokens with the old canary, so about 60 and 70 with the short one.
-- `moderation-v7` lengthens Stage A's fixed instructions from 1,209 to 2,189 bytes.
-  The shipped text has not been measured. On the same kind of unpinned instrument
-  (iteration 105), a scratch codebook moved Stage A from about 476 to about 660
-  tokens; from the byte increase, plan on about 700. An item then costs about
-  1,480 prompt tokens and 130–175 generated tokens, against an output limit of 256
-  per stage and a prompt limit of 3,832 per stage. Stage A has 3,832 tokens for its
-  instructions and item together, so long or token-dense items reach that limit,
-  and human review without a model proposal, slightly sooner.
+- `moderation-v7` lengthens Stage A's fixed instructions from 1,209 to 2,189 bytes,
+  or from 293 to 551 tokens by the model's own tokenizer (iteration 106, an unpinned
+  7B Q4_0 model). Stage A's prompt is then 739 tokens at the median, 756 at p95 and
+  806 at most; Stage B's is 771 at the median. A clean item costs about 1,510 prompt
+  tokens and 125 generated tokens. A flagged item generated at most 161 in Stage A
+  and skips Stage B. The limits are 256 output tokens per stage and 3,832 prompt
+  tokens per stage. Stage A has 3,832 tokens for its instructions and item together,
+  so long or token-dense items reach that limit, and human review without a model
+  proposal, slightly sooner.
 - One `--model-timeout` deadline (default 20 s, at most 30 s) covers both stages,
   including queueing behind the runtime's single slot. If prompt processing and
-  generation each get half of it, the runtime needs roughly 150 prompt tokens/s
-  and 13 generated tokens/s at the 20 s default (100 and 9 at the 30 s cap) for a
+  generation each get half of it, the runtime needs roughly 151 prompt tokens/s
+  and 12.5 generated tokens/s at the 20 s default (101 and 8.3 at the 30 s cap) for a
   median item; longer items need more. Anything slower is `MODEL_FAILURE`.
 - At the shipped launcher limits (`cpus: 2`, `--threads 2`) only models of about
-  1–2B parameters can plausibly meet that; the instrument's 7B Q4_0 model failed
-  12 of 12 items there. Measure the selected model on the shipped launcher before
-  enabling `--model`.
+  1–2B parameters can plausibly meet that, which no run has measured. On a heavily
+  contended macOS host, without the launcher or its limits, the 7B Q4_0 model took a
+  median 50 s per v7 item on Metal and 97 s on two CPU threads (19 prompt and 6.4
+  generated tokens/s), so 0 of 12 items fit in 30 s. Measure the selected model on
+  the shipped launcher before enabling `--model`.
 - Model-stated confidence is uncalibrated. Since moderation-v6 a model proposal is
   never `AUTO_APPLY` at any confidence; every one waits for a human
   (`TestModelProposalNeverAutoApplies`). An opt-in gated on a measured evaluation
