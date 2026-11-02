@@ -892,6 +892,29 @@ func TestStaffContactNotStaffReadsUnsetEverywhere(t *testing.T) {
 		set("a766_ghost on this market") // names a handle, and is not one
 		readsNamed(t, "a766_ghost on this market")
 	})
+	// PM-N2: the CAPTCHA warning on /admin/security reads a non-staff handle as readers do, not as "only a handle".
+	t.Run("the CAPTCHA warning", func(t *testing.T) {
+		const onlyHandle = "the staff contact is only a handle"
+		_, admin := e.user("a766_admin", "admin")
+		agExec(e, "INSERT INTO settings(key,value) VALUES('captcha_required','true') ON CONFLICT(key) DO UPDATE SET value='true'")
+		defer agExec(e, "UPDATE settings SET value='false' WHERE key='captcha_required'")
+		security := func() string {
+			t.Helper()
+			return html.UnescapeString(e.body("GET", "/admin/security", admin, nil, 200))
+		}
+		notStaff := "the CAPTCHA is on, but the staff contact is a handle that is not an active moderator or administrator. Every place that names the contact says “" + askOperatorLine + "” instead, without this handle, so someone locked out has no one to write to. The image has no audio or text alternative"
+		set("a766_ghost")
+		p := security()
+		mustContain(t, p, notStaff)
+		mustNotContain(t, p, onlyHandle)
+		e.user("a766_activemod", "moderator")
+		set("a766_activemod")
+		p = security()
+		mustContain(t, p, onlyHandle)
+		mustNotContain(t, p, "not an active moderator or administrator")
+		set(staffContactValue)
+		mustNotContain(t, security(), onlyHandle, "not an active moderator or administrator")
+	})
 }
 
 // A-766: when the staff check itself fails, nothing claims the handle is staff, and nothing says no contact exists.
