@@ -927,7 +927,7 @@ time.sleep(60)
     def test_unhealthy_local_app_does_not_report_ready(self):
         result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_UNHEALTHY': '1'})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('did not become healthy', result.stderr)
+        self.assertIn('did not build or become healthy', result.stderr)
         self.assertNotIn('Ready.', result.stdout)
         self.assertNotIn(self.config()['SETUP_TOKEN'], result.stdout + result.stderr)  # kept for a restart
 
@@ -1797,6 +1797,29 @@ time.sleep(60)
             self.assertFalse((self.state / 'bootstrap-stdin').exists())
         else:
             self.fail(f'unexpected Bash read behavior for NUL input: {len(probe)} bytes')
+
+    def test_init_admin_failed_start_says_no_administrator(self):
+        # A-782 SRE113-5: a first init that fails at build asks for a password and then fails; the operator is told that the
+        # administrator does not exist and how to create one after the retry, with the token still in .env and no secret shown.
+        result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'],
+                                    extra_env={'INSTALLER_TEST_UNHEALTHY': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('did not build or become healthy; the message above says why', result.stderr)
+        self.assertIn('administrator was not created; after retrying use ./scripts/install.sh setup-token or '
+                      'docker compose run --rm app -bootstrap-admin first_admin', result.stderr)
+        self.assertNotIn('Ready.', result.stdout)
+        self.assertFalse([call for call in self.calls() if '-bootstrap-admin' in call])
+        config = self.config()
+        self.assertIn('SETUP_TOKEN', config)
+        self.assert_no_secret_printed(result, config)
+        self.assertNotIn(PASSWORD, result.stdout + result.stderr)
+        # With no --admin there is no administrator to speak of.
+        (self.root / '.env').unlink()
+        self.log.unlink()
+        result = self.run_installer([], arguments=['--local'], extra_env={'INSTALLER_TEST_UNHEALTHY': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('did not build or become healthy; the message above says why', result.stderr)
+        self.assertNotIn('administrator', result.stderr)
 
     def test_init_admin_failure_keeps_the_token_path(self):
         result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'],
