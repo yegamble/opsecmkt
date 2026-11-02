@@ -15,6 +15,23 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
+
+No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
+**A default the owner may overturn** (DA108-1): after an outage the watcher detects, a buyer's no-ship cancel is held only for an
+order whose ship-by time or delivery deadline fell after the gap began, or is still to come within the 72 hours. An order overdue
+before the gap can now be cancelled, where it used to be refused with a reason naming the outage. A host request knows no such
+start, so its recheck holds every order past its time unless it continues a hold that has one, and a restore's recheck is unchanged. A
+running hold now shows on **Admin → Payments** with its end, also after a recheck that moved 0 deadlines, and the command says so.
+
+`-request-deadline-recheck` now adds one audit row with no actor, *Monero deadline recheck requested from the host*, in the request's
+transaction; a pending request, the restore gate and a failed request add none. Existing audit rows are untouched and the recheck's own
+row keeps its text, so an export of old rows is byte-identical. Each repeat of the command still notifies every party it moves, with no
+floor, so [the guides](#an-outage-gives-orders-near-their-deadline-72-hours-a-730-a-732) now warn of it. They also name a way to
+confirm the request when the panel shares the failed ingress: a native production application keeps no application logs, so `deploy
+logs` cannot show it there. The buyer's banner with `ESCROW_XMR=off` no longer says the release deadline applies only once escrow is
+on again: it still closes disputes, as the refusal says. Database integration against a simulated wallet RPC, with no real outage.
+
 ## A replacement host takes its address at restore; replace a leaf after the storage bind (A-771)
 
 No migration or configuration, and nothing changes for an installation that is not being restored. `deploy recovery restore`
@@ -122,6 +139,8 @@ The recheck also records the vendor's grace, since vendors lost the time too: fo
 order whose ship-by time or delivery deadline passes before then is refused, naming the outage, and the vendor can still ship
 or deliver it.
 
+That hold applies to an order whose ship-by time or delivery deadline fell after the gap began, or is still to come within the 72 hours; an order overdue before the gap began can still be cancelled, as nothing about the outage held it up (DA108-1; a default the owner may overturn). A host request knows no such start, since nothing records when ingress failed, so unless it continues a hold that has one it holds every order past its time. **Admin → Payments** states a running hold and its end, because a recheck that moved 0 deadlines still places one, and a restore's hold still covers every order.
+
 What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
 Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
 releases go ahead. Ask for the recheck yourself as soon as ingress fails, with the host command:
@@ -133,14 +152,14 @@ docker compose run --rm --no-deps app -request-deadline-recheck
 DATABASE_URL_FILE=/srv/opsecmkt-inputs/database.url ./opsecmkt -request-deadline-recheck
 ```
 
-On a native installation, name the host-readable URL file of the [production layout](docs/install/production.md) for the database the installation uses now. After a [native rollback](#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request.
+On a native installation, name the host-readable URL file of the [production layout](docs/install/production.md) for the database the installation uses now. After a [native rollback](#rolling-back-a-native-installation) that is `/srv/opsecmkt-inputs/database-rollback.url`, and after [pointing the installation at a restored database](docs/install/production.md) it is `/srv/opsecmkt-inputs/database-restored.url`: `database.url` still names the upgraded database, so the command would succeed there and print "now pending" while this market's deadlines keep passing. Do not use `DIR/secrets/database-url`: it names the CA by its path inside the container. A native development installation's local database is not reachable this way, and running its generated Compose file by hand is not supported, so this command is not available there. Whichever form you run, confirm on **Admin → Payments** that the recheck shows pending, or that it has just run: the command's success says only that the database its URL names has the request. When that panel shares the failed ingress, confirm without it. On Compose, `docker compose logs app | grep 'deadline recheck'` shows `monero escrow deadline recheck: cause=outage moved=N` once the recheck has run, and on a native development installation `deploy logs` shows the same line. A native production application keeps no application logs (`deploy logs` says so and prints nothing), so read `SELECT key,value FROM settings WHERE key IN ('escrow_xmr_release_recheck','escrow_xmr_last_recheck')` over your protected database connection, or open the panel on the private administrator onion if that ingress still works.
 
-The command works with the app running and writes the request and nothing else. It prints whether the recheck is now pending
+The command works with the app running. A new request writes that setting and one audit row with no actor, *Monero deadline recheck requested from the host*, in one transaction, and nothing else; a repeat that finds a request pending, a refusal or a failure adds no row. It prints whether the recheck is now pending
 or was already pending; while a restore's recheck is pending, or the restore gate is set, it changes nothing and says so. With
 Monero escrow on, the next pass consumes the request; with `ESCROW_XMR=off` the request stays pending until the first pass after
 it is on again, and a buyer's no-ship cancel past its time waits until then. Repeat it within every 72 hours until ingress returns,
 since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
-come back with minutes left of the last request's 72 hours. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
+come back with minutes left of the last request's 72 hours. Each repeat that moves a deadline notifies that order's buyer and vendor again, and any deadline inside 72 hours moves every time, so four rounds are four notices to each party: repeat near the end of the 72 hours, not more often. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
 order deadlines it moved.
 
@@ -154,6 +173,8 @@ requests a refund, which relays once a watcher runs:
 
 - The gap is no longer than the threshold, which is no outage: no recheck follows either.
 - There is no stored time, or one that cannot be read: the first step after the upgrade that added it, or a hand's work.
+- Public access failed while the watcher runs and no request has been made: the watcher finds no gap, so a deadline that passes
+  is due, and until a request is pending a dispute on it is refused as late and a no-ship cancel past its time accepted.
 - For the whole time `ESCROW_XMR=off`: the watcher does not run, and marking an order shipped answers 404. While no recheck is
   pending a dispute is refused. A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has
   not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
@@ -161,8 +182,7 @@ requests a refund, which relays once a watcher runs:
 
 Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
 than the threshold gives a false recheck. A jump delays every release deadline and dispute window it reaches, and the buyer's cancel
-grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. So that one can be seen,
-each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order.
+grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. Each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order. Neither says that the outage was real: `cause=outage` reads the same for a true gap, a false one and an operator's request. A recheck a host request asked for follows a *Monero deadline recheck requested from the host* row in the audit trail; one the watcher asked for, on a true gap or a clock jump, has none.
 
 The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
 reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's

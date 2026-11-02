@@ -454,6 +454,23 @@ status_line=$("${compose[@]}" exec -T app /app/server -status)
 if "$work/verify-audit" -pub "$SMOKE_AUDIT_PUBLIC_KEY" "$work/tampered.jsonl" "$work/export.sig" 2>/dev/null; then
   echo 'verify-audit accepted a tampered export' >&2; exit 1
 fi
+# SRE110-4: the guides' Compose request for the deadline recheck, word for word after this stack's own compose arguments,
+# against the running stack. Escrow is off here, so the request stays pending with no record to wait for: check the setting
+# and its one audit row, then remove the setting from this disposable database.
+smoke_sql() {
+  if [[ "$mode" == internal ]]; then
+    "${compose[@]}" exec -T db psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt -tA -c "$1"
+  else
+    docker exec "${project}-db" psql -X -v ON_ERROR_STOP=1 -U opsecmkt -d opsecmkt -tA -c "$1"
+  fi
+}
+recheck_out=$("${compose[@]}" run --rm --no-deps app -request-deadline-recheck 2>"$work/recheck.err") \
+  || { cat "$work/recheck.err" >&2; fail "the documented deadline recheck request failed"; }
+[[ "$recheck_out" == "Deadline recheck now pending (outage)."* ]] || fail "unexpected deadline recheck output: $recheck_out"
+if grep -Eq "postgres(ql)?://|$POSTGRES_PASSWORD" <<<"$recheck_out"; then fail "the deadline recheck output names the database URL"; fi
+[[ $(smoke_sql "SELECT value FROM settings WHERE key='escrow_xmr_release_recheck'") == outage ]] || fail "the deadline recheck request is not pending"
+[[ $(smoke_sql "SELECT count(*) FROM audit_events WHERE user_id IS NULL AND action='Monero deadline recheck requested from the host'") == 1 ]] || fail "the deadline recheck request has no single audit row"
+smoke_sql "DELETE FROM settings WHERE key='escrow_xmr_release_recheck'" >/dev/null
 # The fresh escrow-only server stays healthy without any pooled wallet.
 sleep 5
 python3 -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:18090/healthz', timeout=5).read() == b'ok'"
