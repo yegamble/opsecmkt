@@ -2,6 +2,8 @@ package market
 
 import (
 	"html"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -44,6 +46,22 @@ func TestModerationRefusalKeepsQueueView(t *testing.T) {
 			}
 			mustNotContain(t, w.Body.String(), "wrong-password-123", "<script>", "Admin/Moderation")
 		})
+	}
+	// A cross-site post may not choose the view its refusal links to (mayEcho), though its session is an administrator's.
+	for _, h := range [][2]string{{"Origin", "http://evil.example"}, {"Sec-Fetch-Site", "cross-site"}} {
+		f := filtered(moderationReviewForm(id, "hold"))
+		f.Set("csrf", e.A.csrf(admin))
+		r := httptest.NewRequest("POST", moderationReviewPath, strings.NewReader(f.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set(h[0], h[1])
+		r.AddCookie(&http.Cookie{Name: "session", Value: admin})
+		w := httptest.NewRecorder()
+		e.A.AdminHandler().ServeHTTP(w, r)
+		e.check(w, 403)
+		if m := refusalBackLink.FindStringSubmatch(w.Body.String()); m == nil || m[1] != "/admin" {
+			t.Fatalf("%s: a cross-site post's back link: %v", h[0], m)
+		}
+		mustNotContain(t, w.Body.String(), "ESCALATE_ADMIN&amp;kind")
 	}
 	// The link reloads the same view.
 	page := privateHostRequest(e, "GET", view, admin, nil, true)
