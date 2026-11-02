@@ -718,6 +718,27 @@ func TestAdminSeesAndChoosesTheHumanCheckMode(t *testing.T) {
 
 // Migration 155: a market whose setting is still migration 010's untouched "true" moves to the new default; an
 // operator's recorded choice to turn it on, and "false", stay. DB integration.
+// UI107-4: each human-check radio is described by the text giving its consequences.
+func TestHumanCheckRadiosDescribeConsequences(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("dm_describe_admin", "admin")
+	for _, mode := range []string{"under_attack", "true", "false"} {
+		setCaptchaMode(e, mode)
+		page := e.body("GET", "/admin/security", admin, nil, 200)
+		for _, c := range []struct{ value, id, says string }{
+			{"under_attack", "human-check-under-attack-help", "Sign-in has no image until the attack signal is on."},
+			{"true", "human-check-always-help", "The image on every sign-in and registration."},
+			{"false", "human-check-off-help", "No check on sign-in or registration"},
+		} {
+			checked := ""
+			if c.value == mode {
+				checked = " checked"
+			}
+			mustContain(t, page, `name="captcha_required" value="`+c.value+`"`+checked+` aria-describedby="`+c.id+`">`, `<span class="help" id="`+c.id+`">`+c.says)
+		}
+	}
+}
+
 func TestMigration155KeepsAnOperatorsChoice(t *testing.T) {
 	apply := func(t *testing.T, value string, audits ...string) string {
 		t.Helper()
