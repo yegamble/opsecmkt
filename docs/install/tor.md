@@ -37,9 +37,10 @@ These are probability calculations, not measurements of this implementation. A s
 
 ### Generate or import service identity files
 
-On the trusted issuing machine, create two independent identities in new directories beneath an existing protected parent:
+On the trusted issuing machine, create two independent identities in new directories beneath a protected parent, which must exist first:
 
 ```sh
+install -d -m 700 ./identities
 ./opsecmkt keys generate onion --out-dir ./identities/storefront
 ./opsecmkt keys generate onion --out-dir ./identities/administrator
 ```
@@ -84,9 +85,10 @@ The first line fetches the image by digest. The second prints the current addres
 
 ### Generate the administrator's client key
 
-On the administrator's trusted client machine, create independent authorization outputs in existing private/public directories:
+On the administrator's trusted client machine, create independent authorization outputs in private/public directories, which must exist first:
 
 ```sh
+install -d -m 700 ./admin-public ./admin-private
 ./opsecmkt keys generate tor-client \
   --public-out ./admin-public/operator.auth \
   --private-out ./admin-private/operator.key

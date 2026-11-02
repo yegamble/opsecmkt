@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -535,5 +536,266 @@ func TestRecoveryRefusesMalformedAndConcealedPrivateConfiguredPGP(t *testing.T) 
 				t.Fatal("failed export created archive")
 			}
 		})
+	}
+}
+
+// restoredPorts reads the host ports the installation's generated Compose file publishes for the app.
+func restoredPorts(t *testing.T, compose []byte) []string {
+	t.Helper()
+	var parsed struct {
+		Services map[string]struct {
+			Ports []string `json:"ports"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(compose, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	return parsed.Services["app"].Ports
+}
+
+// A-771 (DA110-1): a replacement host takes its own address at restore; nothing else in the configuration moves,
+// and the source installation is not touched.
+func TestRecoveryRestoreThenNewBindRendersNewAddress(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	source := initProduction(t)
+	before, err := os.ReadFile(filepath.Join(source, "operator.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := recoveryExport(t, source)
+	replacementDocker(t)
+	target := filepath.Join(t.TempDir(), "restored")
+	if out, err := recoveryInvoke(plain, "restore", "--dir", target, "--old-host-fenced", "--app-bind", "10.20.0.20:8080", "--backend-bind", "10.20.0.20:8443"); err != nil {
+		t.Fatalf("restore: %v (%s)", err, out)
+	}
+	c, err := loadConfig(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AppBind != "10.20.0.20:8080" || c.BackendBind != "10.20.0.20:8443" {
+		t.Fatalf("restored binds: %q %q", c.AppBind, c.BackendBind)
+	}
+	var want Config
+	if err := json.Unmarshal(before, &want); err != nil {
+		t.Fatal(err)
+	}
+	want.AppBind, want.BackendBind, want.StorageBindings = c.AppBind, c.BackendBind, c.StorageBindings
+	if !reflect.DeepEqual(c, want) {
+		t.Fatalf("restore changed more than the listeners:\n%+v\n%+v", c, want)
+	}
+	if after, _ := os.ReadFile(filepath.Join(source, "operator.json")); !bytes.Equal(after, before) {
+		t.Fatal("restore changed the source installation")
+	}
+	if out, err := invoke(t, "storage", "bind", "--dir", target); err != nil {
+		t.Fatalf("storage bind: %v (%s)", err, out)
+	}
+	out, err := invoke(t, "plan", "--dir", target)
+	if err != nil || !strings.Contains(out, "app listener: 10.20.0.20:8080\n") || !strings.Contains(out, "upload backend listener: 10.20.0.20:8443\n") {
+		t.Fatalf("plan: %v (%s)", err, out)
+	}
+	if out, err := invoke(t, "doctor", "--dir", target); err != nil {
+		t.Fatalf("doctor: %v (%s)", err, out)
+	}
+	c, err = loadConfig(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose, _, err := render(target, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports := restoredPorts(t, compose)
+	if len(ports) != 2 || ports[0] != portMapping("10.20.0.20:8080", "8080") || ports[1] != portMapping("10.20.0.20:8443", "8443") {
+		t.Fatalf("rendered ports: %q", ports)
+	}
+}
+
+// A-771: an omitted flag keeps exactly what the document holds, one flag at a time.
+func TestRecoveryRestoreOmittedBindsKeepRetainedValues(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	dir, args := productionInitArgs(t, "database-ca.pem")
+	if out, err := invoke(t, append(args, "--app-bind", "10.20.0.10:8080", "--backend-bind", "10.20.0.10:8443")...); err != nil {
+		t.Fatalf("init: %v (%s)", err, out)
+	}
+	plain, _ := recoveryExport(t, dir)
+	for _, tc := range []struct {
+		name         string
+		flags        []string
+		app, backend string
+	}{
+		{"both omitted", nil, "10.20.0.10:8080", "10.20.0.10:8443"},
+		{"only app", []string{"--app-bind", "10.20.0.20:8080"}, "10.20.0.20:8080", "10.20.0.10:8443"},
+		{"only backend", []string{"--backend-bind", "10.20.0.20:8443"}, "10.20.0.10:8080", "10.20.0.20:8443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "restored")
+			if out, err := recoveryInvoke(plain, append([]string{"restore", "--dir", target, "--old-host-fenced"}, tc.flags...)...); err != nil {
+				t.Fatalf("restore: %v (%s)", err, out)
+			}
+			c, err := loadConfig(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.AppBind != tc.app || c.BackendBind != tc.backend {
+				t.Fatalf("got %q %q", c.AppBind, c.BackendBind)
+			}
+		})
+	}
+}
+
+// A-771: a bad bind refuses before anything is staged. A listener cannot be amended after restore, so two listeners
+// on one address, which only install would otherwise fail on, are refused here too.
+func TestRecoveryRestoreRefusesBadBindAndChangesNothing(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	source := initProduction(t)
+	plain, _ := recoveryExport(t, source)
+	for _, bad := range []string{"", "8.8.8.8:8080", "0.0.0.0:8080", "10.20.0.20", "app.internal:8080", "10.20.0.20:70000", "[2001:4860:4860::8888]:8080"} {
+		for _, name := range []string{"--app-bind", "--backend-bind"} {
+			parent := t.TempDir()
+			if _, err := recoveryInvoke(plain, "restore", "--dir", filepath.Join(parent, "restored"), "--old-host-fenced", name, bad); err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "nothing was written") {
+				t.Fatalf("%s %q: %v", name, bad, err)
+			}
+			if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+				t.Fatalf("%s %q left %v (%v)", name, bad, entries, err)
+			}
+		}
+	}
+	parent := t.TempDir()
+	if _, err := recoveryInvoke(plain, "restore", "--dir", filepath.Join(parent, "restored"), "--old-host-fenced", "--app-bind", "10.20.0.20:8080", "--backend-bind", "10.20.0.20:8080"); err == nil || !strings.Contains(err.Error(), "same address") {
+		t.Fatalf("one address for both listeners: %v", err)
+	}
+	if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+		t.Fatal("refused listeners left state behind")
+	}
+	_, public := recoveryKey(t)
+	if _, err := recoveryInvoke(nil, "export", "--dir", source, "--recipient-public-key", public, "--out", filepath.Join(t.TempDir(), "archive"), "--app-bind", "10.20.0.20:8080"); err == nil {
+		t.Fatal("export accepted a restore flag")
+	}
+}
+
+// A-771: development publishes no upload backend, so a --backend-bind there would be accepted and do nothing.
+func TestRecoveryRestoreRefusesBackendBindOnDevelopment(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	plain, _ := recoveryExport(t, initDev(t))
+	parent := t.TempDir()
+	target := filepath.Join(parent, "restored")
+	if _, err := recoveryInvoke(plain, "restore", "--dir", target, "--backend-bind", "10.20.0.20:8443"); err == nil || !strings.Contains(err.Error(), "--backend-bind") {
+		t.Fatalf("development backend bind: %v", err)
+	}
+	if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+		t.Fatal("refusal left state behind")
+	}
+	if out, err := recoveryInvoke(plain, "restore", "--dir", target, "--app-bind", "127.0.0.1:18080"); err != nil {
+		t.Fatalf("development app bind: %v (%s)", err, out)
+	}
+	if c, err := loadConfig(target); err != nil || c.AppBind != "127.0.0.1:18080" {
+		t.Fatalf("development app bind: %q %v", c.AppBind, err)
+	}
+}
+
+// replacementLegCommands reads the deploy commands the runbook's replacement leg gives, from the restore on.
+func replacementLegCommands(t *testing.T) [][]string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "testnet-runbook.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, leg, ok := strings.Cut(string(data), "### Leg: replacement application host")
+	if !ok {
+		t.Fatal("the runbook has no replacement leg")
+	}
+	leg, _, _ = strings.Cut(leg, "### Recording the results")
+	var commands [][]string
+	for _, line := range strings.Split(leg, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "/usr/local/bin/opsecmkt deploy ")
+		if !ok {
+			continue
+		}
+		if words := strings.Fields(rest); len(commands) > 0 || words[0] == "recovery" {
+			commands = append(commands, words)
+		}
+	}
+	return commands
+}
+
+// A-771 (DA110-2): the leg's own commands, read from the runbook, in its order, on the fake encrypted host. Each
+// earlier place for tls replace refuses, and so does doctor --start-check before install writes compose.json.
+func TestRecoveryLegRestoreBindTLSReplaceRunsInWrittenOrder(t *testing.T) {
+	allowRecoveryFilesystem(t)
+	plain, _ := recoveryExport(t, initProduction(t))
+	replacementDocker(t)
+	inputs := t.TempDir()
+	cert, key := testTLSMaterial(t, false)
+	for name, body := range map[string][]byte{"app.pem": cert, "app.key": key, "backend.pem": cert, "backend.key": key} {
+		if err := os.WriteFile(filepath.Join(inputs, name), body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := filepath.Join(t.TempDir(), "restored")
+	run := func(words []string) (string, error) {
+		args := make([]string, len(words))
+		for i, word := range words {
+			args[i] = strings.ReplaceAll(strings.ReplaceAll(word, "/srv/opsecmkt/market-stagenet", target), "/srv/opsecmkt-inputs-stagenet", inputs)
+		}
+		var out bytes.Buffer
+		err := Run(context.Background(), args, bytes.NewReader(plain), &out, &out)
+		return out.String(), err
+	}
+	commands := replacementLegCommands(t)
+	var order []string
+	var tlsReplace []string
+	for _, words := range commands {
+		name := words[0]
+		if name == "recovery" || name == "storage" || name == "tls" {
+			name += " " + words[1]
+		}
+		order = append(order, name)
+		if name == "tls replace" {
+			tlsReplace = words
+		}
+	}
+	want := []string{"recovery restore", "storage bind", "tls replace", "plan", "doctor", "install"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("the leg's order is %q, want %q", order, want)
+	}
+	if _, err := run(tlsReplace); err == nil || !strings.Contains(err.Error(), "installation directory is unavailable") {
+		t.Fatalf("tls replace before the directory exists: %v", err)
+	}
+	for i, words := range commands {
+		if order[i] == "doctor" {
+			if slicesContain(words, "--start-check") {
+				t.Fatal("the leg runs --start-check before install writes compose.json")
+			}
+			if _, err := invoke(t, "doctor", "--dir", target, "--start-check"); err == nil || !strings.Contains(err.Error(), "run deploy install first") {
+				t.Fatalf("doctor --start-check before install: %v", err)
+			}
+		}
+		if out, err := run(words); err != nil {
+			t.Fatalf("%v: %v (%s)", words, err, out)
+		}
+		if order[i] == "recovery restore" {
+			if _, err := run(tlsReplace); err == nil || !strings.Contains(err.Error(), "storage bind") {
+				t.Fatalf("tls replace before storage bind: %v", err)
+			}
+		}
+	}
+	c, err := loadConfig(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AppBind == "127.0.0.1:8080" || c.BackendBind == "127.0.0.1:8443" {
+		t.Fatalf("the leg's restore kept the retained address: %q %q", c.AppBind, c.BackendBind)
+	}
+	compose, err := os.ReadFile(filepath.Join(target, "compose.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ports := restoredPorts(t, compose)
+	if len(ports) != 2 || ports[0] != portMapping(c.AppBind, "8080") || ports[1] != portMapping(c.BackendBind, "8443") {
+		t.Fatalf("installed ports: %q for %q %q", ports, c.AppBind, c.BackendBind)
+	}
+	replaced, err := os.ReadFile(filepath.Join(target, c.TLSFiles["TLS_CERT"]))
+	if err != nil || !bytes.Equal(replaced, cert) {
+		t.Fatalf("tls replace did not take effect: %v", err)
 	}
 }

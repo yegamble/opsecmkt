@@ -34,7 +34,13 @@ retains existing service references for application-only redeployment; see
 [Service topology and sizing](install/service-topology.md). Explicit, separately
 invoked commands replace only what they name: `deploy endpoint set` the imported
 database URL/CA, `deploy tls replace` the TLS leaves or upload CA, and
-`deploy redeploy --admin-tor-image` the administrator Tor image (A-695,
+`deploy redeploy --admin-tor-image` the administrator Tor image, and
+`deploy recovery restore --app-bind --backend-bind` a replacement host's own
+listeners, an omitted flag keeping the retained value (A-771, proved only on a
+fake encrypted host and fake Docker,
+`TestRecoveryRestoreThenNewBindRendersNewAddress`,
+`TestRecoveryLegRestoreBindTLSReplaceRunsInWrittenOrder`; the replacement-host
+leg of `docs/testnet-runbook.md` has never been run on a host) (A-695,
 `TestEndpointSetReplacesDatabaseURLAndCAOnly`,
 `TestEndpointSetRefusesInsecureURLAndUnsafeFile`,
 `TestTLSReplaceAcceptsRenewedLeafAndRefusesMismatchedKey`,
