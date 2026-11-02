@@ -89,6 +89,16 @@ func concedeAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
+		zero, live, err := xmrAtZero(ctx, c.Tx, orderID, seen)
+		if err != nil {
+			return actionResult{}, err
+		}
+		if zero { // A-770: no one receives a release or refund now, so the record and the notice say so
+			tctx = withNoticeDetail(tctx, orderID, to, xmrZeroNotice(c.Form.Get("outcome"), live))
+			if _, err = c.Tx.ExecContext(ctx, "UPDATE disputes SET resolution=$1 WHERE id=$2", "The "+party+" conceded the dispute. "+xmrZeroNotice(c.Form.Get("outcome"), live), c.Form.Get("id")); err != nil {
+				return actionResult{}, err
+			}
+		}
 		if _, err = c.A.transition(tctx, c.Tx, orderID, stateDisputed, to, c.User, status); err != nil {
 			return actionResult{}, err
 		}

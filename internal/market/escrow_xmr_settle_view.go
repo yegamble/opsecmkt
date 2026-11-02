@@ -66,6 +66,7 @@ func (a *App) xmrSettlementViews(ctx context.Context, d *PageData, v *XMREscrowO
 		}
 		if s.stored = s.TxHash != ""; s.stored {
 			s.Fee, s.InputTotal = amount(fee, 12), amount(total, 12)
+			v.NothingCounted = false // A-770: a transaction exists, so "nothing is sent" would be false
 		}
 		out = append(out, s)
 	}
@@ -186,6 +187,8 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 			s.Status = "Waiting: Monero escrow is unavailable on this market right now, so the market builds this settlement once it is available again."
 		case why != "":
 			s.Status = "Not built yet. " + why
+		case v.NothingCounted && s.kind != "stray_refund": // A-770
+			s.Status = "Requested: no deposit to this escrow counts now, so the market sends nothing now. It builds this transaction and sends it once the network lists the deposit again and it has confirmed."
 		}
 	case "built":
 		s.Status = "Built, checked and stored; the market sends it on its next pass. Nothing has been sent yet."

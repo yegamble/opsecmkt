@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,43 @@ import (
 // states. On a draft that can use it the buyer is offered Monero escrow checkout (escrow_xmr_create.go). The order's
 // actions are narrowed to those a Monero escrow order can take, as escrowOrder does for a Bitcoin one. Nothing here
 // makes an RPC.
+
+// What a form, panel or notice says at zero counted (A-770): nothing is sent now, and how a deposit goes if the network
+// lists it again. On an order whose coins go back to the buyer it is left out and returned by a stray refund
+// (xmrLeaveOutUncounted); on one decided for the vendor it counts for the order, and the vendor's claim pays it.
+const (
+	xmrNothingSent       = "no counted coins are in this escrow, so nothing is sent now"
+	xmrNothingCounts     = "no deposit to this escrow counts now, so nothing is sent now"
+	xmrListedAgainRefund = "if the network lists the deposit again, it goes back, less the network fee, to the buyer's refund address by a stray refund once it has confirmed (a stray refund is a separate transaction the market builds and sends for coins that did not count for the order)"
+	xmrListedAgainClaim  = "if the network lists the deposit again, it goes to the vendor, who claims it on the order page with a fresh address, and the market builds the release from this order's escrow account and sends it once it has confirmed"
+	xmrListedAgainLive   = "if the network lists the deposit again, it goes to the vendor by the release already requested, which the market builds and sends once the deposit has confirmed"
+	xmrDepositMissing    = "Conflicted or missing — not counted"
+)
+
+// xmrZeroNotice ends the notice of a decision or concession that found no counted coins (xmrAtZero): live says a release
+// is already requested, so no claim is needed.
+func xmrZeroNotice(outcome string, live bool) string {
+	again := xmrListedAgainRefund
+	switch {
+	case outcome == "release" && live:
+		again = xmrListedAgainLive
+	case outcome == "release":
+		again = xmrListedAgainClaim
+	}
+	return sentenceStart(xmrNothingSent) + ": " + again + "."
+}
+
+// xmrAtZero reports whether a form that stated seen says order is a Monero escrow with no counted coins and no settlement
+// with a transaction, and whether a release or refund is already live. The transition hook's checkPayoutSeen refuses a
+// seen that is not the amount counted under the order's lock, so a zero that commits was true.
+func xmrAtZero(ctx context.Context, q rowQuerier, orderID string, seen int64) (zero, live bool, err error) {
+	if seen != 0 {
+		return false, false, nil
+	}
+	err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM escrows es WHERE es.order_id=$1 AND es.coin='XMR')
+		AND NOT EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=$1 AND s.tx_hash IS NOT NULL),`+xmrLiveOutcomeSQL("$1"), orderID).Scan(&zero, &live)
+	return zero, live, err
+}
 
 // xmrEscrowOrder fills the Monero escrow panel of a Monero escrow order for loadOrderDetail. A Monero escrow order
 // always gets it, with ESCROW_XMR off too (it then says Monero escrow is unavailable), never the pooled payment panel.
@@ -78,7 +116,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		case locked:
 			dep.State = "Locked (it has an unlock time) — not counted; market staff were notified"
 		case dep.Confirmations < 0:
-			dep.State = "Conflicted or missing — not counted"
+			dep.State = xmrDepositMissing
 		case afterClose:
 			dep.State = "Arrived after the order closed — not counted; returned to the buyer's refund address"
 			afterCloseSeen++
@@ -110,6 +148,28 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	// A-770: a paid order that a missing deposit left with too little counted. Its state stays paid (the watcher does not
+	// unfund an order), and the deposit counts again if the wallet lists it again, so its copy is hedged. Nothing is
+	// counted (xmrSettlementViews clears it once a settlement has its transaction): nothing is sent now.
+	short := false
+	if o.State == statePaid && received+pending < required {
+		check := "The buyer can check this transaction in their own wallet."
+		if d.OrderViewer == roleBuyer {
+			check = "Check this transaction in your own wallet."
+		}
+		for i := range v.Deposits {
+			if v.Deposits[i].State == xmrDepositMissing {
+				short = true
+				v.Deposits[i].State += ". " + check + " If the network lists it again, it counts again."
+			}
+		}
+	}
+	v.NothingCounted, v.refundAsked, v.leftOut = received+pending == 0 && len(v.Deposits) > 0, refundAsked, leftOutSeen > 0
+	v.shortCounted = short
+	funded, refunded, thenRefunded, claimCoins := "Funded", xmrRefunded(short, "the escrow is refunded"), xmrRefunded(short, "the escrow is then refunded"), "claim the coins"
+	if short {
+		funded, claimCoins = "Paid, but a deposit to this escrow may have been dropped or replaced on the network: it is not counted now, so less than the price counts", "claim whatever is counted then"
+	}
 	v.Confirmed, v.Unconfirmed, v.Remaining, v.NeedsTopUp = amount(received, 12), amount(pending, 12), amount(remaining, 12), remaining > 0
 	for _, s := range []*string{&v.Confirmed, &v.Unconfirmed, &v.Remaining} {
 		if *s == "" {
@@ -135,15 +195,15 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	case o.State == stateAwaitingPayment:
 		v.Status = "Confirmed deposits are below the price"
 	case o.State == statePaid && o.Kind == "physical":
-		v.Status, v.NextStep = "Funded", "The vendor ships the goods; the order stays open until it is shipped and settled. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		v.Status, v.NextStep = funded, "The vendor ships the goods; the order stays open until it is shipped and settled. If the vendor cancels it instead, "+refunded+" to the buyer."
 		if shipBy.Valid {
-			v.NextStep += " Ship by " + utcFrom(shipBy.Time) + " (the listing's dispatch window plus 48 hours, from payment): if the order is not marked shipped by then, the buyer may cancel it and the escrow is refunded to the buyer."
+			v.NextStep += " Ship by " + utcFrom(shipBy.Time) + " (the listing's dispatch window plus 48 hours, from payment): if the order is not marked shipped by then, the buyer may cancel it and " + refunded + " to the buyer."
 		}
 	case o.State == statePaid:
 		// A-709: the delivery deadline (ship_by, escrowTransitionHook) and the dispute window that follows delivery.
-		v.Status, v.NextStep = "Funded", "The vendor delivers the digital content; the buyer then has "+strconv.Itoa(disputeWindowHours)+" hours to check it and open a dispute, or to confirm receipt, before the order completes and the vendor can claim the coins. If the vendor cancels it instead, the escrow is refunded to the buyer."
+		v.Status, v.NextStep = funded, "The vendor delivers the digital content; the buyer then has "+strconv.Itoa(disputeWindowHours)+" hours to check it and open a dispute, or to confirm receipt, before the order completes and the vendor can "+claimCoins+". If the vendor cancels it instead, "+refunded+" to the buyer."
 		if shipBy.Valid {
-			v.NextStep += " Deliver by " + utcFrom(shipBy.Time) + " (" + strconv.Itoa(digitalDeliveryHours) + " hours from payment): if the content is not delivered by then, the buyer may cancel the order and the escrow is refunded to the buyer."
+			v.NextStep += " Deliver by " + utcFrom(shipBy.Time) + " (" + strconv.Itoa(digitalDeliveryHours) + " hours from payment): if the content is not delivered by then, the buyer may cancel the order and " + refunded + " to the buyer."
 		}
 	case o.State == stateShipped:
 		v.Status = "Funded and shipped"
@@ -177,7 +237,7 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		v.Status = "Cancelled. This escrow cannot be checked right now because Monero escrow is unavailable, so a deposit to it may not be shown here."
 		v.Unread = "Not read while Monero escrow is unavailable"
 	case o.State == stateCancelled && len(v.Deposits) > 0: // BE103-1: seen, but none counted, so not "nothing was received"
-		v.Status = "Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded. A deposit that returns goes back, less the network fee, to the buyer's refund address by a stray refund once it has confirmed."
+		v.Status = "Cancelled; no deposit to this escrow counted when the order was cancelled, so nothing was refunded. " + sentenceStart(xmrListedAgainRefund) + "."
 	case o.State == stateCancelled:
 		v.Status = "Cancelled; nothing was received in this escrow"
 	default:
@@ -188,6 +248,18 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 	}
 	if v.Settlements, err = a.xmrSettlementViews(ctx, d, v); err != nil {
 		return err
+	}
+	if v.NothingCounted { // A-770
+		switch o.State {
+		case stateShipped:
+			v.Status = "Shipped; no deposit to this escrow counts now"
+		case stateDelivered:
+			v.Status = "Delivered; no deposit to this escrow counts now"
+		case stateCompleted:
+			v.Status = "Completed; no deposit to this escrow counts now"
+		case stateDisputed:
+			v.NextStep = "An administrator of this market decides the dispute. No deposit to this escrow counts now, so the decision sends nothing now. If the network lists the deposit again, it goes by the decision: to the buyer's refund address by a stray refund, a separate transaction the market builds and sends for coins that did not count for the order, or to the vendor by the release."
+		}
 	}
 	d.XMREscrow = v
 	if err = a.xmrReleaseView(ctx, d, v); err != nil {
@@ -221,23 +293,37 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 				done = "delivered"
 			}
 			if outage { // A-730
-				t.Action, t.Label = "", "You can cancel from "+utcFrom(cancelWait.Time)+" if the vendor has not "+done+" this order by then: "+outageWhy+", and the vendor may not have been able to in that time. The escrow is then refunded to your refund address."
+				t.Action, t.Label = "", "You can cancel from "+utcFrom(cancelWait.Time)+" if the vendor has not "+done+" this order by then: "+outageWhy+", and the vendor may not have been able to in that time. "+sentenceStart(thenRefunded)+" to your refund address."
 				break
 			}
-			t.Action, t.Label = "", "You can cancel from "+utcFrom(cancelWait.Time)+" if the vendor has not "+done+" this order by then: this market restored its records from a backup, and the vendor may have "+done+" it after that backup was taken. The escrow is then refunded to your refund address."
+			t.Action, t.Label = "", "You can cancel from "+utcFrom(cancelWait.Time)+" if the vendor has not "+done+" this order by then: this market restored its records from a backup, and the vendor may have "+done+" it after that backup was taken. "+sentenceStart(thenRefunded)+" to your refund address."
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipByOpen && o.Kind == "digital":
-			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not delivered the content by then; the escrow is then refunded to your refund address."
+			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not delivered the content by then; "+thenRefunded+" to your refund address."
 		case t.To == stateCancelled && o.State == statePaid && d.OrderViewer == roleBuyer && !shipByOpen:
-			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; the escrow is then refunded to your refund address."
+			t.Action, t.Label = "", "You can cancel from "+utcFrom(shipBy.Time)+" if the vendor has not shipped the order by then; "+thenRefunded+" to your refund address."
 		case t.To == stateCancelled && counted > 0:
 			t.Payout = &PayoutPreview{Seen: counted, Confirm: "Cancelling refunds the " + a.escrowAmount(o, counted) + " in this escrow, less the network fee, to the buyer's refund address given at checkout. The market builds and sends the refund transaction. This is final."}
 		case t.To == stateCancelled && o.State == statePaid: // BE103-1: a cancel of a paid order always needs the confirmation (cancelAction)
-			t.Payout = &PayoutPreview{Confirm: "No counted coins are in this escrow, so cancelling refunds nothing unless the deposit returns: the market sends nothing now, and a deposit that returns after the cancel goes back, less the network fee, to the buyer's refund address by a stray refund once it has confirmed. This is final."}
+			t.Payout = &PayoutPreview{Confirm: "No counted coins are in this escrow, so cancelling refunds nothing now: the market sends nothing, and " + xmrListedAgainRefund + ". This is final."}
 		}
 		kept = append(kept, t)
 	}
 	d.Transitions = kept
 	return nil
+}
+
+// xmrRefunded is what a refund sentence of a paid order says is refunded: funded, or with too little counted (A-770) what
+// is counted when the cancel is made.
+func xmrRefunded(short bool, funded string) string {
+	if short {
+		return "whatever is counted then is refunded"
+	}
+	return funded
+}
+
+// sentenceStart capitalises s, which starts with an ASCII letter.
+func sentenceStart(s string) string {
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // xmrStrayStatus ends a cancelled Monero order's status about a deposit that did not count (A-435), after "It", by the
@@ -370,13 +456,13 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	case o.State == statePaid && recheckAsked && (shipByOpen || cancelWait.Valid): // A-714: the buyer's cancel waits (noShipCancel)
 		v.NextStep += " The buyer's cancel waits while this market's records are being reconciled after a restore from backup: the vendor may have shipped or delivered this order after that backup was taken. It is offered 72 hours after the market has rechecked its escrow deadlines, if the order has not been shipped or delivered by then; reload this page later."
 	case o.State == statePaid && cancelWait.Valid && outage: // A-730
-		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ": " + outageWhy + ", and the vendor may not have been able to ship or deliver this order in that time, so has until then to do so. If that is not done by then, the buyer may cancel the order and the escrow is refunded to the buyer's refund address."
+		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ": " + outageWhy + ", and the vendor may not have been able to ship or deliver this order in that time, so has until then to do so. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.shortCounted, "the escrow is refunded") + " to the buyer's refund address."
 	case o.State == statePaid && cancelWait.Valid: // A-720: so does it in the vendor's grace after the recheck
-		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ", after this market's restore from backup: the vendor may have shipped or delivered this order after that backup was taken, and has until then to do so again. If that is not done by then, the buyer may cancel the order and the escrow is refunded to the buyer's refund address."
+		v.NextStep += " The buyer's cancel waits until " + utcFrom(cancelWait.Time) + ", after this market's restore from backup: the vendor may have shipped or delivered this order after that backup was taken, and has until then to do so again. If that is not done by then, the buyer may cancel the order and " + xmrRefunded(v.shortCounted, "the escrow is refunded") + " to the buyer's refund address."
 	case o.State == statePaid && o.Kind == "physical" && shipByOpen:
-		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and the escrow is then refunded to the buyer's refund address."
+		v.NextStep += " The ship-by time has passed and the order is not marked shipped: the buyer may now cancel it, and " + xmrRefunded(v.shortCounted, "the escrow is then refunded") + " to the buyer's refund address."
 	case o.State == statePaid && shipByOpen:
-		v.NextStep += " The delivery deadline has passed and the content is not delivered: the buyer may now cancel it, and the escrow is then refunded to the buyer's refund address."
+		v.NextStep += " The delivery deadline has passed and the content is not delivered: the buyer may now cancel it, and " + xmrRefunded(v.shortCounted, "the escrow is then refunded") + " to the buyer's refund address."
 	case (o.State == stateShipped || o.State == stateDelivered) && releaseAt.Valid:
 		remaining := time.Duration(left.Float64 * float64(time.Second))
 		// closed: lateDispute's rule, so the page offers no dispute the action would refuse (PM-4).
@@ -396,10 +482,21 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 			}
 		}
 		v.NextStep = xmrDeadlineNextStep(d.OrderViewer, v.Deadline, v.RestorePaused)
+		if v.NothingCounted { // A-770
+			v.NextStep += " No deposit to this escrow counts now, so until the network lists the deposit again the market has no coins to send."
+		}
 	case o.State == stateDisputed && releaseAt.Valid:
 		v.NextStep += " The release deadline of " + utcUntil(releaseAt.Time) + " no longer applies: opening the dispute cancelled it for good."
+	case o.State == stateCompleted && v.NothingCounted && live: // A-770
+		v.NextStep = sentenceStart(xmrNothingCounts) + ": " + xmrListedAgainLive + "."
+	case o.State == stateCompleted && v.NothingCounted:
+		v.NextStep = "Who acts next: the vendor, who can claim on this page with a fresh address, but " + xmrNothingCounts + ": " + xmrListedAgainClaim + "."
 	case o.State == stateCompleted && !live:
 		v.NextStep = "Who acts next: the vendor, who claims the escrowed coins on this page with a fresh address; the market then builds the release from this order's escrow account and sends it."
+	case o.State == stateResolved && outcome == "release" && v.NothingCounted && live: // A-770
+		v.NextStep = "The dispute was decided for the vendor, but " + xmrNothingCounts + ": " + xmrListedAgainLive + ". The release deadline no longer applies."
+	case o.State == stateResolved && outcome == "release" && v.NothingCounted:
+		v.NextStep = "The dispute was decided for the vendor, but " + xmrNothingCounts + ": if the network lists the deposit again, it goes to the vendor. The vendor can claim on this page with a fresh address, and the market builds the release and sends it once the deposit has confirmed."
 	case o.State == stateResolved && outcome == "release" && live:
 		v.NextStep = "The dispute was decided for the vendor: the release to the vendor requested when the order was shipped pays the vendor; the market builds it from this order's escrow account and sends it. The release deadline no longer applies."
 	case o.State == stateResolved && outcome == "release":
@@ -407,6 +504,12 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	case o.State == stateResolved && outcome == "refund" && tooFew:
 		// A-437: the refund's coins were too few, so it ended and they were left out for a stray refund (xmrRefundTooFew).
 		v.NextStep = "The dispute was decided for the buyer, but the market could not send the refund because the coins were too few to pay the network fee and an output of at least " + amount(minPayoutXMR, 12) + " XMR. A stray refund returns them, together with any later deposit, less the network fee, to the buyer's refund address once together they can pay the network fee."
+	case o.State == stateResolved && outcome == "refund" && !v.refundAsked && v.leftOut: // A-770: as escrowSettleTerminal requested none
+		v.NextStep = "The dispute was decided for the buyer, but no deposit to this escrow counted when the dispute was decided, so no refund was requested. A deposit that has confirmed since goes back, less the network fee, to the buyer's refund address by a stray refund, a separate transaction the market builds and sends for coins that did not count for the order."
+	case o.State == stateResolved && outcome == "refund" && !v.refundAsked:
+		v.NextStep = "The dispute was decided for the buyer, but no deposit to this escrow counted when the dispute was decided, so nothing is sent now: " + xmrListedAgainRefund + "."
+	case o.State == stateResolved && outcome == "refund" && v.NothingCounted:
+		v.NextStep = "The dispute was decided for the buyer, but " + xmrNothingCounts + ": if the network lists the deposit again, the market builds the refund below and sends it once it has confirmed."
 	case o.State == stateResolved && outcome == "refund":
 		v.NextStep = "The dispute was decided for the buyer: the coins in this escrow go back to the buyer's refund address by a refund the market builds and sends."
 	}
