@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -352,6 +353,60 @@ func TestAdminSecurityShowsBusyCounts(t *testing.T) {
 	// The signal's own line hides its counts while it is on; these stay, since the registrations may still be going on.
 	tripSignInAttack(context.Background(), e.A)
 	mustContain(t, page(), "Attack signal: on.", counts(3, 2))
+}
+
+// PM109-6 (with A-760 PM-6): a refused registration left only a one-minute count. A since-process total and the last time
+// stay on /admin/security after the window ends, in memory, naming no one, and send no notice.
+func TestRegistrationRefusalsKeepASinceProcessTotal(t *testing.T) {
+	e := newTestApp(t)
+	adminID, admin := e.user("total_admin", "admin")
+	_, moderator := e.user("total_moderator", "moderator")
+	_, buyer := e.user("total_buyer", "buyer")
+	setCaptchaMode(e, captchaModeUnderAttack)
+	page := func() string { return html.UnescapeString(e.body("GET", "/admin/security", admin, nil, 200)) }
+	total := func(n int) string {
+		return fmt.Sprintf("Since this process started: %d registrations refused because no slot was free", n)
+	}
+	mustContain(t, page(), total(0)+".")
+	mustNotContain(t, page(), "the last at")
+
+	session := randomToken()
+	id := e.captcha("/register", session)
+	release := holdSlots(t, registerWork)
+	defer release()
+	w := e.do("POST", "/register", session, signInForm("total_flood_handle", testPassword, "captcha_id", id, "captcha", e.A.captchaTextChallenge(id).Answers[0]))
+	if w.Code != 503 {
+		t.Fatalf("registration with no slot: %d", w.Code)
+	}
+	release()
+	var wg sync.WaitGroup
+	for range 40 {
+		wg.Go(func() { e.A.noteRegisterBusy(context.Background()) })
+	}
+	wg.Wait()
+	body := page()
+	mustContain(t, body, total(41)+", the last at ", "and 41 registrations refused")
+	mustContain(t, page(), total(41)) // after a reload
+	mustNotContain(t, body, "total_flood_handle")
+
+	// The one-minute window ends; the total and its time stay.
+	e.A.mu.Lock()
+	e.A.signInAttackPublic.registerFrom = time.Now().Add(-2 * signInAttackBusyWindow)
+	e.A.mu.Unlock()
+	body = page()
+	mustContain(t, body, "and 0 registrations refused", total(41)+", the last at "+time.Now().UTC().Format("2006-01-02 "))
+
+	// A count and a time alone: no notice, and non-administrators see neither.
+	if n := agInt(e, "SELECT count(*) FROM notifications WHERE user_id=$1", adminID); n != 0 {
+		t.Fatalf("%d notifications for refused registrations", n)
+	}
+	e.check(e.do("GET", "/admin/security", buyer, nil), 403)
+	e.check(e.do("GET", "/admin/security", moderator, nil), 403)
+
+	// It is this process's: a restart clears it, as the panel says.
+	mustContain(t, body, "a restart clears them")
+	e.restart()
+	mustContain(t, page(), total(0)+".")
 }
 
 // SEC102-2: a registration that can only be refused for its missing key is refused before the human check and the slot,
@@ -718,6 +773,54 @@ func TestAdminSeesAndChoosesTheHumanCheckMode(t *testing.T) {
 
 // Migration 155: a market whose setting is still migration 010's untouched "true" moves to the new default; an
 // operator's recorded choice to turn it on, and "false", stay. DB integration.
+// UI107-4: each human-check radio is described by the text giving its consequences.
+func TestHumanCheckRadiosDescribeConsequences(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("dm_describe_admin", "admin")
+	for _, mode := range []string{"under_attack", "true", "false"} {
+		setCaptchaMode(e, mode)
+		page := e.body("GET", "/admin/security", admin, nil, 200)
+		for _, c := range []struct{ value, id, says string }{
+			{"under_attack", "human-check-under-attack-help", "Sign-in has no image until the attack signal is on."},
+			{"true", "human-check-always-help", "The image on every sign-in and registration."},
+			{"false", "human-check-off-help", "No check on sign-in or registration"},
+		} {
+			checked := ""
+			if c.value == mode {
+				checked = " checked"
+			}
+			mustContain(t, page, `name="captcha_required" value="`+c.value+`"`+checked+` aria-describedby="`+c.id+`">`, `<span class="help" id="`+c.id+`">`+c.says)
+		}
+	}
+}
+
+// PM-4: the overview flags Security & access while the human check is off, across a reload and until a mode with a
+// check is saved.
+func TestOverviewFlagsHumanCheckOff(t *testing.T) {
+	e := newTestApp(t)
+	_, admin := e.user("dm_off_admin", "admin")
+	_, moderator := e.user("dm_off_mod", "moderator")
+	const alert = "The human check is off: only each handle's budget of failed passwords slows guessing, and nothing slows sign-up bots."
+	overview := func() string { return html.UnescapeString(e.body("GET", "/admin", admin, nil, 200)) }
+	for _, c := range []struct {
+		mode string
+		on   bool
+	}{{"under_attack", false}, {"true", false}, {"false", true}, {"under_attack", false}} {
+		setCaptchaMode(e, c.mode)
+		for range 2 { // the page reloads to the same state
+			if got := strings.Contains(overview(), alert); got != c.on {
+				t.Fatalf("mode %s: alert shown %v", c.mode, got)
+			}
+		}
+	}
+	// The alert follows the saved form, and only an administrator reads the overview.
+	e.check(e.do("POST", "/admin/captcha", admin, url.Values{"captcha_required": {"false"}, "password": {testPassword}}), 303)
+	mustContain(t, overview(), alert)
+	if w := e.do("GET", "/admin", moderator, nil); w.Code == 200 || strings.Contains(html.UnescapeString(w.Body.String()), alert) {
+		t.Fatalf("a moderator reads the overview: %d", w.Code)
+	}
+}
+
 func TestMigration155KeepsAnOperatorsChoice(t *testing.T) {
 	apply := func(t *testing.T, value string, audits ...string) string {
 		t.Helper()

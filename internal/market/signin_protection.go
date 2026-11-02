@@ -32,6 +32,8 @@ func signInProtectionLoader(_ context.Context, a *App, _ *http.Request, d *PageD
 		v.Public, v.Private = a.signInAttackPublic.view(now), a.signInAttackPrivate.view(now)
 		a.mu.Unlock()
 		v.Public.Where, v.Private.Where = "Attack signal", "Attack signal on the private administrator onion"
+		v.Public.LastTripAt, v.Public.LastTrip = lastSignInTrip(d.Settings[settingSignInAttackLastPublic])
+		v.Private.LastTripAt, v.Private.LastTrip = lastSignInTrip(d.Settings[settingSignInAttackLastPrivate])
 		v.Private.HoldPosts = signInAttackBusy + cap(adminPasswordWork)
 		v.Public.Effective, v.Private.Effective = v.UnderAttack, v.UnderAttack
 		v.ImageNow = v.Always || v.UnderAttack && v.Public.Active
@@ -57,7 +59,8 @@ func signInProtectionLoader(_ context.Context, a *App, _ *http.Request, d *PageD
 //
 // It is in memory, as those budgets are: a restart clears it, so it never locks anyone out without evidence from this
 // process, and gives an attacker at most one threshold's worth of guesses more. Each ingress has its own (A-570), so
-// the public listener cannot put the image on the private administrator sign-in.
+// the public listener cannot put the image on the private administrator sign-in. Only the record of the last trip is
+// stored (PM109-3): which count turned it on and when, in one settings row per ingress, with no handle, account or client.
 const (
 	signInAttackFailures      = 100
 	signInAttackFailureWindow = 10 * time.Minute
@@ -66,7 +69,38 @@ const (
 	signInAttackHeldBusy      = 30 // in signInAttackBusyWindow
 	signInAttackHold          = 30 * time.Minute
 	signInAttackTime          = "2006-01-02 15:04 UTC"
+
+	settingSignInAttackLastPublic  = "sign_in_attack_last_public"
+	settingSignInAttackLastPrivate = "sign_in_attack_last_private"
+
+	signInRouteFailedPasswords = "failed_passwords"
+	signInRouteRefused         = "refused_sign_ins"
+	signInRouteHeldSlot        = "registration_held_slot"
 )
+
+// signInAttackRoutes words each count that can turn the signal on, for the notification and /admin/security. A stored
+// route outside this table reads as no record.
+var signInAttackRoutes = map[string]string{
+	signInRouteFailedPasswords: "many failed passwords",
+	signInRouteRefused:         "many sign-ins refused because every password slot was busy",
+	signInRouteHeldSlot:        "many sign-ins refused while a registration held a password slot",
+}
+
+// cutTrip splits a stored trip, route|time.
+func cutTrip(stored string) (route, at string, ok bool) { return strings.Cut(stored, "|") }
+
+// lastSignInTrip is a stored trip for the panel: when, and the wording of its route. An unreadable row is no record.
+func lastSignInTrip(stored string) (at, route string) {
+	r, when, ok := cutTrip(stored)
+	label, known := signInAttackRoutes[r]
+	if !ok || !known {
+		return "", ""
+	}
+	if _, err := time.Parse(signInAttackTime, when); err != nil {
+		return "", ""
+	}
+	return when, label
+}
 
 type signInAttack struct {
 	failures, busy         int
@@ -76,6 +110,9 @@ type signInAttack struct {
 	// Per signInAttackBusyWindow: sign-ins refused while a registration held a slot, and registrations refused for want of one.
 	heldBusy, registerBusy int
 	heldFrom, registerFrom time.Time
+	// Registrations refused for want of a slot since this process started, and when the last was (PM109-6).
+	registerBusyTotal int
+	registerBusyLast  time.Time
 }
 
 func (s *signInAttack) active(now time.Time) bool { return now.Before(s.until) }
@@ -137,6 +174,8 @@ func (s *signInAttack) noteRegisterBusy(now time.Time) {
 		s.registerBusy, s.registerFrom = 0, now
 	}
 	s.registerBusy++
+	s.registerBusyTotal++
+	s.registerBusyLast = now
 }
 
 func (s *signInAttack) view(now time.Time) SignInAttackView {
@@ -157,6 +196,10 @@ func (s *signInAttack) view(now time.Time) SignInAttackView {
 	if now.Sub(s.registerFrom) < signInAttackBusyWindow {
 		v.RegisterBusy = s.registerBusy
 	}
+	v.RegisterBusyTotal = s.registerBusyTotal
+	if !s.registerBusyLast.IsZero() {
+		v.RegisterBusyLast = s.registerBusyLast.UTC().Format(signInAttackTime)
+	}
 	return v
 }
 
@@ -175,16 +218,16 @@ func (a *App) signInAttackOn(ctx context.Context) bool {
 }
 
 func (a *App) noteSignInFailure(ctx context.Context) {
-	a.noteSignInAttack(ctx, "failed_passwords", (*signInAttack).noteFailure)
+	a.noteSignInAttack(ctx, signInRouteFailedPasswords, (*signInAttack).noteFailure)
 }
 
 func (a *App) noteSignInBusy(ctx context.Context) {
-	a.noteSignInAttack(ctx, "refused_sign_ins", (*signInAttack).noteBusy)
+	a.noteSignInAttack(ctx, signInRouteRefused, (*signInAttack).noteBusy)
 }
 
 // noteSignInHeldBusy counts a sign-in refused while a registration held a password slot.
 func (a *App) noteSignInHeldBusy(ctx context.Context) {
-	a.noteSignInAttack(ctx, "registration_held_slot", (*signInAttack).noteHeldBusy)
+	a.noteSignInAttack(ctx, signInRouteHeldSlot, (*signInAttack).noteHeldBusy)
 }
 
 // noteRegisterBusy counts a registration refused for want of a slot.
@@ -202,27 +245,33 @@ func (a *App) noteSignInAttack(ctx context.Context, route string, note func(*sig
 	a.mu.Unlock()
 	if on {
 		log.Printf("sign-in attack signal on private_ingress=%t route=%s", privateAdminIngress(ctx), route)
-		a.notifySignInAttack(ctx)
+		a.notifySignInAttack(ctx, route)
 	}
 }
 
-// notifySignInAttack tells every active administrator the signal turned on (SEC725-6). It is best effort with a bound of
-// its own, whatever became of the request that tripped it: a failure is logged by class and refuses no one.
-func (a *App) notifySignInAttack(ctx context.Context) {
+// notifySignInAttack tells every active administrator the signal turned on and which count did (SEC725-6, PM109-3), and
+// stores that as the last trip. It is best effort with a bound of its own, whatever became of the request that tripped
+// it: a failure is logged by class and refuses no one, and the log line above still names the route.
+func (a *App) notifySignInAttack(ctx context.Context, route string) {
 	if a.db == nil {
 		return
 	}
-	where := "Sign-in attack signal on: "
+	where, key := "Sign-in attack signal on: ", settingSignInAttackLastPublic
 	if privateAdminIngress(ctx) {
-		where = "Sign-in attack signal on the private administrator onion: "
+		where, key = "Sign-in attack signal on the private administrator onion: ", settingSignInAttackLastPrivate
 	}
-	body := where + "many failed passwords or refused sign-ins. If the human check is Only under attack, everyone signing in there must read the image for at least 30 minutes, and people using a screen reader cannot sign in. Security & access says what to do."
+	stored := route + "|" + time.Now().UTC().Format(signInAttackTime)
+	body := where + signInAttackRoutes[route] + ". If the human check is Only under attack, everyone signing in there must read the image for at least 30 minutes, and people using a screen reader cannot sign in. Security & access says what to do."
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err == nil {
 		defer tx.Rollback()
-		if err = notifyAdminsExcept(ctx, tx, body, ""); err == nil {
+		_, err = tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, stored)
+		if err == nil {
+			err = notifyAdminsExcept(ctx, tx, body, "")
+		}
+		if err == nil {
 			err = tx.Commit()
 		}
 	}

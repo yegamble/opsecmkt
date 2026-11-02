@@ -159,6 +159,21 @@ func moderationQueueReturn(form url.Values) (string, error) {
 	return moderationQueueURL(page, filter), nil
 }
 
+// moderationRefusalBack is the queue view a refused review or budget form came from (UI107-2), for the one who may post
+// them, or "" so the refusal keeps refusalBack's link: a denied account's, a post that may not be echoed (mayEcho) and
+// a tampered view's.
+func (a *App) moderationRefusalBack(r *http.Request, user *User) string {
+	if r.URL.Path != moderationReviewPath && r.URL.Path != moderationBudgetPath || !a.mayEcho(r) ||
+		a.adminSocket == "" || !privateAdminIngress(r.Context()) || user == nil || user.Role != "admin" {
+		return ""
+	}
+	back, err := moderationQueueReturn(r.PostForm)
+	if err != nil {
+		return ""
+	}
+	return back
+}
+
 func moderationQueueFilterFrom(q url.Values) (moderationQueueFilter, error) {
 	var f moderationQueueFilter
 	for _, p := range []struct {

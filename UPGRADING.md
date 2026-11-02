@@ -15,6 +15,50 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## An outage's recheck waits while the clocks disagree (A-764)
+
+No migration or configuration; one new `settings` row, `escrow_xmr_recheck_wait`, present only during a wait. A forward jump of the
+database's clock finds the same gap as a real outage, and the recheck on it wrote deadlines and an end to the buyer's cancel grace that no
+later recheck could bring back. **Keep the application host and the database host on NTP**: their clocks now matter to this one decision.
+
+Before an outage's recheck, whoever asked for it, the watcher compares the database's clock with the application's and with the newest
+block of a Monero daemon that says it is synced. If the first two differ by more than 5 minutes, or the database's clock and that block by
+more than `MONERO_MAX_TIP_AGE`, the request stays pending: no deadline moves, no order completes on a passed deadline, a no-ship cancel
+past its time waits and a dispute on a passed deadline is accepted. A log line, `monero escrow recheck deferred: …`, and **Admin →
+Payments** say which comparison disagreed. A real outage has the same gap, so this only defers: with the clocks agreeing, a month's outage
+moves deadlines as before. A restore's recheck does not wait. A daemon that is unreachable, hung (5 seconds) or not synced, and an unrestricted
+one with no peers, stop nothing: the two clocks alone then decide. A restricted RPC cannot show its peers, so a synced one with an old tip waits, at most
+72 hours: check the daemon's peers.
+
+**How the wait ends.** The first pass after the clocks agree runs the recheck at the correct time. If they stay apart, compare `date -u` on
+the application host with `SELECT now()` over your protected database connection and correct the clock that is wrong; if those agree, check
+the daemon's peers and block time. The wait ends by itself once 72 hours have passed on both clocks, so a clock left wrong does not hold
+completions and cancels for good: the recheck then runs with the clocks still apart, and logs `clocks_apart=true`, and its audit row, the administrators' notice and
+**Admin → Payments** say so. That run can delay deadlines by the jump plus 72 hours, and no form undoes it. Tested against a database with
+a simulated clock and a simulated wallet RPC; no host's clock was stepped.
+
+## Identity notices: the attack signal's route, the staff contact and refused registrations (A-768)
+
+No migration or configuration. New `settings` rows, written when they first apply: `sign_in_attack_last_public` and `sign_in_attack_last_private` hold the count that last turned the attack signal on and when, with no handle, account or client. *Security & access* shows them, and the notification now names the count.
+
+A staff member named as the staff contact, or no longer named, now gets a notification, and the audit row says so. Nothing is sent for a contact saved before this version.
+
+Each process now checks the staff contact daily and at start, and notifies administrators when its warnings change, and 30 days before its key expires, which *Site & branding* and the overview also show. The state told is the new `staff_contact_health_notice` setting. A market whose contact has a warning at the first start gets that one notice.
+
+*Security & access* also shows the registrations refused since the process started and the time of the last; these are in memory, and a restart clears them.
+
+## New overview flags and first-install password checks (A-759)
+
+No migration or configuration. The `/admin` overview now flags **Security & access** while the human check is Off (PM-4): a market that
+keeps it Off on purpose sees that line until another mode is saved. It also flags **Payments** while a Monero deadline recheck is
+pending, and each recheck now sends every active administrator one notice naming its cause and no order (PM-3), so each repeat of
+`-request-deadline-recheck` that runs adds one.
+
+`./scripts/install.sh init --admin` now states the password rule before it asks, and refuses a common password, a padded common word,
+a simple pattern or one containing the handle before it writes or starts anything (PM-7), where the refusal used to come from
+`-bootstrap-admin` with the market already running. The check runs in the shell from the lists in `internal/market/`; the password
+stays out of every command's arguments, the output and `.env`. `-bootstrap-admin` still checks it too.
+
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
 No migration or configuration; two new `settings` rows, `escrow_xmr_outage_gap_from` and `escrow_xmr_cancel_wait_from`.
@@ -161,7 +205,7 @@ it is on again, and a buyer's no-ship cancel past its time waits until then. Rep
 since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
 come back with minutes left of the last request's 72 hours. Each repeat that moves a deadline notifies that order's buyer and vendor again, and any deadline inside 72 hours moves every time, so four rounds are four notices to each party: repeat near the end of the 72 hours, not more often. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
-order deadlines it moved.
+order deadlines it moved. The `/admin` overview flags **Payments** while one is pending, and each recheck sends every active administrator one notice naming its cause and no order (PM-3).
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
@@ -180,9 +224,10 @@ requests a refund, which relays once a watcher runs:
   not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
   period runs none.
 
-Repeated outages each extend these deadlines again, with no cap. A forward jump of the database's clock, or a VM pause, longer
-than the threshold gives a false recheck. A jump delays every release deadline and dispute window it reaches, and the buyer's cancel
-grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. Each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order. Neither says that the outage was real: `cause=outage` reads the same for a true gap, a false one and an operator's request. A recheck a host request asked for follows a *Monero deadline recheck requested from the host* row in the audit trail; one the watcher asked for, on a true gap or a clock jump, has none.
+Repeated outages each extend these deadlines again, with no cap. Since A-764 an outage's recheck [waits while the clocks disagree](#an-outages-recheck-waits-while-the-clocks-disagree-a-764).
+That wait's end with the clocks still apart, and a jump of the application's and the database's clocks together while no synced daemon can contradict them, is the false recheck that remains.
+It delays every release deadline and dispute window it reaches, and the buyer's cancel
+grace, by the jump plus 72 hours of true time, market-wide, and no form undoes it: a deadline only moves later. A VM pause of the whole host stops the market as an outage does, so its recheck is a true one. A pause of only the application or database host is also an outage, and its recheck can wait until that host's clock is corrected; this is reasoning, not measured (A-765). Each recheck writes one log line (`monero escrow deadline recheck: cause=outage moved=N`) and one audit row, naming no order. Neither says that the outage was real: `cause=outage` reads the same for a true gap, a false one and an operator's request. A recheck a host request asked for follows a *Monero deadline recheck requested from the host* row in the audit trail; one the watcher asked for, on a true gap or a clock jump, has none.
 
 The recheck now has its own budget, the pass timeout of 10 minutes, apart from the 30 seconds that bound completions and
 reminders, so a recheck over many orders can finish. A shutdown still stops it at once. A recheck's notice to the buyer of a banned vendor's
@@ -225,8 +270,7 @@ backup, where the setting is what it was. The signal is in memory, so a restart 
 New passwords are checked too (SEC725-1), with no configuration: a listed common password, a common word with digits or symbols
 added, a simple pattern or a password containing the handle is refused on `/setup`, `/register`, `/account/password`, `-bootstrap-admin` and
 `-reset-admin-password`. Accounts that already have such a password still sign in, and nothing asks them to change it.
-`install.sh init --admin` checks only the length before it starts, so a weak password there is refused after the market
-is running, with the commands to finish. Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused
+`install.sh init --admin` applies the same rule before it writes or starts anything (PM-7). Registrations now hold at most 1 of the 4 password-check slots, about 4 a second, and a refused
 one answers 503 "Registration is busy". Since SEC102, 30 sign-ins refused in one minute while a registration holds a slot also turn
 the attack signal on, `/admin/security` shows that count and the refused registrations, the signal's log line adds `route=`, and a
 vendor or strict registration without a PGP key is refused before the question and any slot.

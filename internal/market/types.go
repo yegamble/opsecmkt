@@ -131,9 +131,10 @@ type StaffContactView struct {
 	NeedsAccount, Unreachable bool
 }
 
-// StaffContactWarning is one thing wrong with the staff contact (A-734, staffContactHealth): fixed text, for the
+// StaffContactWarning is one thing wrong with the staff contact (A-734, staffContactHealth): Code is what the daily sweep
+// stores (PM109-5), and the rest fixed text, for the
 // administrator only.
-type StaffContactWarning struct{ Name, Fix string }
+type StaffContactWarning struct{ Name, Fix, Code string }
 
 type Dispute struct {
 	ID, OrderID, Reason, Status, Resolution, Created string
@@ -264,6 +265,8 @@ type PageData struct {
 	FormHandle string
 	// FormVendor: /register re-rendered after a refused post that chose a vendor account (A-544).
 	FormVendor bool
+	// FormSiteName: /setup re-rendered after a refused post, the marketplace name that was typed (UI107-3).
+	FormSiteName string
 	// FormPGP: /register re-rendered after a refused post, the PGP public key that was pasted (A-722).
 	FormPGP string
 	// A-544 vendor onboarding (vendor_applications.go). VendorPolicy: /register, the policy a vendor sign-up follows;
@@ -600,13 +603,18 @@ type CaptchaAdminView struct {
 // SignInAttackView is one ingress's attack signal on /admin/security: Failures, Busy, HeldBusy (sign-ins refused while a
 // registration held a password slot) and RegisterBusy (registrations refused for want of a slot) are the current windows' counts,
 // Trips how many times it turned on since this process started; Where names the ingress and Effective says the mode
-// lets the signal act. The limits are the constants, for the page's copy.
+// lets the signal act. LastTripAt and LastTrip are the stored record of the last time it turned on and which count did
+// (PM109-3), "" with no record. RegisterBusyTotal and RegisterBusyLast are the refused registrations since this process
+// started and when the last was (PM109-6). The limits are the constants, for the page's copy.
 type SignInAttackView struct {
 	Where                                string
+	LastTripAt, LastTrip                 string
 	Active, Effective                    bool
 	Since, Until                         string
 	Failures, Busy, Trips                int
 	HeldBusy, RegisterBusy               int
+	RegisterBusyTotal                    int
+	RegisterBusyLast                     string
 	FailureLimit, BusyLimit, HoldMinutes int
 	HeldBusyLimit                        int
 	HoldPosts                            int // simultaneous sign-in posts that trip it: the password slots and BusyLimit

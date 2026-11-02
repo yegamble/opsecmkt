@@ -34,7 +34,7 @@ RETENTION_WARNING = 'warning: this database has never enrolled retention'
 # Keys whose values are secrets: upgrade never invents them and no command prints them.
 SECRET_KEYS = ('DATABASE_URL', 'POSTGRES_PASSWORD', 'APP_SECRET_KEY', 'SETUP_TOKEN', 'AUDIT_SIGNING_KEY',
                'BITCOIN_RPC_PASSWORD', 'BITCOIN_RPC_AUTH', 'MONERO_WALLET_SECRET', 'ESCROW_XMR_WALLET_RPC_PASSWORD')
-PASSWORD = 'correct horse battery staple'
+PASSWORD = 'lantern orbit velvet quarry'
 # The malware scanner (A-184): what clamdscan --version prints once clamd answers, and the calls it takes.
 CLAMD_VERSION = 'ClamAV 1.5.4/28130/Mon Sep 21 06:24:29 2026'
 CLAMD_READ = 'compose exec -T clamd clamdscan --version'
@@ -284,6 +284,10 @@ class InstallerTests(unittest.TestCase):
         shutil.copyfile(REPOSITORY / 'deploy' / 'clamd.conf', self.root / 'deploy' / 'clamd.conf')
         shutil.copyfile(REPOSITORY / 'deploy' / 'tor-admin-entrypoint.sh', self.root / 'deploy' / 'tor-admin-entrypoint.sh')
         (self.root / 'deploy' / 'clamd.conf').chmod(0o644)
+        # --admin checks a password against the lists the server embeds (PM-7).
+        (self.root / 'internal' / 'market').mkdir(parents=True)
+        for name in ('common_passwords.txt', 'common_words.txt'):
+            shutil.copyfile(REPOSITORY / 'internal' / 'market' / name, self.root / 'internal' / 'market' / name)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.state = self.root / 'stub-state'
@@ -1682,6 +1686,73 @@ time.sleep(60)
                 self.assertEqual(self.generated_secrets(), [])
                 self.assertNotIn(PASSWORD, result.stdout + result.stderr)
 
+    def test_init_admin_states_the_password_rule_before_asking(self):
+        # PM-7: the rule is on screen before the prompt, and the password never is.
+        result = self.run_installer([PASSWORD, PASSWORD], arguments=['--local', '--admin', 'first_admin'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rule = result.stdout.split('Waiting', 1)[0]
+        for words in ('at least 12 characters and at most 72 UTF-8 bytes', 'Common passwords',
+                      'common words with digits or symbols added', 'simple patterns', 'containing the handle',
+                      'a passphrase of four or more unrelated words'):
+            self.assertIn(words, rule)
+        self.assertNotIn(PASSWORD, result.stdout + result.stderr)
+        usage = self.run_installer([], arguments=['--help'])
+        self.assertIn('not a common password or simple pattern', usage.stdout + usage.stderr)
+
+    def test_init_admin_weak_password_refused_before_anything_is_written(self):
+        # PM-7: refused up front; before, each of these got as far as a running market.
+        calls = Path(str(self.log) + '.tr')
+        self.stub('tr', 'import os, sys\n'
+                        f'open({str(calls)!r}, "a").write(repr(sys.argv) + "\\n")\n'
+                        'os.execv("/usr/bin/tr", ["tr"] + sys.argv[1:])\n')
+        for weak in ('password1234', 'PassWord1234', 'correct horse battery staple', 'P@ssw0rd1234', 'monkey123456',
+                     'aaaaaaaaaaaa', 'abcxabcxabcx', '123456789012', 'qwertyuiopas', 'my-FIRST_admin-password'):
+            with self.subTest(weak=weak):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([weak, weak], arguments=['--local', '--admin', 'first_admin'])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('too easy to guess', result.stderr)
+                self.assertIn('four or more unrelated words', result.stderr)
+                self.assertIn('nothing was written or started', result.stderr)
+                self.assertEqual(self.calls(), PREFLIGHT)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(self.generated_secrets(), [])
+                self.assertFalse((self.state / 'bootstrap-stdin').exists())
+                self.assertNotIn(weak, result.stdout + result.stderr)
+                self.assertNotIn(weak, calls.read_text())  # no command is given it as an argument
+
+    def test_admin_password_weak_matches_the_server_rule(self):
+        # PM-7: a copy of internal/market/password_policy_test.go's table, pinning the shell function on each Bash here
+        # (macOS's 3.2 has no ${p,,}). It never runs Go: TestInstallerPasswordRuleMatches is what catches drift from
+        # weakPassword.
+        cases = (('someone', 'password1234', True), ('someone', 'PassWord1234', True),
+                 ('someone', 'correcthorsebatterystaple', True), ('someone', 'aaaaaaaaaaaa', True),
+                 ('someone', '!!!!!!!!!!!!!!', True), ('someone', 'abcxabcxabcx', True),
+                 ('someone', '123456789012', True), ('someone', '987654321098', True),
+                 ('someone', '123456712345', True), ('someone', 'qwertyuiopas', True),
+                 ('someone', 'poiuytrewqlk', True), ('someone', 'asdfghjklzxc', True),
+                 ('someone', 'abcdefghijklm', True), ('someone', 'asdf1234qwer', True),
+                 ('someone', '112233445566', True), ('river_otter', 'my-river_otter-password', True),
+                 ('River_Otter', 'my-RIVER_otter-password', True), ('bob', 'stone-bob-lantern-field', True),
+                 ('someone', 'letmein12345', True), ('someone', 'monkey123456', True),
+                 ('someone', 'dragon123456', True), ('someone', 'football1234', True),
+                 ('someone', 'admin1234567', True), ('someone', 'P@ssw0rd1234', True),
+                 ('someone', 'l3tm31n12345', True), ('someone', 'ki11er12345!', True),
+                 ('someone', 'pa$$word!2026', True), ('someone', 'sunshine!!!!', True),
+                 ('someone', '123456monkey', True),
+                 ('someone', 'lantern orbit velvet quarry', False), ('someone', 'monkey dragon football 1234', False),
+                 ('someone', 'monkeypuzzletree1', False), ('someone', 'maple-torch-gravel-nimbus', False),
+                 ('someone', '12345 lantern orbit quarry', False), ('someone', 'Passwörd-Sonne-Birke-Kiesel', False),
+                 ('river_otter', 'maple-torch-gravel-nimbus', False), ('someone', '* [a-z] ? \\ "$HOME" `x` ~ %s', False))
+        call = 'source "$1"; IFS= read -r handle; IFS= read -r p; if admin_password_weak "$handle" "$p"; then exit 0; else exit 1; fi'
+        for bash in sorted({'/bin/bash', shutil.which('bash') or '/bin/bash'}):
+            for handle, password, weak in cases:
+                with self.subTest(bash=bash, password=password):
+                    done = subprocess.run([bash, '-c', call, 'test', str(INSTALLER)], input=f'{handle}\n{password}\n'.encode(),
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30)
+                    self.assertEqual(done.returncode, 0 if weak else 1, done.stderr)
+                    self.assertEqual(done.stdout + done.stderr, b'')
+
     def test_init_admin_password_not_utf8_refused_before_anything_is_written(self):
         # QA5W5B-7: -bootstrap-admin refuses a password that is not valid UTF-8, which the sign-in form could never send;
         # the installer refuses it up front, before .env is written or anything is started. LATIN1 "été" (a terminal
@@ -1718,7 +1789,7 @@ time.sleep(60)
         if probe == PASSWORD.encode():
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((self.state / 'bootstrap-stdin').read_text(), PASSWORD + '\n')
-        elif probe == b'correct ':
+        elif probe == b'lantern ':
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('Use a password of 12-72 bytes', result.stderr)
             self.assertEqual(self.calls(), PREFLIGHT)

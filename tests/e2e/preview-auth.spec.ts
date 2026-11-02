@@ -83,6 +83,8 @@ test('account and admin state TOTP and CAPTCHA status truthfully', async ({ page
   // A-725: the default mode is selected, and the question's weakness is stated to the operator.
   await expect(page.locator('.admin-auth').getByRole('radio', { name: 'Only under attack' })).toBeChecked();
   await expect(page.locator('.admin-auth')).toContainText('The question on registration stops only simple bots');
+  // PM109-3: the last trip's route is on the panel; the preview has none.
+  await expect(page.locator('.admin-auth')).toContainText('Attack signal: no record of it turning on.');
   await noScriptsNoOverflow(page);
 });
 

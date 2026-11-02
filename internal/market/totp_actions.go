@@ -305,7 +305,7 @@ func accountSecurityLoader(ctx context.Context, a *App, r *http.Request, d *Page
 // codes remain and what to do without the authenticator, or that TOTP was turned off. signin is "recovery" or
 // "totp-off", from the signin- notice /totp consumed (A-287). It matches the current state only; when that changed
 // meanwhile it returns "" and the notice's own text stays. staffContact is the staff-contact line (A-119, A-279) for
-// the last code.
+// the last code, "" when it could not be told (PM109V-1).
 func recoverySignInNotice(signin string, s *SecurityView, staffContact string) string {
 	switch {
 	case signin == "totp-off" && !s.TOTPEnabled:
@@ -313,7 +313,7 @@ func recoverySignInNotice(signin string, s *SecurityView, staffContact string) s
 	case signin != "recovery" || !s.TOTPEnabled:
 		return ""
 	case s.RecoveryRemaining == 0:
-		return "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: ask the market staff for help before you sign out. " + staffContact
+		return strings.TrimSpace("You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: ask the market staff for help before you sign out. " + staffContact)
 	case s.RecoveryRemaining == 1:
 		return "You signed in with a recovery code. 1 recovery code remains. If you lost your authenticator, turn TOTP off below with your password and that code, then set it up again."
 	}
@@ -329,9 +329,11 @@ func totpLoader(ctx context.Context, a *App, r *http.Request, d *PageData) error
 	d.Security = s
 	// A recovery-code sign-in's one-shot notice (A-287), detailed from the current state.
 	if signin, ok := strings.CutPrefix(d.noticeCode, "signin-"); ok {
-		contact, err := staffContactReaderSentence(ctx, a.db, d.Settings[settingStaffContact]) // A-766
+		// This render consumes the notice, so a failed staff check leaves the contact line out (it says "" then, neither
+		// a staff claim nor no contact) rather than failing the page and losing the warning (A-766, PM109V-1).
+		contact, err := staffContactReaderSentence(ctx, a.db, d.Settings[settingStaffContact])
 		if err != nil {
-			return err
+			log.Printf("recovery sign-in notice: staff check: %s", errorCause(err)) // a class, never the driver's text (A-170)
 		}
 		if n := recoverySignInNotice(signin, s, contact); n != "" {
 			d.Notice = n

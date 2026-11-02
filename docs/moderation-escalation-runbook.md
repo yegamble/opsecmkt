@@ -10,8 +10,10 @@ current marketplace state and take no proposed action.
    administrator ingress. Verify that the
    public listener still refuses administrator routes and administrator sessions;
    a claimed `Host` or forwarding header is not private-ingress authentication.
-2. Read the disposition, reason codes, suspicion evidence, input/output digests,
-   prompt revision, model/weights identity, deadline and default action. Do not
+2. Read each item's **Proposed** action, **Reason codes**, **Injection suspicion
+   evidence**, **Evidence digests**, **Expires (UTC)** and **Default on expiry**,
+   and the **Worker status** panel's **Local model**, **Prompt revision** and
+   **Weights digest**. Do not
    interpret confidence as authority or evidence of truth.
 3. Compare the proposal with the original evidence and current entity state.
    Listing text claiming that an order was delivered does not establish delivery.

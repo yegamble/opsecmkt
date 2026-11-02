@@ -947,3 +947,43 @@ func TestStaffContactLookupFailureMakesNoStaffClaim(t *testing.T) {
 	mustContain(t, body, "Unable to load this page")
 	mustNotContain(t, body, "a766_dbmod", "Contact the market staff:", askOperatorLine)
 }
+
+// PM109V-1: /totp consumes the one-shot sign-in notice as it renders. A failed staff check there would lose the last
+// recovery code's warning for good, so the page still shows it, with the contact line left out: no staff claim, and no
+// claim that there is no contact.
+func TestTOTPFailedStaffCheckKeepsLastRecoveryCodeNotice(t *testing.T) {
+	e := newTestApp(t)
+	e.user("pm5v_mod", "moderator")
+	agExec(e, "INSERT INTO settings(key,value) VALUES('staff_contact','pm5v_mod') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+	id, _ := e.user("pm5v_buyer", "buyer")
+	_, lastCode := agEnableTOTP(e, id)
+	anon, pending := e.pendingSignIn("pm5v_buyer")
+	w := e.do("POST", "/challenge", anon, url.Values{"method": {"totp"}, "recovery": {lastCode}}, pending)
+	notice := noticeSetCookie(w)
+	if w.Code != 303 || notice == nil || notice.Value != "signin-recovery" {
+		t.Fatalf("sign-in with the last recovery code: %d", w.Code)
+	}
+	session := e.session(w)
+	// Only the staff check reads this column: the page's other reads are unaffected.
+	agExec(e, "ALTER TABLE users RENAME COLUMN pgp_key_generation TO pgp_key_generation_broken")
+	restored := false
+	restore := func() {
+		if !restored {
+			restored = true
+			agExec(e, "ALTER TABLE users RENAME COLUMN pgp_key_generation_broken TO pgp_key_generation")
+		}
+	}
+	defer restore()
+	r := e.do("GET", "/totp", session, nil, notice)
+	if r.Code != 200 {
+		t.Fatalf("/totp with the check failing: %d", r.Code)
+	}
+	body := html.UnescapeString(r.Body.String())
+	mustContain(t, body, "You signed in with a recovery code. 0 recovery codes remain. Without your authenticator you cannot turn TOTP off yourself: ask the market staff for help before you sign out.")
+	mustNotContain(t, body, "pm5v_mod", "Contact the market staff:", askOperatorLine)
+
+	// The check working again names the contact, as before.
+	restore()
+	body = html.UnescapeString(e.body("GET", "/totp", session, nil, 200, notice))
+	mustContain(t, body, "before you sign out. Contact the market staff: pm5v_mod.")
+}
