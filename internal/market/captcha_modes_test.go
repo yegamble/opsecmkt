@@ -60,6 +60,10 @@ func TestDefaultModeSignInHasNoImageStep(t *testing.T) {
 	page := html.UnescapeString(e.body("GET", "/login", randomToken(), nil, 200))
 	mustNotContain(t, page, "captcha-image", `name="captcha_id"`, "Human check")
 	mustContain(t, page, "Locked out or reporting a stolen account? Contact the market staff: "+staffContactValue+".")
+	// A stale id on a form that now asks for no check: no new one to answer, and nothing to go back for (A-758).
+	stale := html.UnescapeString(e.body("POST", "/login", randomToken(), signInForm("dm_buyer", testPassword, "captcha_id", randomToken(), "captcha", "X"), 400))
+	mustContain(t, stale, "This CAPTCHA or question expired or was already used.")
+	mustNotContain(t, stale, "Answer the new one", "Go back", `name="captcha_id"`)
 	w := e.do("POST", "/login", randomToken(), signInForm("dm_buyer", testPassword))
 	e.check(w, 303)
 	e.session(w)
@@ -563,7 +567,15 @@ func TestRegisterTextChallenge(t *testing.T) {
 			t.Fatalf("want an expired refusal: %d", w.Code)
 		}
 	}
-	expired(e.do("POST", "/register", session, signInForm("dm_text", testPassword, "captcha_id", spent, "captcha", e.A.captchaTextChallenge(spent).Answers[0])))
+	// The form comes back with a new question and what was typed, so the alert does not send the person away from it (A-758).
+	again := e.do("POST", "/register", session, signInForm("dm_text", testPassword, "pgp", pub, "captcha_id", spent, "captcha", e.A.captchaTextChallenge(spent).Answers[0]))
+	expired(again)
+	if b := again.Body.String(); !strings.Contains(b, "Answer the new one below.") || !strings.Contains(b, `value="dm_text"`) || !strings.Contains(b, "BEGIN PGP PUBLIC KEY BLOCK") || strings.Contains(b, "Go back") || strings.Contains(b, "reload the page") {
+		t.Fatalf("expired question's form: %s", b)
+	}
+	if m := captchaField.FindStringSubmatch(again.Body.String()); m == nil || m[1] == spent {
+		t.Fatalf("no new question: %v", m)
+	}
 	expired(e.do("POST", "/register", randomToken(), signInForm("dm_text", testPassword, "captcha_id", id, "captcha", e.A.captchaTextChallenge(id).Answers[0])))
 	old := e.A.newCaptchaID(digest(session), time.Now().Add(-time.Second))
 	expired(e.do("POST", "/register", session, signInForm("dm_text", testPassword, "captcha_id", old, "captcha", e.A.captchaTextChallenge(old).Answers[0])))
@@ -593,8 +605,12 @@ func TestOperatorForcedAndOffModes(t *testing.T) {
 	session := randomToken()
 	for _, path := range []string{"/login", "/register"} {
 		page := html.UnescapeString(e.body("GET", path, session, nil, 200))
-		mustContain(t, page, "captcha-image", "There is no audio or text alternative.")
+		mustContain(t, page, "captcha-image", "There is no audio or text alternative.", "reload the page for a new one")
 		mustNotContain(t, page, attackImageCopy)
+		// A form rendered again holds what was typed, so nothing on it says to reload (A-758).
+		stale := html.UnescapeString(e.body("POST", path, session, signInForm("dm_forced", testPassword, "captcha_id", randomToken(), "captcha", "WRONG1"), 400))
+		mustContain(t, stale, "Answer the new one below.", "captcha-image", `value="dm_forced"`, "a wrong answer gets a new one")
+		mustNotContain(t, stale, "reload", "Go back")
 		if captchaQuestion.MatchString(page) {
 			t.Fatalf("%s asks a question while the image is forced", path)
 		}

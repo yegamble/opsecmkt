@@ -132,8 +132,20 @@ func captchaPNG(a *App, w http.ResponseWriter, r *http.Request, _ *User) {
 	w.Write(b.Bytes())
 }
 
-// errCaptchaExpired refuses a challenge id that expired, was already used or was not issued to this session.
-var errCaptchaExpired = fail(400, "This CAPTCHA or question expired or was already used. Go back, reload the page and answer the new one.")
+// captchaExpiredMsg refuses a challenge id that expired, was already used or was not issued to this session. It is
+// the wording for the shared refusal page; a form rendered again says captchaExpiredOnForm instead (refuse).
+const captchaExpiredMsg = "This CAPTCHA or question expired or was already used. Go back, reload the page and answer the new one."
+
+var errCaptchaExpired = fail(400, captchaExpiredMsg)
+
+// captchaExpiredOnForm words the refusal for the form shown with it, which keeps what was typed: going back or
+// reloading would lose that, and the form may ask for no check by now.
+func captchaExpiredOnForm(d *PageData) string {
+	if d.Captcha == nil {
+		return "This CAPTCHA or question expired or was already used."
+	}
+	return "This CAPTCHA or question expired or was already used. Answer the new one below."
+}
 
 // Messages of a refused answer, shown over the form with a fresh challenge (captchaRetry).
 const (
