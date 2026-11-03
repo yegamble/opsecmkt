@@ -731,11 +731,12 @@ attestation. **Accept**, **Dismiss** and **Hold** annotate a proposal only; the
 existing marketplace entity is unchanged.
 
 The review queue has three views. **Unreviewed** (the default) lists proposals
-without a review whose deadline is still ahead: `ESCALATE_ADMIN` proposals (such as
-disputes, payment flags and injection suspicions) first, then the soonest
-deadline, 50 per page. **Deadline passed** (`?state=expired`) lists unreviewed
-proposals past their deadline, shown as on hold with the disposition they proposed;
-they no longer appear under Unreviewed. **Review and classification history**
+without a review whose deadline is still ahead: `ESCALATE_ADMIN` proposals first,
+disputes and payment flags before other escalations such as injection suspicions
+(A-746; routing is unchanged), then the soonest deadline, 50 per page. **Deadline
+passed** (`?state=expired`) lists unreviewed proposals past their deadline, shown
+as on hold with the disposition they proposed, in the same escalation order and
+then the most recently expired; they no longer appear under Unreviewed. **Review and classification history**
 (`?state=reviewed`) lists recorded reviews and `AUTO_APPLY` classifications, newest
 first. A plain GET form filters any view by kind (`listing`, `upload`, `dispute`,
 `review`, `payment_flag`, shown as Listing, Image upload, Dispute, Buyer review and

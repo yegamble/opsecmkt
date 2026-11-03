@@ -257,10 +257,14 @@ acceptance requirements, not a declaration of deployed verification:
   and no external inference, redirects, model downloads or ambient proxy egress.
   Deployed runtime secret/mount/network isolation needs an actual host rehearsal;
   package tests alone cannot establish it.
-- The private review queue lists unexpired `ESCALATE_ADMIN` proposals first and
-  then the soonest deadline; with 60 listing proposals and one dispute
-  escalation the escalation is first on page 1, `?kind=dispute` lists only it,
-  a proposal past its deadline is only under *Deadline passed*, the kind and
+- The private review queue lists unexpired `ESCALATE_ADMIN` proposals first,
+  disputes and payment flags before other escalations, then the soonest deadline;
+  with 60 listing proposals, a dispute, a payment flag and an injection-suspected
+  buyer review escalated with a sooner deadline than either (A-746), page 1 lists
+  the payment flag and the dispute by deadline, then the review, then 47
+  listings, and page 2 the other 13, each once; *Deadline passed* puts an expired
+  payment flag before a more recently expired review; `?kind=dispute` lists only
+  the dispute, a proposal past its deadline is only under *Deadline passed*, the kind and
   disposition filters survive paging and unknown values are refused (400); the
   review form preselects no choice and its hold option says the proposal closes
   and marketplace state is kept; upload proposals link to the photo's listing,
