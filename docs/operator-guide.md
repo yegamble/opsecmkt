@@ -718,9 +718,9 @@ worker may have stopped.": capture keeps queueing jobs without a worker, so chec
 the controller's supervisor ([supervision](moderation-agent.md#supervise-the-controller)).
 The controller retries failed passes itself, refuses a remote database without
 `sslmode=verify-full`, and audits capture and limit changes made by host command.
-Its review queue lists escalations (such as disputes, payment flags and injection
-suspicions) first and then the soonest deadline; proposals past their deadline
-are on HOLD under **Deadline passed**, and the kind and disposition filters work
+Its review queue lists escalations first, disputes and payment flags before other
+escalations such as injection suspicions, and then the soonest deadline;
+proposals past their deadline are on HOLD under **Deadline passed**, and the kind and disposition filters work
 without JavaScript ([moderation guide](moderation-agent.md#review-and-service-inventory)).
 Model endpoints, raw model JSON and transport errors are omitted. The model never
 reads listing or upload text: those proposals carry `MODEL_NOT_USED` and wait in

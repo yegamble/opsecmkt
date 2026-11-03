@@ -419,6 +419,8 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	// A-685: the default view holds unreviewed proposals whose deadline is ahead, escalations first and then the
 	// soonest deadline; "expired" holds the unreviewed ones past it (shown as HOLD), escalations first and then the
 	// most recently expired; "reviewed" is the history, newest first. Every filter value is allowlisted and bound.
+	// A-746: within the escalations, disputes and payment flags (money) come before the rest, such as an injection
+	// suspicion; routing is unchanged. s.id, unique, ends the order, so offset pages neither skip nor repeat a row.
 	rows, err := a.db.QueryContext(ctx, `SELECT s.id,s.kind,s.target_id,s.disposition,s.risk_score,s.confidence,
 	 s.input_hash,s.output_hash,s.created_at,s.expires_at,s.decision,coalesce(r.action,''),coalesce(j.metadata->>'order_id',j.snapshot->>'order_id',''),
 	 coalesce(j.metadata->>'product_id',j.snapshot->>'product_id',''),
@@ -431,7 +433,7 @@ func loadModerationAdmin(ctx context.Context, a *App, r *http.Request, d *PageDa
 	 WHERE CASE $1 WHEN 'reviewed' THEN r.suggestion_id IS NOT NULL OR s.disposition='AUTO_APPLY'
 	  ELSE r.suggestion_id IS NULL AND s.disposition<>'AUTO_APPLY' AND (s.expires_at<=$2)=($1='expired') END
 	  AND ($3='' OR s.kind=$3) AND ($4='' OR s.disposition=$4)
-	 ORDER BY CASE WHEN $1<>'reviewed' AND s.disposition='ESCALATE_ADMIN' THEN 0 ELSE 1 END,
+	 ORDER BY CASE WHEN $1='reviewed' OR s.disposition<>'ESCALATE_ADMIN' THEN 2 WHEN s.kind IN ('dispute','payment_flag') THEN 0 ELSE 1 END,
 	  CASE WHEN $1='' THEN s.expires_at END,CASE WHEN $1='expired' THEN s.expires_at END DESC,
 	  CASE WHEN $1='reviewed' THEN s.created_at END DESC,s.id DESC LIMIT 51 OFFSET $5`,
 		filter.State, now, filter.Kind, filter.Disposition, (page-1)*50)

@@ -153,9 +153,10 @@ for the private `/admin/moderation/offline` page without an application login.
 All three review choices annotate a proposal only. There is no moderation
 executor for money, bans, takedowns, order transitions or generated replies.
 Expiry means `HOLD`; stale content cannot be accepted as current.
-The queue (A-685) lists unexpired `ESCALATE_ADMIN` proposals first and then the
-soonest deadline, keeps proposals past their deadline in a separate *Deadline
-passed* view, filters by allowlisted kind and disposition (kept in paging links;
+The queue (A-685) lists unexpired `ESCALATE_ADMIN` proposals first, disputes and
+payment flags before other escalations such as injection suspicions (A-746), and
+then the soonest deadline, keeps proposals past their deadline in a separate
+*Deadline passed* view, filters by allowlisted kind and disposition (kept in paging links;
 unknown values are refused), preselects no review choice, links upload proposals
 to the photo's listing, the evidence's order or the avatar's account page, links
 review proposals to the reviews on the review's listing, where an administrator
