@@ -683,6 +683,7 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		x.wantCancelHeld(paid, paidSess, "after a restore from backup")
 		agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,$2)", xmrOutageGapFromKey, x.lastDeadlineStep())
 		x.wantCancelHeld(paid, paidSess, "after a restore from backup")
+		x.wantNoHeldFromClause() // A-785: the panel and the host's reply say every one waits
 	})
 	// PAY113-2: a host's request has no start to go by, stale step or not: nothing recorded when ingress failed.
 	t.Run("a host's request", func(t *testing.T) {
@@ -694,6 +695,7 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		x.setLastDeadlineStep("2 hours")
 		x.wantCancelHeld(paid, paidSess, "cannot be cancelled yet", outageWhy)
 		x.wantDeskLine(paid, "the buyer's cancel waits for this market's recheck after an outage")
+		x.wantNoHeldFromClause() // A-785
 	})
 	// PAY113-2: once the check has stored the gap's start the request is the watcher's, and the same two orders read the same.
 	t.Run("the request the check wrote", func(t *testing.T) {
@@ -708,6 +710,12 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		x.wantCancelHeld(paid, paidSess, "cannot be cancelled yet", outageWhy)
 		x.wantDeskLine(preGap, "passed, so the buyer may cancel")
 		x.wantCancelAccepted(preGap, preGapSess)
+		// A-785: Admin → Payments and the host's reply name the earliest ship_by held, between the two orders above.
+		gap := x.gapFromStored()
+		if held := xmrGraceHeldFrom(gap); !x.shipBy(preGap).Before(held) || x.shipBy(paid).Before(held) {
+			t.Fatalf("the orders are not on each side of %s: %s, %s", held, x.shipBy(preGap), x.shipBy(paid))
+		}
+		x.wantHeldFromClause(gap)
 	})
 	t.Run("only a Monero escrow", func(t *testing.T) { // noShipCancel and lateDispute also serve what remains of Bitcoin escrow
 		x, _, _, _, _ := setup(t)
@@ -1894,6 +1902,65 @@ func (x *xmrEscrowEnv) recheckPanel(admin string) string {
 	return block
 }
 
+// heldFromClause is what Admin → Payments and the host's reply add, while an outage's request the watcher wrote is pending,
+// when its round holds only an order due from heldFrom (A-785).
+func heldFromClause(heldFrom string) string {
+	return "except an order overdue since before " + heldFrom + ", which can still be cancelled."
+}
+
+// wantHeldFromClause fails unless the panel and the host command's reply both say that the pending outage request holds
+// only an order due from xmrGraceHeldFrom(start), and that cancels past their time otherwise wait (A-785).
+func (x *xmrEscrowEnv) wantHeldFromClause(start time.Time) {
+	x.t.Helper()
+	_, admin := x.user("xheld_"+randomToken()[:6], "admin")
+	clause := heldFromClause(utcUntil(xmrGraceHeldFrom(start)))
+	if s := x.recheckPanel(admin); !containsAll(s, "Deadline recheck pending: an outage asked for it.", "a buyer's no-ship cancel past its time waits, "+clause) {
+		x.t.Fatalf("the panel lacks %q:\n%s", clause, s)
+	}
+	out, err := RequestDeadlineRecheck(context.Background(), x.DB)
+	if err != nil || !strings.HasPrefix(out, "Deadline recheck already pending (outage); nothing was changed.") || !strings.Contains(out, "a buyer's no-ship cancel past its time waits until then, "+clause) {
+		x.t.Fatalf("the host's reply lacks %q: %q, %v", clause, out, err)
+	}
+}
+
+// wantNoHeldFromClause fails unless the panel and the host command's reply say, of a pending request, that every no-ship
+// cancel past its time waits (A-785).
+func (x *xmrEscrowEnv) wantNoHeldFromClause() {
+	x.t.Helper()
+	_, admin := x.user("xheld_"+randomToken()[:6], "admin")
+	if s := x.recheckPanel(admin); !strings.Contains(s, "a buyer's no-ship cancel past its time waits. ") || strings.Contains(s, "except an order overdue") {
+		x.t.Fatalf("the panel of a request that holds every order:\n%s", s)
+	}
+	out, err := RequestDeadlineRecheck(context.Background(), x.DB)
+	if err != nil || !strings.Contains(out, "already pending") || !strings.Contains(out, "a buyer's no-ship cancel past its time waits until then. ") || strings.Contains(out, "except an order overdue") {
+		x.t.Fatalf("the host's reply to a request that holds every order: %q, %v", out, err)
+	}
+}
+
+// gapFromStored is the start of the gap the watcher stored with its pending request (xmrOutageGapFromKey).
+func (x *xmrEscrowEnv) gapFromStored() time.Time {
+	x.t.Helper()
+	v := x.settingsOf(xmrOutageGapFromKey)
+	if len(v) != 1 {
+		x.t.Fatalf("the gap's start: %q", v)
+	}
+	gap, err := time.Parse(time.RFC3339Nano, v[0])
+	if err != nil {
+		x.t.Fatal(err)
+	}
+	return gap
+}
+
+// shipBy is order's ship-by time as the database holds it.
+func (x *xmrEscrowEnv) shipBy(order string) time.Time {
+	x.t.Helper()
+	var at time.Time
+	if err := x.DB.QueryRow("SELECT ship_by FROM escrows WHERE order_id=$1", order).Scan(&at); err != nil {
+		x.t.Fatal(err)
+	}
+	return at
+}
+
 // settingsOf lists the values of a setting (none or one).
 func (x *xmrEscrowEnv) settingsOf(key string) []string {
 	x.t.Helper()
@@ -1968,6 +2035,8 @@ func TestXMROutageRecheckWaitsForClocks(t *testing.T) {
 	// PAY113-2: an order overdue before the gap was not held up by it. The gap's start and its ship_by were both stored before the
 	// jump, so the comparison does not read the jumped clock: the page offers the cancel and the action requests the refund.
 	x.wantCancelAccepted(preGap, preGapSess)
+	// A-785: the panel and the host's reply say so, naming the earliest ship_by held, from the stored start.
+	x.wantHeldFromClause(x.gapFromStored())
 
 	jump("0")
 	x.mustPoll()
@@ -2223,7 +2292,8 @@ func TestXMROutageRecheckWaitBound(t *testing.T) {
 	if rows := x.recheckRecords(); len(rows) != 1 || !strings.Contains(rows[0], "clocks still apart") {
 		t.Fatalf("the audit row past the bound: %q", rows)
 	}
-	if s := x.recheckPanel(admin); !containsAll(s, "No deadline recheck is pending.", "It ran with the clocks still apart") {
+	// UI114-2: both dangers of a clock left ahead are pinned, an early fall due and an early payment.
+	if s := x.recheckPanel(admin); !containsAll(s, "No deadline recheck is pending.", "It ran with the clocks still apart", "While the database's clock stays ahead, deadlines also fall due early by true time", "and a release or refund can go early: correct the clock now.") {
 		t.Fatalf("the panel past the bound:\n%s", s)
 	}
 	// QA112-4: the administrators' notice says so too, one fixed clause, with no difference or date.
