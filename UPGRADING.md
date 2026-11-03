@@ -1,4 +1,6 @@
-# Current source: Monero only
+Upgrading a running v0.1.0-alpha.1 deployment? Start with the [summary for v0.1.0-alpha.2](#upgrading-from-v010-alpha1-to-v010-alpha2); the sections below describe the newest changes first.
+
+# Changes since v0.1.0-alpha.1: Monero only
 
 The current source also adds a native `opsecmkt` executable with embedded UI,
 deployment commands, key generation/import, isolated upload gateway and a signed
@@ -1575,7 +1577,7 @@ instructions do not apply to alpha.2.
 
 ## Summary
 
-### Unreleased security hardening
+### Optional security hardening
 
 These optional controls require the updated source; earlier alpha tags do not
 include them. They add no migration and do not change existing networks,

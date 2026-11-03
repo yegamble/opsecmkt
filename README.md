@@ -74,7 +74,7 @@ records measured results and open launch gates separately from these instruction
 instance on a Monero mainnet configuration with payment intake paused; no real-funds transaction is recorded.
 
 
-**The native CLI changes are unreleased; build this checkout to use them.** Go 1.27.3 is recommended; the module
+**The native CLI ships in the `v0.1.0-alpha.2` prerelease; build that tag, or this checkout for later changes.** Go 1.27.3 is recommended; the module
 minimum is 1.26.10, with automatic toolchain selection using the pinned version in `go.mod`.
 See [development requirements](docs/development.md#run-from-source-with-a-local-database).
 

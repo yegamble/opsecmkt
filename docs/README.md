@@ -4,7 +4,7 @@ Self-hosted marketplace software that needs no browser JavaScript. Go renders HT
 marketplace data, users identify with PGP, and payments use Monero. The standalone Go CLI supports guided setup,
 explicit flags, key tools and application/worker roles. Development may use one host; production separates services.
 
-> **Prerelease software.** The native CLI changes are unreleased; build the current checkout to use them.
+> **Prerelease software.** The native CLI ships in the `v0.1.0-alpha.2` prerelease; build that tag, or the current checkout for later changes.
 > Native setup defaults to stagenet with escrow disabled. The legacy shell installer's bundled nodes default to
 > **mainnet (real funds)**. Mainnet payment and settlement workflows remain unverified; deployment and readiness checks do not
 > establish real-funds settlement. See [Implementation status](implementation-status.md).

@@ -909,7 +909,7 @@ Ticked lines passed in CI run [39003912303](https://github.com/yegamble/opsecmkt
 
 Not covered by the fakechain checks above: stagenet, testnet and mainnet, Monero multisig, a wallet with thousands of accounts on a public network (PAYE-E2 measured one on a local fakechain: see [verification](verification.md)), a restore of a real backup into a running market with Phase 3 orders on a real chain, and the limits under *What Phase 3 does not protect* in [per-order escrow](escrow.md#phase-3-monero-escrow-on-a-local-fakechain).
 
-### Monero escrow on stagenet and the Monero sync guard (A-449; development branch)
+### Monero escrow on stagenet and the Monero sync guard (A-449; `v0.1.0-alpha.2`)
 
 [Monero escrow on stagenet](escrow.md#monero-escrow-on-stagenet-a-449). Tiers as above, plus the manual offline-stagenet-fork legs of `scripts/test-escrow-xmr-stagenet.sh` (a real local chain, not the public stagenet; by hand, not in CI). A line is ticked when its Go-test wording is met in the `go-escrow` job; an offline-fork leg it also names is by hand and is not what the tick rests on. The evidence table records one funded public stagenet digital claim; that sample does not establish the refund, physical-deadline, reorg or peer-loss conditions below. That record predates A-709: funding then completed the order, and the dispute window and delivered state have no public-network run.
 
