@@ -1756,7 +1756,7 @@ requests a refund, which relays once a watcher runs:
 - Public access failed while the watcher runs and no request has been made: the watcher finds no gap, so a deadline that passes
   is due, and until a request is pending a dispute on it is refused as late and a no-ship cancel past its time accepted.
 - For the whole time `ESCROW_XMR=off`: the watcher does not run, and marking an order shipped answers 404. While no recheck is
-  pending a dispute is refused. A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has
+  pending a dispute is refused. A cancel is accepted unless a pending recheck holds it or the vendor's grace from an earlier recheck has
   not ended. If it was off for longer than the threshold, the recheck runs on the first pass after it is on again; a shorter
   period runs none.
 

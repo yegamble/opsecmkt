@@ -210,9 +210,9 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          'market-wide',
                          'no form undoes it',
                          'It cannot undo a completion',
-                         "A cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended"
+                         "A cancel is accepted unless a pending recheck holds it or the vendor's grace from an earlier recheck has not ended"
                          if name != 'docs/testnet-runbook.md' else
-                         "a cancel is accepted unless a recheck is pending or the vendor's grace from an earlier recheck has not ended",
+                         "a cancel is accepted unless a pending recheck holds it or the vendor's grace from an earlier recheck has not ended",
                          'marking an order shipped answers 404',
                          'if it was off for longer than the threshold, the recheck runs on the first pass after it is on again'
                          if name == 'docs/testnet-runbook.md' else
