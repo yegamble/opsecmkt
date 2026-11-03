@@ -717,7 +717,7 @@ minutes, the panel and the private Admin overview say "No pass for N minutes; th
 worker may have stopped.": capture keeps queueing jobs without a worker, so check
 the controller's supervisor ([supervision](moderation-agent.md#supervise-the-controller)).
 The controller retries failed passes itself, refuses a remote database without
-`sslmode=verify-full`, and audits capture and limit changes made by host command.
+`sslmode=verify-full`, and audits capture and limit changes and replays made by host command.
 Its review queue lists escalations first, disputes and payment flags before other
 escalations such as injection suspicions, and then the soonest deadline;
 proposals past their deadline are on HOLD under **Deadline passed**, and the kind and disposition filters work

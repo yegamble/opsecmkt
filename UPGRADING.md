@@ -15,6 +15,10 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Moderation replay audit and escalation order (A-744, A-746)
+
+No migration or configuration. `moderation-worker --replay` that requeues legacy snapshots writes one audit row without an actor, giving only the count; one that queues none writes nothing (A-744). In **Admin → Moderation**, disputes and payment flags now list before other escalations, such as a suspected injection; routing is unchanged (A-746).
+
 ## A slow link's limit on the module download (A-782, A-786)
 
 No migration. An image build gives each attempt at the Go module download 600 seconds; on a slow link, set `GO_FETCH_TIMEOUT=3600` in `.env` (`./scripts/install.sh upgrade` keeps it) or give it to a first install ([First install failed](docs/install/troubleshooting.md#first-install-failed)).
