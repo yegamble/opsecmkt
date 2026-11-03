@@ -209,7 +209,8 @@ func (a *App) xmrStaleStepGap() (time.Duration, bool) {
 
 // xmrSameGrace is whether a round whose gap began at gap belongs to the grace ending at end (PAY113-1): that grace's end fell
 // in the gap or after it, so the vendor had no use of the time the outage took, and the round keeps the start it has, or none.
-// Both times were stored before the gap, so a clock jump in it changes neither.
+// A gap read from a clock that had stepped back says little of the grace, and the step that saw it dropped the starts this
+// keeps (xmrNoteDeadlineStep, PAY113R-1), so what is kept then is none.
 func xmrSameGrace(gap time.Time, end sql.NullTime) bool {
 	return end.Valid && end.Time.After(gap)
 }
@@ -237,8 +238,21 @@ func (h *xmrCancelHold) dest() []any {
 // stale step counts as the outage's request the next check will write, with that step as its gap (A-763). A watcher-found gap
 // then holds only what its round will: an order overdue before the start that round leaves was not held up by the outage
 // (PAY113-2), and is cancelled now as it would be after the round. A host's request and a restore's have no gap to go by, and
-// hold them all. ship_by and the gap's start were stored before any jump of the clock, so a forward step cannot move an order
-// to the earlier side; the caller's check that ship_by has passed still applies to the rest.
+// hold them all. The caller's check that ship_by has passed still applies to the rest.
+//
+// The stored start is only as true as the clock that wrote it, so the comparison holds from xmrOutageGap() before it
+// (xmrGraceHeldFrom, PAY113R-2) and a step that sees the clock behind its stored time drops the starts (PAY113R-1). Those
+// cover a forward jump shorter than the gap, which makes no request yet stores a step ahead of true time, and a step back,
+// with an order paid under the behind clock. These clock cases remain unsafe, and can refund early:
+//   - A forward jump shorter than the gap itself makes a ship_by inside the jump look passed, with no gap to hold it. Nothing
+//     sees this one (it was so before A-779).
+//   - A forward jump longer than the gap whose request has run with the clocks still apart (past the wait's bound, or both
+//     clocks together with no synced daemon) stores a step further ahead than the margin. An outage that outlasts the jump with
+//     no correcting pass between then treats an order due in the jump as overdue before the gap.
+//   - A step back and its correction between two steps is not seen. No deposit is credited without a pass, which starts with
+//     a step, so this needs a pass whose step failed or a step the restore gate withheld (xmrDeadlines); not exercised.
+//
+// These are reasoning from the code on a simulated database clock (simDBClock), not a stepped host.
 func (a *App) xmrCancelRecheck(h xmrCancelHold, shipBy sql.NullTime, requested, outage bool) (holds, byOutage bool) {
 	gapFrom := h.gapFrom
 	if !requested && a.xmrStaleStep(h.step, h.now) {
@@ -255,16 +269,27 @@ func (a *App) xmrCancelRecheck(h xmrCancelHold, shipBy sql.NullTime, requested, 
 	if xmrSameGrace(gap, h.graceEnd) {
 		start = h.graceFrom
 	}
-	return !start.Valid || !shipBy.Time.Before(start.Time), true
+	return !start.Valid || !shipBy.Time.Before(xmrGraceHeldFrom(start.Time)), true
+}
+
+// xmrGraceHeldFrom is the earliest ship_by a found gap's start holds (PAY113R-2): the start less xmrOutageGap(), the most a
+// jump that makes no request can have stored a step ahead of true time. An order due in that margin waits though it may be
+// overdue before the gap: this errs towards holding. Every comparison with a found gap's start goes by it: xmrCancelRecheck,
+// xmrCancelWaitSQL and the panel.
+func xmrGraceHeldFrom(start time.Time) time.Time {
+	return start.Add(-xmrOutageGap())
 }
 
 // xmrCancelWaitSQL is the end of the vendor's grace after a restore (step 4, A-720) for the escrow es, or NULL when none
 // applies: not a Monero escrow, the grace has ended, es.ship_by does not pass before it, or es.ship_by passed before the
-// outage that recorded it began (xmrCancelWaitFromKey, DA108-1). A statement after the order row lock reads it for the
-// buyer's cancel (noShipCancel). OFFSET 0 keeps each cast to the key's own row.
-const xmrCancelWaitSQL = `(SELECT w.until FROM (SELECT value::timestamptz AS until FROM settings WHERE key='` + xmrCancelWaitKey + `' OFFSET 0) w
+// outage that recorded it began, less the margin (xmrCancelWaitFromKey, DA108-1, xmrGraceHeldFrom). A statement after the order
+// row lock reads it for the buyer's cancel (noShipCancel). OFFSET 0 keeps each cast to the key's own row. A function for the
+// margin, which follows PAYMENT_POLL_INTERVAL: only that whole number of seconds goes into the statement.
+func xmrCancelWaitSQL() string {
+	return `(SELECT w.until FROM (SELECT value::timestamptz AS until FROM settings WHERE key='` + xmrCancelWaitKey + `' OFFSET 0) w
 	WHERE es.coin='XMR' AND w.until>now() AND w.until>es.ship_by
-	AND COALESCE(es.ship_by>=(SELECT f.since FROM (SELECT value::timestamptz AS since FROM settings WHERE key='` + xmrCancelWaitFromKey + `' OFFSET 0) f),true))`
+	AND COALESCE(es.ship_by>=(SELECT f.since FROM (SELECT value::timestamptz AS since FROM settings WHERE key='` + xmrCancelWaitFromKey + `' OFFSET 0) f)-interval '` + strconv.FormatInt(int64(xmrOutageGap()/time.Second), 10) + ` seconds',true))`
+}
 
 // xmrOpenSQL is the order states whose release_at applies: a shipped physical order's release deadline and a delivered
 // digital order's dispute window (A-709).
@@ -399,6 +424,10 @@ func (a *App) xmrNoteDeadlineStepEarly(ctx context.Context) {
 // No stored time asks for nothing, nor does one that cannot be read, which only a hand could have written. It runs after
 // the restore gate's check, so the time of a gated step stays old, and it is the restore's request that the first pass
 // after the gate finds. This is the database's clock, since it is what every deadline is compared with.
+//
+// A clock behind the stored time by more than xmrClockTolerance has stepped back, and an order paid under it gets a ship_by no
+// start stored earlier says anything about, once the clock is corrected. So that step drops both starts: a grace or a request
+// then holds every order, in the same transaction, with one fixed log line (PAY113R-1). The step's new time ends the condition.
 func (a *App) xmrNoteDeadlineStep(ctx context.Context) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -407,12 +436,14 @@ func (a *App) xmrNoteDeadlineStep(ctx context.Context) error {
 	defer tx.Rollback()
 	var last string
 	var now time.Time
+	steppedBack := false
 	err = tx.QueryRowContext(ctx, "SELECT value,now() FROM settings WHERE key=$1 FOR UPDATE", xmrLastDeadlineStepKey).Scan(&last, &now)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
 	if err == nil {
-		if at, parseErr := time.Parse(time.RFC3339Nano, last); parseErr == nil && now.Sub(at) > xmrOutageGap() {
+		at, parseErr := time.Parse(time.RFC3339Nano, last)
+		if parseErr == nil && now.Sub(at) > xmrOutageGap() {
 			asked, err := tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO NOTHING", xmrReleaseRecheckKey, xmrRecheckOutage)
 			if err != nil {
 				return err
@@ -425,12 +456,24 @@ func (a *App) xmrNoteDeadlineStep(ctx context.Context) error {
 				}
 			}
 		}
+		if parseErr == nil && at.Sub(now) > xmrClockTolerance {
+			steppedBack = true
+			if _, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key IN ($1,$2)", xmrCancelWaitFromKey, xmrOutageGapFromKey); err != nil {
+				return err
+			}
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
 		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, xmrLastDeadlineStepKey); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if steppedBack {
+		log.Printf("monero escrow deadline step: the database's clock is behind the stored step; any recorded start of a cancel hold was dropped, so a hold covers every order")
+	}
+	return nil
 }
 
 // xmrReleaseDue completes every shipped or delivered Monero escrow order whose release deadline or dispute window has
@@ -946,7 +989,7 @@ type XMRDeadlineRecheckView struct {
 	RanClocksApart             bool   // the last one ran past the wait's bound with the clocks apart (PAY108-1)
 	WaitingWhy                 string // why an outage's pending recheck waits for the clocks (xmrClocksWhy, PAY108-1), fixed text
 	CancelHeldUntil            string // the end of the vendor's grace, while it runs (xmrCancelWaitKey, DA108-2)
-	CancelHeldFrom             string // the gap's start, when the grace has one (xmrCancelWaitFromKey, DA108-1)
+	CancelHeldFrom             string // when the grace has a gap's start, the earliest ship_by it holds (xmrCancelWaitFromKey, xmrGraceHeldFrom)
 }
 
 // xmrDeadlineRecheckLoader fills XMRDeadlineRecheckView. A record that cannot be read, which only a hand could have
@@ -974,7 +1017,7 @@ func xmrDeadlineRecheckLoader(ctx context.Context, a *App, _ *http.Request, d *P
 	if until, err := time.Parse(time.RFC3339Nano, waitUntil.String); err == nil && until.After(now) {
 		v.CancelHeldUntil = utcFrom(until) // as the buyer's refusal names it
 		if from, err := time.Parse(time.RFC3339Nano, waitFrom.String); err == nil {
-			v.CancelHeldFrom = utcUntil(from)
+			v.CancelHeldFrom = utcUntil(xmrGraceHeldFrom(from))
 		}
 	}
 	d.XMRDeadlineRecheck = v
