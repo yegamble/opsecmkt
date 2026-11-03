@@ -163,7 +163,7 @@ func noShipCancel(c *actionCtx, o *Order) error {
 	var open, recheck, outage bool
 	var days sql.NullInt64
 	var hold xmrCancelHold
-	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL+","+xmrOutageCauseSQL+","+xmrCancelHoldSQL+" FROM escrows es WHERE es.order_id=$1",
+	if err := c.Tx.QueryRowContext(ctx, "SELECT es.ship_by,COALESCE(es.ship_by<=now(),false),es.dispatch_days,EXISTS(SELECT 1 FROM settings WHERE key=$2),"+xmrCancelWaitSQL()+","+xmrOutageCauseSQL+","+xmrCancelHoldSQL+" FROM escrows es WHERE es.order_id=$1",
 		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(append([]any{&shipBy, &open, &days, &recheck, &wait, &outage}, hold.dest()...)...); err != nil {
 		return err
 	}
