@@ -24,6 +24,8 @@ jobs:
             context: .
             file: Dockerfile
             image: opsecmkt:security
+            # Three stalled attempts at the Dockerfile's default would outlast this job's limit (A-782).
+            build_args: GO_FETCH_TIMEOUT=180
           - name: tor
             context: deploy
             file: deploy/Dockerfile.tor
@@ -40,6 +42,7 @@ jobs:
           file: ${{ matrix.file }}
           load: true
           tags: ${{ matrix.image }}
+          build-args: ${{ matrix.build_args }}
           pull: true
           no-cache: true
       - uses: ./.github/actions/scan-image # zizmor: ignore[self-repository] -- scan the image using this checkout's reviewed composite action.

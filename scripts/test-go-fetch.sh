@@ -51,6 +51,7 @@ from pathlib import Path
 directory, mode = Path(sys.argv[1]), sys.argv[2]
 NAMES = ['fetch-a', 'fetch-b', 'fetch-c', 'fetch-d']
 HANG = 60
+SLOW = 3
 
 
 def h1(files):
@@ -129,6 +130,24 @@ class Proxy(http.server.BaseHTTPRequestHandler):
             self.send(200, ZIPS[name][:len(ZIPS[name]) // 2], len(ZIPS[name]))
             self.close_connection = True
             return None
+        if mode == 'slow' and name == 'fetch-a':
+            # A slow link: the whole module takes SLOW seconds, and a client that gives up takes the rest with it.
+            body = ZIPS[name]
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            step = len(body) // 6 + 1
+            try:
+                for start in range(0, len(body), step):
+                    self.wfile.write(body[start:start + step])
+                    self.wfile.flush()
+                    time.sleep(SLOW / 6)
+            except OSError:
+                self.close_connection = True
+                return None
+            with lock:
+                log_file.write('served %s\n' % name)
+            return None
         if mode == '503-once' and first_a or mode == '503-always' and name == 'fetch-a':
             return self.send(503, b'unavailable\n')
         if mode == '403' and name == 'fetch-a':
@@ -164,7 +183,7 @@ start_leg() {
   done
 }
 
-# fetch: the helper in the leg's module; its status goes to $status and its message to $work/leg/stderr. The checksum settings
+# fetch [LIMIT]: the helper in the leg's module; its status goes to $status and its message to $work/leg/stderr. The checksum settings
 # are the defaults: go.sum holds every hash, so the database is not asked, and it would not know these modules if it were.
 fetch() {
   status=0
@@ -172,7 +191,7 @@ fetch() {
     cd "$work/leg"
     env -u GOSUMDB -u GONOSUMDB -u GONOSUMCHECK -u GOPRIVATE -u GONOPROXY -u GOINSECURE -u GOVCS \
       GOPROXY="http://127.0.0.1:$(cat port)" GOMODCACHE="$work/leg/cache" GOFLAGS=-modcacherw GOTOOLCHAIN=local \
-      GO="$work/go" GO_FETCH_TIMEOUT="$attempt_limit" GO_FETCH_BACKOFF=0 sh "$helper"
+      GO="$work/go" GO_FETCH_TIMEOUT="${1:-$attempt_limit}" GO_FETCH_BACKOFF=0 sh "$helper"
   ) 2> "$work/leg/stderr" || status=$?
 }
 
@@ -265,6 +284,19 @@ fetch
 [ "$status" -ne 0 ] || fail 'a proxy that never answers passed'
 [ "$(count 'timed out' "$work/leg/stderr")" -eq 3 ] || fail 'expected exactly 3 cut-off attempts'
 grep -q 'gave up after 3 attempts' "$work/leg/stderr" || fail 'it does not say that it gave up'
+grep -q 'GO_FETCH_TIMEOUT' "$work/leg/stderr" || fail 'the give-up message does not name the setting'
+
+# A slow link: one module takes longer than a low limit, so it never finishes and its partial is lost, and the message names the
+# setting. The same fetch with the limit raised passes: the attempt was too short, not the link too bad.
+start_leg 'slow link' slow
+fetch 2
+[ "$status" -ne 0 ] || fail 'a module slower than the limit passed'
+if cached fetch-a; then fail 'a module slower than the limit is in the cache'; fi
+grep -q 'GO_FETCH_TIMEOUT' "$work/leg/stderr" || fail 'the give-up message does not name the setting'
+[ "$(asked fetch-a)" -eq 4 ] || fail "expected a first attempt that finished the others and 3 without progress, saw $(asked fetch-a)"
+fetch 30
+expect_passed_all
+if grep -q 'timed out' "$work/leg/stderr"; then fail 'the raised limit still cut it off'; fi
 
 stop_proxy
 leg='stub go'
@@ -312,4 +344,4 @@ PATH="$work/leg/bin" GO="$work/leg/go" STUB_LOG="$work/leg/calls" STUB_WORDS='un
   sh "$helper" 2> "$work/leg/stderr" || status=$?
 [ "$status" -ne 0 ] && [ "$(count . "$work/leg/calls")" -eq 3 ] || fail 'without timeout(1) the retries changed'
 
-echo 'go-fetch regressions passed (truncated stream, 503, hang and slow first install retried with the failure in the log; tampered zip and unknown error after one attempt; persisting failures bounded)'
+echo 'go-fetch regressions passed (truncated stream, 503, hang and slow first install retried with the failure in the log; tampered zip and unknown error after one attempt; persisting failures bounded; a module slower than a low limit passes with a raised one)'

@@ -3,6 +3,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 # A bounded retry on transport errors only; GOPROXY and GOSUMDB stay the image's (A-782, scripts/go-fetch.sh).
 COPY scripts/go-fetch.sh /usr/local/bin/go-fetch.sh
+# Seconds per attempt. A link too slow to fetch the largest module in that time raises it: docs/install/troubleshooting.md.
+ARG GO_FETCH_TIMEOUT=600
 RUN sh /usr/local/bin/go-fetch.sh
 COPY . .
 # The build identity `opsecmkt version` and /admin/system report (A-696): the release workflow passes the tag and commit,

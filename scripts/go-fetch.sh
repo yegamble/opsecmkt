@@ -6,11 +6,13 @@
 # downloads. A checksum refusal or an error not named below fails at once, with go's own message. Finished modules stay in the
 # module cache across attempts, so a retry asks only for the rest. An attempt that reaches the time limit but finished a module
 # does not spend a retry, so a slow first install keeps going; the module count bounds those, and three attempts bound the others.
+# A single module that cannot finish inside the limit is lost at each attempt, since go keeps no partial download: that is what
+# GO_FETCH_TIMEOUT is for. The Dockerfile declares it as a build argument (600); make vuln has the default below.
 set -u
 
 go_command=${GO:-go}
-# Overridden only by scripts/test-go-fetch.sh.
 attempt_limit=${GO_FETCH_TIMEOUT:-180}
+# Overridden only by scripts/test-go-fetch.sh.
 backoff=${GO_FETCH_BACKOFF:-10}
 attempts=3
 
@@ -47,7 +49,7 @@ while :; do
   fi
   spent=$((spent + 1))
   if [ "$spent" -ge "$attempts" ]; then
-    echo "go-fetch: gave up after $attempts attempts without progress" >&2
+    echo "go-fetch: gave up after $attempts attempts without progress. If the link is only slow, raise the limit of ${attempt_limit}s per attempt with GO_FETCH_TIMEOUT (docs/install/troubleshooting.md#first-install-failed)" >&2
     exit 1
   fi
   echo "go-fetch: attempt $spent of $attempts failed in transport; retrying in $((spent * backoff))s" >&2
