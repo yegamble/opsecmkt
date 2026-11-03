@@ -198,3 +198,12 @@ func TestKeyReplacementCopyWarnsAboutTheNote(t *testing.T) {
 		mustContain(t, html.UnescapeString(form), "signed audit export", warning)
 	}
 }
+
+// PRIV-4: the form an administrator saves the staff contact on states the limit the operator guide gives for the notice.
+func TestStaffContactFormStatesTheNoticeLimit(t *testing.T) {
+	b, err := os.ReadFile("web/templates/partials/admin-staff-contact.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, string(b), "unless a retention restriction or the account's closure is what changes that", "an account named while restricted is not told when the restriction lifts")
+}
