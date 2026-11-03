@@ -435,7 +435,9 @@ func tellStaffContactChange(c *actionCtx, old, want string) (string, error) {
 // suspension that tellStaffContactInForce will follow. With the save (staffContactAction, which takes this row FOR UPDATE)
 // one of the two then runs after the other has committed and reads what it did, so the pair tells the account exactly once.
 // The row is created first because FOR SHARE locks nothing that is absent. It goes before the target's row: a save holds
-// this row while its notification's foreign key waits on a role change's FOR UPDATE.
+// this row while its notification's foreign key waits on a role change's FOR UPDATE. A save takes its administrator's own
+// row first, so a caller must not lock another administrator's row after this; suspend and ban refuse administrator
+// targets before they run (adminTargetReceiptAuthorize), which keeps that order today (SEC114-2).
 func lockStaffContact(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, "INSERT INTO settings(key,value) VALUES($1,'') ON CONFLICT(key) DO NOTHING", settingStaffContact); err != nil {
 		return err
