@@ -3,8 +3,6 @@
   "disk_gb": 160,
   "identity_verified_before_cleanup": true,
   "memory_mb": 8192,
-  "price_hourly_usd": 0.07143,
-  "size_slug": "s-4vcpu-8gb",
   "vcpus": 4,
   "volume_ids": [],
   "redaction": {
@@ -13,7 +11,9 @@
       "name",
       "public_ipv4",
       "region",
-      "tags"
+      "tags",
+      "price_hourly_usd",
+      "size_slug"
     ],
     "reason": "Cloud resource identifiers and location metadata omitted from public evidence for operator privacy."
   }

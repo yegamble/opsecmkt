@@ -92,11 +92,11 @@ what a locked-disk copy exposes and how recovery works. A private network or a
 managed database's encryption guarantee does not establish compute-disk encryption.
 
 For historical context, the provider's published
-[compute responsibility model](https://www.digitalocean.com/security/shared-responsibility-model-droplets)
+the provider's compute shared-responsibility model
 says its local VM disks lack encryption at rest. Its
-[managed PostgreSQL security guide](https://docs.digitalocean.com/products/databases/postgresql/how-to/secure/)
+the provider's managed PostgreSQL security guide
 describes LUKS encryption for database storage. Its
-[VM backup limits](https://docs.digitalocean.com/products/backups/details/limits/)
+the provider's VM backup limits
 say compute backups are not encrypted at rest. These product-specific statements
 were checked separately; use your chosen service's current documentation.
 

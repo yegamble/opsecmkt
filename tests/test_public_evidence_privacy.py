@@ -20,7 +20,7 @@ PUBLIC_FIELDS = {
     "cloud-storage.json": {"observed", "bitcoin_datadir_bytes", "scope", "redaction"},
     "cloud-cleanup.json": {
         "absence_verified_at", "deleted", "final_private_recovery_saved_and_verified",
-        "known_unrelated_droplets_still_present", "no_blockchain_files_downloaded",
+        "known_unrelated_hosts_still_present", "no_blockchain_files_downloaded",
         "public_evidence_saved_and_verified", "recovery_reopened_in_separate_container",
         "verification", "redaction",
     },
@@ -68,7 +68,7 @@ class PublicEvidencePrivacyTests(unittest.TestCase):
             "redaction": {"fields": ["deleted"], "reason": "test"}, "deleted": True,
         }))
         self.assertTrue(privacy_errors("cloud-cleanup.json", {
-            "redaction": {"fields": ["droplet_id"], "reason": ""},
+            "redaction": {"fields": ["host_id"], "reason": ""},
         }))
 
 

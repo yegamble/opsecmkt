@@ -1,7 +1,4 @@
 {
-  "task_droplet_id": 608057482,
-  "task_droplet_deleted": true,
-  "task_only_ssh_key_id": 60000594,
   "task_only_ssh_key_deleted": true,
   "absence_verified_by_utc": "2026-10-11T05:17:00Z",
   "task_ssh_tunnel_stopped": true,
@@ -16,5 +13,13 @@
     "saved_party_roots_match": true
   },
   "physical_ledger_wallet_keys_exported": false,
-  "hardware_device_signature_produced": false
+  "hardware_device_signature_produced": false,
+  "task_host_deleted": true,
+  "redaction": {
+    "fields": [
+      "task_host_id",
+      "task_only_ssh_key_id"
+    ],
+    "reason": "Cloud resource identifiers omitted from public evidence for operator privacy."
+  }
 }

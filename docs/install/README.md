@@ -71,6 +71,7 @@ For production, follow [the complete deployment procedure](production.md) in ord
 - [Legacy installer reference](installer-reference.md)
 - [Production deployment](production.md)
 - [Server hardening](server-hardening.md)
+- [Encrypted hosts from a rescue image](encrypted-hosts.md): the rescue-image and LUKS2 procedure for cloud hosts with no encrypted root
 - [Existing deployment security review](security-review.md)
 - [Existing deployment storage assessment](storage-security-assessment.md)
 - [External PostgreSQL](external-database.md)
