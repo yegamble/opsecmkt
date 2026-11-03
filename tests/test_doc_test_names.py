@@ -6,8 +6,10 @@ silently rots, so this check fails the operations job instead.
 
 Scope, deliberately narrow so frozen history is not rewritten:
 
-* docs/acceptance.md: only ticked items (`- [x]` and their indented
-  continuation lines). An unticked line is a plan or a recorded gap, not a claim.
+* docs/acceptance.md: every line (A-635). A ticked item is a claim; an
+  unticked one still cites its partial evidence, and a citation of a deleted
+  test there hid three retired Bitcoin tests after A-565. A recorded gap names
+  what is missing in words, never by an invented test name.
 * docs/implementation-status.md: every line.
 * docs/evidence/ and docs/verification.md are dated records and are not read.
 
@@ -23,7 +25,8 @@ ACCEPTANCE = ROOT / "docs" / "acceptance.md"
 STATUS = ROOT / "docs" / "implementation-status.md"
 
 GO_FUNC = re.compile(r"^func ((?:Test|Fuzz)\w+)", re.M)
-DOC_NAME = re.compile(r"\b((?:Test|Fuzz)[A-Z]\w*)(\*?)")
+# A trailing `*` or `…` cites a family of tests by prefix.
+DOC_NAME = re.compile(r"\b((?:Test|Fuzz)[A-Z]\w*)(\*|…)?")
 
 # Names that appear in the scoped documents but are not top-level Go test
 # functions. Each entry needs a reason; an empty set is the goal.
@@ -64,8 +67,8 @@ def ticked_items(text):
 def missing_names(text, defined):
     """Return sorted cited names that no Go test function defines.
 
-    `TestFoo*` cites a family and is satisfied by any defined name with that
-    prefix.
+    `TestFoo*` (or `TestFoo…`) cites a family and is satisfied by any defined
+    name with that prefix.
     """
     missing = set()
     for name, star in DOC_NAME.findall(text):
@@ -109,16 +112,24 @@ class DocTestNames(unittest.TestCase):
             + ", ".join(missing),
         )
 
-    def test_ticked_acceptance_lines_cite_existing_browser_specs(self):
-        # A browser spec that was renamed or deleted (wallet-journey.spec.ts went with the pooled wallet) is the same rot.
-        claims = acceptance_claims(ACCEPTANCE.read_text(encoding="utf-8"))
-        existing = {path.name for path in (ROOT / "tests" / "e2e").glob("*.spec.ts")}
-        self.assertGreater(len(existing), 10)
-        missing = missing_specs(claims, existing)
+    def test_every_acceptance_line_cites_existing_tests(self):
+        # A-635: unticked lines too, so partial evidence cannot cite a deleted test.
+        missing = missing_names(ACCEPTANCE.read_text(encoding="utf-8"), self.defined)
         self.assertEqual(
             missing,
             [],
-            "docs/acceptance.md ticked lines cite browser specs that tests/e2e does not contain: " + ", ".join(missing),
+            "docs/acceptance.md cites tests with no func in internal/ or cmd/: " + ", ".join(missing),
+        )
+
+    def test_acceptance_lines_cite_existing_browser_specs(self):
+        # A browser spec that was renamed or deleted (wallet-journey.spec.ts went with the pooled wallet) is the same rot.
+        existing = {path.name for path in (ROOT / "tests" / "e2e").glob("*.spec.ts")}
+        self.assertGreater(len(existing), 10)
+        missing = missing_specs(ACCEPTANCE.read_text(encoding="utf-8"), existing)
+        self.assertEqual(
+            missing,
+            [],
+            "docs/acceptance.md cites browser specs that tests/e2e does not contain: " + ", ".join(missing),
         )
 
     def test_implementation_status_cites_existing_tests(self):
@@ -154,7 +165,7 @@ class DocTestNamesSelfTest(unittest.TestCase):
             missing_names(acceptance_claims(doc), self.DEFINED), ["TestInventedByA496"]
         )
 
-    def test_unticked_lines_and_prose_are_not_claims(self):
+    def test_unticked_lines_are_not_ticked_claims(self):
         doc = (
             "- [ ] A plan (`TestInventedByA496`).\n"
             "Prose naming TestAlsoInvented.\n"
@@ -163,12 +174,20 @@ class DocTestNamesSelfTest(unittest.TestCase):
         )
         self.assertEqual(missing_names(acceptance_claims(doc), self.DEFINED), [])
 
+    def test_whole_document_check_reads_unticked_lines(self):
+        # A-635: the whole-document check (test_every_acceptance_line_cites_existing_tests) fails on an unticked
+        # line's citation of a deleted test, as it did on TestConcessionLostCommitAcknowledgement.
+        doc = "- [ ] Partial evidence (`TestReal`, `TestConcessionLostCommitAcknowledgement`).\n"
+        self.assertEqual(missing_names(doc, self.DEFINED), ["TestConcessionLostCommitAcknowledgement"])
+
     def test_real_names_prefixes_and_words_pass(self):
         text = "`TestReal`, `FuzzReal` seeds, `TestRealFamily*`, Test network, TestRun"
         self.assertEqual(missing_names(text, self.DEFINED | {"TestRun"}), [])
 
     def test_family_prefix_without_members_fails(self):
         self.assertEqual(missing_names("`TestNoSuchFamily*`", self.DEFINED), ["TestNoSuchFamily*"])
+        self.assertEqual(missing_names("`TestNoSuchFamily…`", self.DEFINED), ["TestNoSuchFamily*"])
+        self.assertEqual(missing_names("for `TestRealFamily…`", self.DEFINED), [])
 
     def test_missing_browser_spec_in_ticked_line_fails(self):
         doc = "- [x] Browser: `db-real.spec.ts`, `wallet-journey.spec.ts`.\n- [ ] Plan: `gone.spec.ts`.\n"
