@@ -416,7 +416,7 @@ stop_app
 [[ $(pg "$never_target_db" -Atq -c "SELECT value FROM settings WHERE key='retention_restore_required'") == false ]]
 # The guides state the consequence and the action, under the heading the warning names.
 grep -q '^### Backups of a never-enrolled database$' docs/retention.md
-for guide in docs/retention.md docs/operator-guide.md docs/install/production.md; do
+for guide in docs/retention.md docs/operator-guide.md docs/install/production.md UPGRADING.md; do
   grep -q 'cannot reopen once the original database is lost' "$guide"
   grep -qF -- '-enroll-retention' "$guide"
   grep -q 'no other path exists today' "$guide"

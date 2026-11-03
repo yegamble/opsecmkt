@@ -17,6 +17,7 @@ class QualityChecksTest(unittest.TestCase):
         self.root = Path(self.directory.name)
         (self.root / 'scripts').mkdir()
         shutil.copyfile(REPOSITORY / 'scripts' / 'quality.sh', self.root / 'scripts' / 'quality.sh')
+        shutil.copyfile(REPOSITORY / 'scripts' / 'go-fetch.sh', self.root / 'scripts' / 'go-fetch.sh')
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.log = self.root / 'commands.log'
@@ -29,6 +30,7 @@ case "$*" in
   *'goimports -l'*) printf '%s' "$QUALITY_TEST_FORMATTED_FILES"; exit "${QUALITY_TEST_FORMAT_STATUS:-0}" ;;
   *'golangci-lint run'*) exit "${QUALITY_TEST_LINT_STATUS:-0}" ;;
   *'govulncheck -test'*) exit "${QUALITY_TEST_VULN_STATUS:-0}" ;;
+  *'mod download'*) if [ -n "${QUALITY_TEST_DOWNLOAD_ERROR:-}" ]; then printf '%s\\n' "$QUALITY_TEST_DOWNLOAD_ERROR" >&2; exit 1; fi ;;
 esac
 exit 0
 ''')
@@ -87,6 +89,20 @@ exit 0
         result = self.run_check('vuln', QUALITY_TEST_VULN_STATUS='23')
         self.assertEqual(result.returncode, 23)
         self.assertIn('govulncheck -test ./...', self.log.read_text())
+
+    def test_vulnerabilities_prefetch_both_manifests_and_a_failure_stops_the_scan(self):
+        result = self.run_check('vuln')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.log.read_text()
+        self.assertLess(log.index('mod download\n'), log.index('govulncheck -test ./...'))
+        self.assertLess(log.index('mod download -modfile=tools/go.mod golang.org/x/vuln'), log.index('govulncheck -test ./...'))
+        self.log.unlink()
+        result = self.run_check('vuln', QUALITY_TEST_DOWNLOAD_ERROR='verifying x: checksum mismatch SECURITY ERROR')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('SECURITY ERROR', result.stderr)
+        log = self.log.read_text()
+        self.assertEqual(log.count('mod download'), 1)
+        self.assertNotIn('govulncheck -test', log)
 
     def test_secrets_scan_is_staged_and_redacted(self):
         result = self.run_check('secrets-staged')

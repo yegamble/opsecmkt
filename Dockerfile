@@ -1,7 +1,9 @@
 FROM golang:1.27.3-bookworm@sha256:5c3e9b43cfd3bb95c7937462e29d87ada57b481a96fa23ad0eb61778d7a00110 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# A bounded retry on transport errors only; GOPROXY and GOSUMDB stay the image's (A-782, scripts/go-fetch.sh).
+COPY scripts/go-fetch.sh /usr/local/bin/go-fetch.sh
+RUN sh /usr/local/bin/go-fetch.sh
 COPY . .
 # The build identity `opsecmkt version` and /admin/system report (A-696): the release workflow passes the tag and commit,
 # CI `ci` and its commit, scripts/install.sh a clean checkout's. Empty values keep "development" and no commit. Only a

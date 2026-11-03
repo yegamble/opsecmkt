@@ -176,7 +176,7 @@ class DeploymentArchiveTests(SourceArchiveFixture, unittest.TestCase):
             "compose.escrow-xmr.yaml", "internal/market/app.go",
             "internal/market/schema.sql", "internal/market/migrations/001_fixture.sql",
             "deploy/.dockerignore", "deploy/Dockerfile.tor", "deploy/torrc", "deploy/torrc-socks", "deploy/clamd.conf",
-            "scripts/backup.sh", "scripts/restore.sh", "scripts/postgres-tool.py",
+            "scripts/backup.sh", "scripts/go-fetch.sh", "scripts/restore.sh", "scripts/postgres-tool.py",
             "scripts/postgres-policy.py", "scripts/tor_network_address.py",
             "docs/operator-guide.md", "docs/install/tor.md", "docs/install/clearnet.md",
             "docs/testnet-runbook.md", "docs/escrow.md", "SECURITY.md", "UPGRADING.md",

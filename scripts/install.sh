@@ -1710,7 +1710,8 @@ cmd_init() {
   # Builds, starts and waits until every service's healthcheck passes: the app answers /healthz (it reaches
   # PostgreSQL and has migrated) and each Tor service has written its onion address.
   up_wait --build ||
-    die 'The services did not become healthy. Inspect docker compose ps and docker compose logs app; .env and data were kept.'
+    die 'The services did not build or become healthy; the message above says why. Inspect docker compose ps and docker compose logs app; .env and data were kept.' \
+      ${admin:+"So the administrator was not created; after retrying use ./scripts/install.sh setup-token or docker compose run --rm app -bootstrap-admin $admin"}
   local onion='' base
   if [[ $mode == tor ]]; then
     onion=$(wait_onion tor) || onion=''
