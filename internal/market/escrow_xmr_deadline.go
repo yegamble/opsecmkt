@@ -243,12 +243,14 @@ func (h *xmrCancelHold) dest() []any {
 // The stored start is only as true as the clock that wrote it, so the comparison holds from xmrOutageGap() before it
 // (xmrGraceHeldFrom, PAY113R-2) and a step that sees the clock behind its stored time drops the starts (PAY113R-1). Those
 // cover a forward jump shorter than the gap, which makes no request yet stores a step ahead of true time, and a step back,
-// with an order paid under the behind clock. These clock cases remain unsafe, and can refund early:
-//   - A forward jump shorter than the gap itself makes a ship_by inside the jump look passed, with no gap to hold it. Nothing
-//     sees this one (it was so before A-779).
+// with an order paid under the behind clock. These clock cases remain unsafe. While the database's clock is ahead, every
+// deadline falls due early by true time: besides a refund, an order can complete and its release go to the vendor (A-784):
+//   - A forward jump shorter than the gap itself makes a ship_by or release_at inside the jump look passed, with no gap to hold
+//     it, and such jumps add up. Nothing sees this one (it was so before A-779).
 //   - A forward jump longer than the gap whose request has run with the clocks still apart (past the wait's bound, or both
-//     clocks together with no synced daemon) stores a step further ahead than the margin. An outage that outlasts the jump with
-//     no correcting pass between then treats an order due in the jump as overdue before the gap.
+//     clocks together with no synced daemon) stores a step further ahead than the margin, and needs no outage: its moved
+//     deadlines fall due 72 hours on, with the clock still ahead. An outage that outlasts the jump with no correcting pass
+//     between also treats an order due in the jump as overdue before the gap.
 //   - A step back and its correction between two steps is not seen. No deposit is credited without a pass, which starts with
 //     a step, so this needs a pass whose step failed or a step the restore gate withheld (xmrDeadlines); not exercised.
 //
