@@ -207,6 +207,16 @@ func (a *App) xmrStaleStepGap() (time.Duration, bool) {
 	return xmrOutageGap(), true
 }
 
+// xmrDisputeRecheck is lateDispute's rule for whether a recheck keeps a passed release deadline or dispute window open, and
+// whether an outage is why: the request as selected (requested, outage), or a stale step, which the next check turns into the
+// outage's request (xmrStaleStep, A-763). The order page goes by it too, so it offers the dispute the action takes (A-791).
+func (a *App) xmrDisputeRecheck(step sql.NullString, now time.Time, requested, outage bool) (held, byOutage bool) {
+	if !requested && a.xmrStaleStep(step, now) {
+		return true, true
+	}
+	return requested, outage
+}
+
 // xmrSameGrace is whether a round whose gap began at gap belongs to the grace ending at end (PAY113-1): that grace's end fell
 // in the gap or after it, so the vendor had no use of the time the outage took, and the round keeps the start it has, or none.
 // A gap read from a clock that had stepped back says little of the grace, and the step that saw it dropped the starts this

@@ -229,15 +229,16 @@ func lateDispute(c *actionCtx, o *Order) (string, error) {
 		return "", nil
 	}
 	var at sql.NullTime
-	var due bool
+	var due, requested bool
 	var step sql.NullString
 	var now time.Time
-	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+" AND NOT EXISTS (SELECT 1 FROM settings WHERE key=$2),false),"+xmrLastStepSQL+",now() FROM escrows es WHERE es.order_id=$1",
-		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&at, &due, &step, &now)
+	err := c.Tx.QueryRowContext(c.Ctx(), "SELECT es.release_at,COALESCE("+releaseDueSQL+",false),EXISTS (SELECT 1 FROM settings WHERE key=$2),"+xmrLastStepSQL+",now() FROM escrows es WHERE es.order_id=$1",
+		o.ID, releaseRecheckKeyOf(o.Currency)).Scan(&at, &due, &requested, &step, &now)
 	if err != nil || !at.Valid {
 		return "", err
 	}
-	due = due && !c.A.xmrStaleStep(step, now)
+	requested, _ = c.A.xmrDisputeRecheck(step, now, requested, false) // the order page's rule too (A-791)
+	due = due && !requested
 	what := "release deadline"
 	if o.State == stateDelivered {
 		what = "dispute window"

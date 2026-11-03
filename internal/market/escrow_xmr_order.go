@@ -91,8 +91,8 @@ func (a *App) xmrEscrowOrder(ctx context.Context, d *PageData) error {
 		WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey).Scan(append([]any{&v.Address, &refund, &feeBps, &issued, &windowFrom, &firstSeen, &shipBy, &shipByOpen, &destroyed, &strayState, &strayWait, &tooFew, &refundAsked, &openStrays, &recheck, &cancelWait, &outage}, hold.dest()...)...); err != nil {
 		return err
 	}
-	// noShipCancel's rule (A-763, PAY113-2), so the page offers the cancel the action takes. The panel's other lines keep the
-	// request as selected: the dispute side does not read the stale step here.
+	// noShipCancel's rule (A-763, PAY113-2), so the page offers the cancel the action takes. The dispute side reads the stale
+	// step in xmrReleaseView (xmrDisputeRecheck, A-791); the panel's other lines keep the request as selected.
 	v.cancelHeld, v.cancelHeldOutage = a.xmrCancelRecheck(hold, shipBy, recheck, outage)
 	if destroyed.Valid {
 		v.Unrecoverable = xmrAfterDestroyText(destroyed.Time)
@@ -497,14 +497,18 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 	var releaseAt, cancelWait sql.NullTime
 	var left sql.NullFloat64
 	var shipByOpen, rechecked, live, tooFew, claimDue, recheckAsked, outage, wasShipped bool
+	var step sql.NullString
+	var now time.Time
 	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(es.ship_by<=now(),false),es.release_at,extract(epoch FROM es.release_at-now()),es.release_recheck,
 		`+xmrLiveOutcomeSQL("es.order_id")+`,
 		EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=es.order_id AND s.kind='refund' AND s.state='failed' AND s.send_error=$2),`+xmrClaimDueSQL("o")+`,
 		EXISTS(SELECT 1 FROM settings WHERE key=$3),`+xmrCancelWaitSQL()+`,`+xmrOutageCauseSQL+`,
-		EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=es.order_id AND e.to_state=$4)
-		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey, stateShipped).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked, &cancelWait, &outage, &wasShipped); err != nil {
+		EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=es.order_id AND e.to_state=$4),`+xmrLastStepSQL+`,now()
+		FROM escrows es JOIN orders o ON o.id=es.order_id WHERE es.order_id=$1 AND es.coin='XMR'`, o.ID, xmrTooSmall, xmrReleaseRecheckKey, stateShipped).Scan(&shipByOpen, &releaseAt, &left, &rechecked, &live, &tooFew, &claimDue, &recheckAsked, &cancelWait, &outage, &wasShipped, &step, &now); err != nil {
 		return err
 	}
+	// lateDispute's rule (A-791): a stale step keeps a passed deadline open, as the outage's request the next check writes.
+	disputeHeld, disputeOutage := a.xmrDisputeRecheck(step, now, recheckAsked, outage)
 	outcome, err := escrowDisputeOutcome(ctx, a.db, o.ID)
 	if err != nil {
 		return err
@@ -526,7 +530,7 @@ func (a *App) xmrReleaseView(ctx context.Context, d *PageData, v *XMREscrowOrder
 		remaining := time.Duration(left.Float64 * float64(time.Second))
 		// closed: lateDispute's rule, so the page offers no dispute the action would refuse (PM-4).
 		v.Deadline = &EscrowDeadlineView{At: utcUntil(releaseAt.Time), Left: timeLeft(remaining), Due: remaining <= 0, Rechecked: rechecked,
-			Digital: o.State == stateDelivered, Recheck: remaining <= 0 && recheckAsked, Outage: outage, closed: remaining <= 0 && !recheckAsked}
+			Digital: o.State == stateDelivered, Recheck: remaining <= 0 && disputeHeld, Outage: disputeOutage, closed: remaining <= 0 && !disputeHeld}
 		if v.Deadline.VendorClosed, err = orderVendorBanned(ctx, a.db, o.ID); err != nil {
 			return err
 		}
