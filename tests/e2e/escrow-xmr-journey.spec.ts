@@ -325,10 +325,11 @@ test('Monero escrow: checkout with the custody copy, funding at 9 and 10 confirm
   await vendor.goto(first.url);
   await expect(vendor.getByRole('heading', { name: 'Claim the escrowed coins' })).toHaveCount(0);
   await expect(vendor.locator('main')).toContainText('no claim is possible before then');
-  // A-710: in the window the vendor desk offers no claim; its payout waits for the buyer or the deadline.
+  // A-710: in the window the vendor desk offers no claim; its payout waits for the buyer or the window's end, which it
+  // dates, and then for the vendor's claim (VEN103-2).
   await vendor.goto('/vendor-dashboard');
   await expect(vendor.locator('section.vendor-waiting tbody tr', { hasText: orderID(first.url) })).toHaveCount(0);
-  await expect(vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) }).locator('td').nth(2)).toHaveText('Waiting for buyer or deadline');
+  await expect(vendor.locator('#vendor-orders ~ .table-wrap tbody tr', { hasText: orderID(first.url) }).locator('td').nth(2)).toHaveText(/^Waiting for buyer or window end \(\d{4}-\d\d-\d\d \d\d:\d\d UTC\), then claim$/);
   // Its end: the watcher completes the order, and the dispute form is gone.
   moveClock(first.url, "release_at=now()-interval '1 minute'");
   await reloadUntil(buyer, async () => { await expect(badge(buyer)).toHaveText('Completed', { timeout: 500 }); });

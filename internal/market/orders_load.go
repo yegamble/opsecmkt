@@ -867,7 +867,8 @@ func vendorWaitingFor(o Order) VendorWaiting {
 }
 
 // loadDeskPayouts labels each Monero escrow row of the desk table with its payout state (xmrPayoutLabel, A-710), in
-// one query bounded by the rows listed; xmr_settlements_one_outcome's index answers the latest release.
+// one query bounded by the rows listed; xmr_settlements_one_outcome's index answers the latest release. The restore
+// gate and a pending deadline recheck are read once for the page (VEN103-2).
 func loadDeskPayouts(ctx context.Context, a *App, d *PageData) error {
 	var ids []string
 	for _, o := range d.IncomingOrders {
@@ -878,8 +879,16 @@ func loadDeskPayouts(ctx context.Context, a *App, d *PageData) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,`+disputeOutcomeSQL+`,COALESCE(r.state,''),COALESCE(r.send_error,''),`+xmrClaimDueSQL("o")+`
-		FROM orders o LEFT JOIN LATERAL (SELECT s.state,s.send_error FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded'
+	var paused, recheck bool
+	if err := a.db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",EXISTS(SELECT 1 FROM settings WHERE key=$1)", xmrReleaseRecheckKey).Scan(&paused, &recheck); err != nil {
+		return err
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT o.id,o.state,`+disputeOutcomeSQL+`,COALESCE(r.state,''),COALESCE(r.send_error,''),`+xmrClaimDueSQL("o")+`,
+		es.release_at,COALESCE(es.release_at<=now(),false),
+		o.state='cancelled' AND NOT EXISTS(SELECT 1 FROM order_events e WHERE e.order_id=o.id AND e.to_state='paid')
+			AND NOT EXISTS(SELECT 1 FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='refund' AND s.state<>'superseded')
+		FROM orders o LEFT JOIN escrows es ON es.order_id=o.id AND es.coin='XMR'
+		LEFT JOIN LATERAL (SELECT s.state,s.send_error FROM xmr_settlements s WHERE s.order_id=o.id AND s.kind='release' AND s.state<>'superseded'
 		ORDER BY s.id DESC LIMIT 1) r ON true WHERE o.id=ANY($1)`, ids)
 	if err != nil {
 		return err
@@ -887,12 +896,16 @@ func loadDeskPayouts(ctx context.Context, a *App, d *PageData) error {
 	defer rows.Close()
 	d.DeskPayouts = map[string]string{}
 	for rows.Next() {
-		var id, state, outcome, release, wait string
-		var claimDue bool
-		if err = rows.Scan(&id, &state, &outcome, &release, &wait, &claimDue); err != nil {
+		var id string
+		var p xmrDeskPayout
+		var releaseAt sql.NullTime
+		if err = rows.Scan(&id, &p.state, &p.outcome, &p.release, &p.wait, &p.claimDue, &releaseAt, &p.due, &p.neverPaid); err != nil {
 			return err
 		}
-		if label := xmrPayoutLabel(state, outcome, release, wait, claimDue); label != "" {
+		if releaseAt.Valid {
+			p.at = utcUntil(releaseAt.Time)
+		}
+		if label := xmrPayoutLabel(p, paused, recheck); label != "" {
 			d.DeskPayouts[id] = label
 		}
 	}
