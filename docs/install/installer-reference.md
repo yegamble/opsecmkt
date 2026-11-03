@@ -67,6 +67,10 @@ Bitcoin options are rejected. A node alone does not enable escrow. No mainnet ru
   Host loopback port. Default `8080`.
 - `COMPOSE_PROJECT_NAME`<br>
   Compose project name. Default `opsecmkt`. Change it to run a second copy on one host.
+- `GO_FETCH_TIMEOUT`<br>
+  Seconds per attempt of the image build's Go module download. Default `600`. A whole number above 0, such as `3600`
+  on a slow link; `init` writes it to `.env` only when given, and `upgrade` keeps it
+  ([First install failed](troubleshooting.md#first-install-failed)).
 
 ### Examples
 

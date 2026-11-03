@@ -73,6 +73,9 @@ class GoFetchTest(unittest.TestCase):
         first_install = guide[guide.index('## First install failed'):guide.index('## 403 "Origin')]
         self.assertIn('add `GO_FETCH_TIMEOUT=3600` to `.env`', first_install)
         self.assertIn('--build-arg GO_FETCH_TIMEOUT=3600', first_install)
+        # A-786 SRE114-1: init writes a shell value to .env (tests/test_installer.py), and the guides say so.
+        for text in (first_install, (ROOT / 'docs' / 'install' / 'requirements.md').read_text()):
+            self.assertIn('`GO_FETCH_TIMEOUT=3600 ./scripts/install.sh ...`', ' '.join(text.split()))
 
     def test_three_stalled_attempts_fit_the_jobs_that_build_the_image(self):
         # Three attempts at the limit and the 10 s and 20 s waits, in every job that builds the application's Dockerfile.
