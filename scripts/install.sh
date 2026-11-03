@@ -105,6 +105,8 @@ ESCROW_XMR_TOR_RELAY="
 caller_app_port=${APP_PORT-}
 caller_project=${COMPOSE_PROJECT_NAME-}
 caller_wallet_image=${MONERO_WALLET_IMAGE-}
+# The image build's per-attempt limit on the Go module download, for a slow link's first install (A-786).
+caller_go_fetch_timeout=${GO_FETCH_TIMEOUT-}
 temporaries=''
 # A private temporary directory holding the copy of an imported onion key that is checked and streamed (A-526).
 onion_stage=''
@@ -1344,6 +1346,9 @@ cmd_init() {
       { echo '--site-name must be at most 80 bytes on one line.' >&2; exit 2; }
   fi
   if [[ -n $xmr && -z $nodes ]]; then nodes=custom; fi
+  # Compose passes it to the Dockerfile's go-fetch.sh, which hands it to timeout(1).
+  [[ -z $caller_go_fetch_timeout || $caller_go_fetch_timeout =~ ^[1-9][0-9]*$ ]] ||
+    die 'GO_FETCH_TIMEOUT must be a whole number of seconds above 0, with no leading zero, such as 3600. Nothing was written.'
 
   require_docker
   lock_env_or_die
@@ -1611,6 +1616,8 @@ cmd_init() {
   put RETENTION_ENABLED off
   put COOKIE_SECURE "$secure"
   put APP_PORT "${caller_app_port:-8080}"
+  # Only when given: without the line, compose.yaml's default applies, and upgrade keeps whichever there is.
+  if [[ -n $caller_go_fetch_timeout ]]; then put GO_FETCH_TIMEOUT "$caller_go_fetch_timeout"; fi
   # Remember the image this installer manages as its default. Future upgrades can advance it without rewriting
   # an operator-selected ClamAV image.
   put CLAMAV_IMAGE_DEFAULT "$clamav_image_default"
@@ -2338,7 +2345,7 @@ cmd_upgrade() {
   fi
   run_check || die "Nothing was restarted. Fix .env, or put the previous file back with: mv $copy .env"
   up_wait --build ||
-    die "The services did not become healthy. Inspect docker compose ps and docker compose logs app; the previous .env is $copy (UPGRADING.md, Rolling back)."
+    die "The services did not build or become healthy; the message above says why. Inspect docker compose ps and docker compose logs app; the previous .env is $copy (UPGRADING.md, Rolling back)."
   local state recreate=false
   if state=$(app_status) && retire_setup_token "$state"; then recreate=true; fi
   if [[ $recreate == true ]]; then

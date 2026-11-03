@@ -346,6 +346,9 @@ if args == ['compose', 'config', '--quiet']:
     assert Path('.env').is_file(), 'Configuration must exist before validation'
     sys.exit(42 if flag('INSTALLER_TEST_BAD_CONFIG') else 0)
 if args[:2] == ['compose', 'up']:
+    # Compose interpolates the image's build arguments from .env (compose.yaml): record the .env each build reads.
+    if '--build' in args:
+        (state / 'build.env').write_text(Path('.env').read_text())
     if args == ['compose', 'up', '-d', '--force-recreate', 'clamd'] and flag('INSTALLER_TEST_CLAMD_RECREATE_FAIL'):
         sys.exit('Error response from daemon: clamd recreate failed')
     # A clamd that never becomes healthy fails `up --wait` whenever that wait includes it: named, or no service
@@ -937,6 +940,59 @@ time.sleep(60)
         self.assertIn('APP_PORT must', result.stderr)
         self.assertFalse((self.root / '.env').exists())
         self.assertEqual(self.calls(), PREFLIGHT)
+
+    def build_environment(self):
+        """The .env and process environment of the `compose up --build` call (A-786)."""
+        calls = self.calls()
+        self.assertIn(UP, calls)
+        environment = json.loads(Path(str(self.log) + '.env').read_text().splitlines()[calls.index(UP)])
+        build_env = dict(line.split('=', 1) for line in (self.state / 'build.env').read_text().splitlines())
+        return build_env, environment
+
+    def test_init_honours_caller_go_fetch_timeout(self):
+        # A-786 SRE114-1: a slow link's first install raises the module download's limit from the shell. isolate_env clears
+        # the shell's copy, so the value reaches the build only through .env, which compose.yaml reads into the build argument.
+        result = self.run_installer([], arguments=['--local'], extra_env={'GO_FETCH_TIMEOUT': '3600'})
+        self.assert_started(result)
+        self.assertEqual(self.config()['GO_FETCH_TIMEOUT'], '3600')
+        build_env, environment = self.build_environment()
+        self.assertEqual(build_env['GO_FETCH_TIMEOUT'], "'3600'")
+        for key in ('GO_FETCH_TIMEOUT', 'COMPOSE_ENV_FILES', 'COMPOSE_DISABLE_ENV_FILE'):
+            self.assertNotIn(key, environment)
+        self.assertRegex((REPOSITORY / 'compose.yaml').read_text(), r'(?m)^        GO_FETCH_TIMEOUT: \$\{GO_FETCH_TIMEOUT:-600\}$')
+        # upgrade keeps the line.
+        result = self.upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config()['GO_FETCH_TIMEOUT'], '3600')
+        self.assertEqual(self.build_environment()[0]['GO_FETCH_TIMEOUT'], "'3600'")
+
+    def test_init_refuses_a_go_fetch_timeout_that_is_not_a_positive_integer(self):
+        for value in ('1h;x', '0', '-5', '600s', '010', ' 600', "6'00", '3600\n'):
+            with self.subTest(value=value):
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([], arguments=['--local'], extra_env={'GO_FETCH_TIMEOUT': value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('GO_FETCH_TIMEOUT must be a whole number of seconds', result.stderr)
+                self.assertFalse((self.root / '.env').exists())
+                self.assertEqual(list(self.root.glob('.env.*')), [])
+                self.assertEqual(self.calls(), [])
+
+    def test_init_without_go_fetch_timeout_writes_no_line(self):
+        for extra in ({}, {'GO_FETCH_TIMEOUT': ''}):
+            with self.subTest(extra=extra):
+                (self.root / '.env').unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                result = self.run_installer([], arguments=['--local'], extra_env=extra)
+                self.assert_started(result)
+                self.assertNotIn('GO_FETCH_TIMEOUT', (self.root / '.env').read_text())
+                self.assertNotIn('GO_FETCH_TIMEOUT', self.build_environment()[0])
+        # upgrade is unchanged: it adds no line, and a value in the shell does not reach .env or the build.
+        result = self.upgrade(extra_env={'GO_FETCH_TIMEOUT': '3600'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('GO_FETCH_TIMEOUT', (self.root / '.env').read_text())
+        build_env, environment = self.build_environment()
+        self.assertNotIn('GO_FETCH_TIMEOUT', build_env)
+        self.assertNotIn('GO_FETCH_TIMEOUT', environment)
 
     def test_external_clearnet_local_http(self):
         url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
@@ -2903,6 +2959,17 @@ time.sleep(60)
         self.assertEqual(stat.S_IMODE(copies[0].stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE((self.root / '.env').stat().st_mode), 0o600)
         self.assertIn(copies[0].name, result.stdout)
+
+    def test_upgrade_failed_build_says_the_message_above_says_why(self):
+        # A-786 SRE114-2: a build failure (go-fetch giving up) reads like init's, and the previous .env is named.
+        self.write_env(alpha_env())
+        result = self.upgrade(extra_env={'INSTALLER_TEST_UNHEALTHY': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        copies = self.pre_upgrade_copies()
+        self.assertEqual(len(copies), 1)
+        self.assertIn('The services did not build or become healthy; the message above says why. Inspect docker compose ps and '
+                      f'docker compose logs app; the previous .env is {copies[0].name} (UPGRADING.md, Rolling back).', result.stderr)
+        self.assertEqual(self.calls()[-1], UP)
 
     def test_upgrade_adds_missing_keys_with_defaults(self):
         values = alpha_env()

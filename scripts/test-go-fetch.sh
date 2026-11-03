@@ -34,6 +34,11 @@ fail() {
 
 # The per-attempt limit of the legs that hang. A hang outlives it; the rest never reach it.
 attempt_limit=4
+# Every run of the helper is bounded too, so a helper that loops fails the leg instead of hanging it (A-786 SRE114-3). The slowest
+# legitimate run, the slow first install, is four attempts of attempt_limit plus go's start; this is several times that.
+helper_bound=120
+# finished: after a run of the helper, a status of 124 is timeout(1) cutting it off at helper_bound.
+finished() { [ "$status" -ne 124 ] || fail 'the helper did not terminate'; }
 # go, with each download attempt counted in the leg's directory for the proxy.
 real_go=$(command -v go)
 cat > "$work/go" <<SH
@@ -191,8 +196,9 @@ fetch() {
     cd "$work/leg"
     env -u GOSUMDB -u GONOSUMDB -u GONOSUMCHECK -u GOPRIVATE -u GONOPROXY -u GOINSECURE -u GOVCS \
       GOPROXY="http://127.0.0.1:$(cat port)" GOMODCACHE="$work/leg/cache" GOFLAGS=-modcacherw GOTOOLCHAIN=local \
-      GO="$work/go" GO_FETCH_TIMEOUT="${1:-$attempt_limit}" GO_FETCH_BACKOFF=0 sh "$helper"
+      GO="$work/go" GO_FETCH_TIMEOUT="${1:-$attempt_limit}" GO_FETCH_BACKOFF=0 timeout "$helper_bound" sh "$helper"
   ) 2> "$work/leg/stderr" || status=$?
+  finished
 }
 
 count() { # count PATTERN FILE: the matching lines, 0 for none
@@ -318,7 +324,8 @@ stub() { # stub WORDS [ARGUMENT...]: the helper with go replaced; sets status
   status=0
   : > "$work/leg/calls"
   GO="$work/leg/go" STUB_LOG="$work/leg/calls" STUB_WORDS="$words" GO_FETCH_TIMEOUT=30 GO_FETCH_BACKOFF=0 \
-    sh "$helper" "$@" 2> "$work/leg/stderr" || status=$?
+    timeout "$helper_bound" sh "$helper" "$@" 2> "$work/leg/stderr" || status=$?
+  finished
 }
 stub 'read: connection reset by peer; verifying example.test/a@v1.0.0: checksum mismatch SECURITY ERROR' -modfile=tools/go.mod
 [ "$status" -ne 0 ] && [ "$(count . "$work/leg/calls")" -eq 1 ] || fail 'a refusal beside a transport error was retried'
@@ -340,8 +347,9 @@ for tool in sh find wc sleep cat; do
 done
 status=0
 : > "$work/leg/calls"
-PATH="$work/leg/bin" GO="$work/leg/go" STUB_LOG="$work/leg/calls" STUB_WORDS='unexpected EOF' GO_FETCH_BACKOFF=0 \
-  sh "$helper" 2> "$work/leg/stderr" || status=$?
+timeout "$helper_bound" env PATH="$work/leg/bin" GO="$work/leg/go" STUB_LOG="$work/leg/calls" STUB_WORDS='unexpected EOF' \
+  GO_FETCH_BACKOFF=0 sh "$helper" 2> "$work/leg/stderr" || status=$?
+finished
 [ "$status" -ne 0 ] && [ "$(count . "$work/leg/calls")" -eq 3 ] || fail 'without timeout(1) the retries changed'
 
 echo 'go-fetch regressions passed (truncated stream, 503, hang and slow first install retried with the failure in the log; tampered zip and unknown error after one attempt; persisting failures bounded; a module slower than a low limit passes with a raised one)'
