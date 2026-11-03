@@ -34,13 +34,21 @@ fail() {
 
 # The per-attempt limit of the legs that hang. A hang outlives it; the rest never reach it.
 attempt_limit=4
+# go, with each download attempt counted in the leg's directory for the proxy.
+real_go=$(command -v go)
+cat > "$work/go" <<SH
+#!/bin/sh
+if [ "\$1" = mod ]; then echo attempt >> attempts; fi
+exec "$real_go" "\$@"
+SH
+chmod +x "$work/go"
 
 cat > "$work/proxy.py" <<'PY'
-"""A Go module proxy with one fault: proxy.py DIRECTORY MODE LIMIT. It writes DIRECTORY/go.mod, go.sum and port."""
+"""A Go module proxy with one fault: proxy.py DIRECTORY MODE. It writes DIRECTORY/go.mod, go.sum and port."""
 import base64, hashlib, http.server, io, sys, threading, time, zipfile
 from pathlib import Path
 
-directory, mode, limit = Path(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+directory, mode = Path(sys.argv[1]), sys.argv[2]
 NAMES = ['fetch-a', 'fetch-b', 'fetch-c', 'fetch-d']
 HANG = 60
 
@@ -78,7 +86,7 @@ TAMPERED = zipped(module_files('fetch-a', b'package fetch\n\nconst Tampered = tr
 
 lock = threading.Lock()
 hits = {}
-last_served = [0.0]
+last_served = [0]  # the attempt that last got a module, in progress mode
 log_file = (directory / 'proxy.log').open('a', buffering=1)
 
 
@@ -107,11 +115,12 @@ class Proxy(http.server.BaseHTTPRequestHandler):
         with lock:
             hits[name] = hit = hits.get(name, 0) + 1
             log_file.write('asked %s\n' % name)
-            now = time.monotonic()
-            # progress serves one module an attempt and leaves the others hanging: a slow first install.
-            hold = mode == 'progress' and now - last_served[0] < limit - 1
+            # progress serves one module an attempt and leaves the others hanging: a slow first install. The attempt is
+            # the line count of DIRECTORY/attempts, which $GO writes, not a clock, so a slow go start changes nothing.
+            attempt = len((directory / 'attempts').read_text().splitlines())
+            hold = mode == 'progress' and attempt == last_served[0]
             if not hold:
-                last_served[0] = now
+                last_served[0] = attempt
         first_a = name == 'fetch-a' and hit == 1
         if hold or mode == 'hang-always' or (mode == 'hang-once' and first_a):
             time.sleep(HANG)
@@ -144,7 +153,8 @@ start_leg() {
   leg=$1
   rm -rf "$work/leg"
   mkdir "$work/leg"
-  python3 "$work/proxy.py" "$work/leg" "$2" "$attempt_limit" &
+  : > "$work/leg/attempts"
+  python3 "$work/proxy.py" "$work/leg" "$2" &
   proxy_pid=$!
   local waited=0
   until [ -s "$work/leg/port" ]; do
@@ -162,7 +172,7 @@ fetch() {
     cd "$work/leg"
     env -u GOSUMDB -u GONOSUMDB -u GONOSUMCHECK -u GOPRIVATE -u GONOPROXY -u GOINSECURE -u GOVCS \
       GOPROXY="http://127.0.0.1:$(cat port)" GOMODCACHE="$work/leg/cache" GOFLAGS=-modcacherw GOTOOLCHAIN=local \
-      GO_FETCH_TIMEOUT="$attempt_limit" GO_FETCH_BACKOFF=0 sh "$helper"
+      GO="$work/go" GO_FETCH_TIMEOUT="$attempt_limit" GO_FETCH_BACKOFF=0 sh "$helper"
   ) 2> "$work/leg/stderr" || status=$?
 }
 
@@ -237,12 +247,14 @@ expect_passed_all
 [ "$(asked fetch-b)" -eq 1 ] || fail 'a finished module was asked for again'
 grep -q 'timed out' "$work/leg/stderr" || fail 'the timeout is not in the log'
 
-# A slow first install: every attempt reaches its limit but finishes a module. Four modules take four cut-off attempts, more than
-# the three allowed with no progress, and each module is downloaded once.
+# A slow first install: every attempt but the last reaches its limit and finishes a module. Four modules take three cut-off attempts
+# and a fourth that fetches the last and passes. A helper that spent a retry on each cut-off gives up at the third. Each downloads once.
 start_leg 'slow first install' progress
 fetch
 expect_passed_all
-[ "$(count 'timed out' "$work/leg/stderr")" -eq 4 ] || fail 'expected four cut-off attempts'
+[ "$(count 'timed out' "$work/leg/stderr")" -eq 3 ] || fail 'expected three cut-off attempts'
+[ "$(count . "$work/leg/attempts")" -eq 4 ] || fail 'expected four attempts'
+[ "$(failed_attempts)" -eq 0 ] || fail 'an attempt that finished a module spent a retry'
 for name in fetch-a fetch-b fetch-c fetch-d; do
   [ "$(served "$name")" -eq 1 ] || fail "$name was downloaded more than once"
 done
