@@ -1,19 +1,22 @@
 """Keep manually published cloud evidence free of provider identity metadata."""
 
 import json
+import re
 from pathlib import Path
 import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "docs/evidence/public-testnet"
+ALL_EVIDENCE = ROOT / "docs/evidence"
+# Provider and region words no published evidence value may carry (owner instruction, 2026-11-03).
+PROVIDER_WORDS = re.compile("digital" + r" ?ocean|\bdoctl\b|\bdroplets?\b|frank" + r"furt|\bfra1\b|\bs-\d+vcpu", re.I)
 
 # New record kinds or provider fields require a publication review. Proof manifests
 # and transcripts have their own runner validation; these are supplemental records.
 PUBLIC_FIELDS = {
     "cloud-resource.json": {
-        "created_at", "observed_at", "size", "size_slug", "hourly_usd",
-        "price_hourly_usd", "disk_gb", "memory_mb", "vcpus", "volume_ids",
+        "created_at", "observed_at", "disk_gb", "memory_mb", "vcpus", "volume_ids",
         "features", "deleted", "cost_note", "cleanup_recorded_at",
         "identity_verified_before_cleanup", "redaction",
     },
@@ -50,6 +53,20 @@ def privacy_errors(filename, record):
 
 
 class PublicEvidencePrivacyTests(unittest.TestCase):
+    def test_no_published_evidence_names_the_provider(self):
+        hits = []
+        for path in sorted(ALL_EVIDENCE.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            # Keys and values alike, in every record and README, including the Sparrow folder.
+            if PROVIDER_WORDS.search(text):
+                hits.append(str(path.relative_to(ROOT)))
+        self.assertEqual(hits, [])
+
     def test_published_cloud_records_contain_only_reviewed_fields(self):
         records = sorted(EVIDENCE.rglob("cloud-*.json"))
         self.assertTrue(records, "public cloud evidence was not found")

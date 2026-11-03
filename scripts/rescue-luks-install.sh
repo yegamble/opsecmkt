@@ -7,7 +7,8 @@
 # Usage: rescue-luks-install.sh HOSTNAME 'OPERATOR_SSH_PUBLIC_KEY' < network-values
 # Standard input holds five lines: PUBLIC_ADDRESS/PREFIX, PUBLIC_GATEWAY, PRIVATE_ADDRESS/PREFIX,
 # RESOLVER1,RESOLVER2 and an Ubuntu mirror URL. They come from the provider's console or
-# metadata and never appear as arguments or in the output.
+# metadata and never appear as arguments; the success path prints none of them (a failure prints
+# the tail of the package log, which can include the mirror URL).
 #
 # It never reads or stores the passphrase, writes no address to stdout, refuses to run unless
 # /dev/mapper/cryptroot is an open LUKS2 device on a writable /dev/vda, and closes LUKS when done.

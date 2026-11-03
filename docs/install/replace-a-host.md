@@ -28,7 +28,7 @@ the replacement application. Here that address is the gateway, as in the hardeni
 
 | Case | What happened | What you do |
 | --- | --- | --- |
-| **Dead host, not compromised** | Hardware or provider failure, a deleted droplet, a lost disk. Nobody else had the host. | Build a new host and restore the same keys and identities from your off-host backups. |
+| **Dead host, not compromised** | Hardware or provider failure, a deleted machine, a lost disk. Nobody else had the host. | Build a new host and restore the same keys and identities from your off-host backups. |
 | **Compromised or suspected compromised** | Someone else may have had a shell, root, the disk or a memory image. Signs include unknown logins, changed files, an unexplained reboot or a provider notice. | Keep the evidence. Isolate the host; do not delete it. Treat every secret it held as exposed and replace each one that a command can replace. |
 | **Mirror or standby** | You want a second address or a spare before anything fails. | Read what the `mirror` profile is. There is no hot standby. |
 

@@ -185,7 +185,7 @@ inspect the initramfs before booting (`/boot` is not encrypted, so no passphrase
 needed):
 
 ```sh
-mount -o ro /dev/vda16 /mnt/b
+mkdir -p /mnt/b && mount -o ro /dev/vda16 /mnt/b
 lsinitramfs /mnt/b/initrd.img-* | grep -E 'sbin/cryptsetup$|bin/dropbear$|cryptroot/crypttab$'
 ```
 
@@ -218,6 +218,10 @@ This is the locked cold boot and manual unlock the
 come back, nothing is lost: boot the rescue image again, open LUKS and repair.
 
 ## Pinned aliases
+
+Until [step 7](#7-operator-access-core-dumps-and-docker) creates the named operator, the
+installed-OS alias logs in as `root` with the operator key; switch its `User` to the
+operator once step 7 has disabled root SSH. Step 6 below runs before that switch.
 
 One address presents three different host keys over its life: the rescue system,
 the pre-boot dropbear and the installed OS. Pinning them all against the bare address
