@@ -221,7 +221,10 @@ connections through a proxy, `TestModerationAdminShowsStaleWorker`,
 restarted after it exits ([moderation guide](moderation-agent.md#supervise-the-controller)).
 Turning capture on or off and changing limits by worker flag each write one
 actorless audit row, only when the stored value changes (A-687;
-`TestModerationEnableDisableAudited`, `TestModerationCapacityFlagAudited`).
+`TestModerationEnableDisableAudited`, `TestModerationCapacityFlagAudited`); a
+`--replay` that requeues legacy snapshots writes one with the count, in the
+requeue's transaction, and one that queues none writes nothing (A-744;
+`TestModerationReplayAuditedOnlyWhenQueued`).
 
 The initial sources are listing edits, normalized-upload metadata, disputes,
 reviews and newly flagged payments. Inference receives no encrypted messages,
