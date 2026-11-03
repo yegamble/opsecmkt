@@ -413,6 +413,23 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	if settingsNow() != wrote {
 		t.Fatalf("settings %s, was %s", settingsNow(), wrote)
 	}
+	if strings.Contains(stdout, "except an order overdue") {
+		t.Fatalf("a request with no gap's start holds every order: %q", stdout)
+	}
+	// A-785: the watcher's request, with the gap's start it stored, holds only an order due from that start less the margin,
+	// and the reply says so rather than that every cancel past its time waits.
+	exec("INSERT INTO settings(key,value) VALUES('escrow_xmr_outage_gap_from','2026-06-15T12:00:00Z')")
+	withGap := settingsNow()
+	stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
+	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck already pending (outage); nothing was changed.") ||
+		!strings.Contains(stdout, "a buyer's no-ship cancel past its time waits until then, except an order overdue since before 2026-06-15 ") || !strings.Contains(stdout, " UTC, which can still be cancelled.") ||
+		strings.Contains(stdout, "past its time waits until then. ") {
+		t.Fatalf("outage pending with the gap's start: code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if settingsNow() != withGap {
+		t.Fatalf("settings %s, was %s", settingsNow(), withGap)
+	}
+	exec("DELETE FROM settings WHERE key='escrow_xmr_outage_gap_from'")
 
 	// A restore's pending keeps saying a restore: an outage's value must not replace it. Any other value is a restore's.
 	for _, restore := range []string{"true", "outgae"} {

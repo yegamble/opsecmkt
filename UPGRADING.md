@@ -15,6 +15,10 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A slow link's limit on the module download (A-782, A-786)
+
+No migration. An image build gives each attempt at the Go module download 600 seconds; on a slow link, set `GO_FETCH_TIMEOUT=3600` in `.env` (`./scripts/install.sh upgrade` keeps it) or give it to a first install ([First install failed](docs/install/troubleshooting.md#first-install-failed)).
+
 ## A saved staff contact is told when a role or suspension brings it into force (A-781)
 
 No migration or configuration. A saved bare handle that is not active staff has no effect until that account is. Promoting it to staff, or restoring it from suspension, now tells it that it is named; demoting, suspending or banning the named staff member tells it that it no longer is. The audit rows say so, and `-set-role` prints it. Moving between moderator and administrator tells no one, and nothing is sent for a change made before this version. The named notice now also says the account's PGP public key, with its user IDs, is shown to every signed-in account when that key can receive encrypted messages. These changes create the `staff_contact` `settings` row, empty, if it does not exist yet; an empty value reads as unset, as before.
@@ -224,7 +228,7 @@ it is on again, and a buyer's no-ship cancel past its time waits until then. Rep
 since each request moves only deadlines within 72 hours of it, and run it once more when ingress returns: otherwise a buyer can
 come back with minutes left of the last request's 72 hours. Each repeat that moves a deadline notifies that order's buyer and vendor again, and any deadline inside 72 hours moves every time, so four rounds are four notices to each party: repeat near the end of the 72 hours, not more often. It cannot undo a completion: an order the watcher already completed stays completed, its release stands,
 and its buyer is told nothing. **Admin → Payments** shows a recheck pending, and when the last one ran, its cause and how many
-order deadlines it moved. The `/admin` overview flags **Payments** while one is pending, and each recheck sends every active administrator one notice naming its cause and no order (PM-3).
+order deadlines it moved. The `/admin` overview flags **Payments** while one is pending, and each recheck sends every active administrator one notice naming its cause and no order (PM-3). When the watcher asked for it and its round will not hold every order, the panel and the command's already-pending reply name the earliest ship-by time it holds: an order overdue since before then can still be cancelled (A-785).
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
