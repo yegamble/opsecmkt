@@ -69,7 +69,8 @@ Bitcoin options are rejected. A node alone does not enable escrow. No mainnet ru
   Compose project name. Default `opsecmkt`. Change it to run a second copy on one host.
 - `GO_FETCH_TIMEOUT`<br>
   Seconds per attempt of the image build's Go module download. Default `600`. A whole number above 0, such as `3600`
-  on a slow link; `init` writes it to `.env` only when given, and `upgrade` keeps it
+  on a slow link; `init` writes it to `.env` only when given, and `upgrade` keeps it. `upgrade` reads it only from
+  `.env`: a different value in the shell is not used, and `upgrade` prints a note saying so before it builds
   ([First install failed](troubleshooting.md#first-install-failed)).
 
 ### Examples

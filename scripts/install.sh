@@ -2343,6 +2343,22 @@ cmd_upgrade() {
   if [[ -z $(env_value AUDIT_SIGNING_KEY) ]]; then
     echo 'Note: AUDIT_SIGNING_KEY is not set, so signed audit exports stay off (see UPGRADING.md).'
   fi
+  # A GO_FETCH_TIMEOUT in the shell reaches neither .env nor the build (isolate_env cleared it): say so before the build,
+  # naming only whole numbers, so a rerun after a go-fetch failure is not silently the same build (A-795).
+  value=$(env_value GO_FETCH_TIMEOUT)
+  if [[ -n $caller_go_fetch_timeout && $caller_go_fetch_timeout != "$value" ]]; then
+    if [[ -z $value ]]; then
+      value='600, the default'
+    elif ! [[ $value =~ ^[1-9][0-9]*$ ]]; then
+      value='not a whole number of seconds'
+    fi
+    if [[ $caller_go_fetch_timeout =~ ^[1-9][0-9]*$ ]]; then
+      echo "Note: upgrade ignores GO_FETCH_TIMEOUT=$caller_go_fetch_timeout from your shell; it reads only .env (now $value)." \
+        "To use it, set GO_FETCH_TIMEOUT=$caller_go_fetch_timeout in .env and run upgrade again."
+    else
+      echo "Note: upgrade ignores GO_FETCH_TIMEOUT from your shell, which is not a whole number of seconds; it reads only .env (now $value)."
+    fi
+  fi
   run_check || die "Nothing was restarted. Fix .env, or put the previous file back with: mv $copy .env"
   up_wait --build ||
     die "The services did not build or become healthy; the message above says why. Inspect docker compose ps and docker compose logs app; the previous .env is $copy (UPGRADING.md, Rolling back)."
