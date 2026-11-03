@@ -34,6 +34,53 @@ class ReviewHookTests(unittest.TestCase):
                     'hook_event_name': event, 'stop_hook_active': True,
                 })))
 
+    def transcript(self, *rows):
+        import tempfile
+        f = tempfile.NamedTemporaryFile('w', suffix='.jsonl', delete=False)
+        self.addCleanup(Path(f.name).unlink)
+        for row in rows:
+            f.write((row if isinstance(row, str) else json.dumps(row)) + '\n')
+        f.close()
+        return f.name
+
+    PROMPT = {'type': 'user', 'message': {'role': 'user', 'content': 'fix the order page'}}
+    NOTICE = {'type': 'user', 'message': {'role': 'user',
+              'content': '<task-notification><task-id>b1</task-id></task-notification>'}}
+    TOOL = {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ok'}]}}
+    META = {'type': 'user', 'isMeta': True, 'message': {'role': 'user', 'content': 'Stop hook feedback: …'}}
+
+    def reminder(self, event='Stop'):
+        return {'type': 'attachment', 'attachment': {
+            'type': 'hook_blocking_error', 'hookEvent': event,
+            'blockingError': {'blockingError': 'Before finishing, scrutinise your assigned OPSEC Market scope once more'}}}
+
+    def stop(self, path, event='Stop'):
+        return self.invoke(json.dumps({'hook_event_name': event, 'stop_hook_active': False, 'transcript_path': path}))
+
+    def test_stop_reminds_once_per_typed_request(self):
+        # The first stop after a request is reminded.
+        self.assertEqual(self.stop(self.transcript(self.PROMPT, self.TOOL))['decision'], 'block')
+        # Later stops on the same request (background notices, tool results, the hook's own feedback) are not.
+        path = self.transcript(self.PROMPT, self.reminder(), self.META, self.NOTICE, self.TOOL)
+        self.assertIsNone(self.stop(path))
+        # A new request is reminded again.
+        path = self.transcript(self.PROMPT, self.reminder(), self.NOTICE,
+                               {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'push it'}]}})
+        self.assertEqual(self.stop(path)['decision'], 'block')
+
+    def test_other_reminders_and_subagents_do_not_suppress(self):
+        # A reminder before the latest request, or a SubagentStop reminder, does not count.
+        self.assertEqual(self.stop(self.transcript(self.reminder(), self.PROMPT))['decision'], 'block')
+        self.assertEqual(self.stop(self.transcript(self.PROMPT, self.reminder('SubagentStop')))['decision'], 'block')
+        # SubagentStop keeps its one reminder per continuation regardless of the transcript.
+        path = self.transcript(self.PROMPT, self.reminder())
+        self.assertEqual(self.stop(path, 'SubagentStop')['decision'], 'block')
+
+    def test_unreadable_transcript_still_reminds(self):
+        for path in (None, '', '/nonexistent/transcript.jsonl', self.transcript('{', 'null', '[]')):
+            with self.subTest(path=path):
+                self.assertEqual(self.stop(path)['decision'], 'block')
+
     def test_malformed_or_unrelated_input_fails_open(self):
         for payload in ('', '{', 'null', '[]', '{}',
                         '{"hook_event_name":"PreToolUse"}'):
