@@ -318,7 +318,8 @@ The strengthened v2 contract additionally requires:
   `sslmode=verify-full`. A database restart is retried, not fatal, and recorded
   as `db_unavailable` after reconnecting; a stopped worker is shown on the private
   panel and overview while capture is on. Capture and limit changes by host
-  command are audited once per change (A-682, A-683, A-687).
+  command are audited once per change, and a replay that requeues legacy
+  snapshots once with its count (A-682, A-683, A-687, A-744).
 - Uniform, monotone and low-contrast new image hashes do not create perceptual
   matches. Exact SHA256 and useful informative/legacy hashes remain supported;
   no orientation/crop/semantic-image guarantee is implied.

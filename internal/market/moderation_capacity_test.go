@@ -410,6 +410,55 @@ func TestModerationConcurrentLegacyReplayRespectsActorCap(t *testing.T) {
 	}
 }
 
+// A-744 (SEC105-1): a replay that requeues legacy snapshots writes one actorless audit row with the count, in the
+// requeue's transaction; a replay that queues nothing writes none, and a failed insert leaves nothing requeued.
+func TestModerationReplayAuditedOnlyWhenQueued(t *testing.T) {
+	legacy := newPooledHistoricalFixture(t, 127)
+	vendor, _ := legacy.keylessUser("legacy_replay_audit_vendor", "vendor") // schema 127 predates sessions.pgp_access_key (129)
+	agExec(legacy, `UPDATE settings SET value='true' WHERE key='moderation_enabled'`)
+	for range 2 {
+		legacy.product(vendor, "digital")
+	}
+	agExec(legacy, `UPDATE moderation_jobs SET completed_at=now()`)
+	dsn, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := dsn.Query()
+	q.Set("search_path", agStr(legacy, `SELECT current_schema()`))
+	dsn.RawQuery = q.Encode()
+	e := startTestApp(t, dsn.String())
+	const want = "Moderation replay queued 2 legacy snapshot(s) by host command"
+	const replayRows = `SELECT count(*) FROM audit_events WHERE action LIKE 'Moderation replay%'`
+	pending := func() int { return agInt(e, `SELECT count(*) FROM moderation_jobs WHERE completed_at IS NULL`) }
+	// The audit insert fails after the requeue ran: the transaction commits neither.
+	agExec(e, `CREATE FUNCTION replay_audit_refused() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'refused'; END$$`)
+	agExec(e, `CREATE TRIGGER replay_audit_refused BEFORE INSERT ON audit_events FOR EACH ROW WHEN (NEW.action LIKE 'Moderation replay%') EXECUTE FUNCTION replay_audit_refused()`)
+	if queued, _, err := ReplayModerationJobs(t.Context(), e.DB); err == nil {
+		t.Fatalf("replay succeeded with its audit insert refused: queued=%d", queued)
+	}
+	if pending() != 0 || agInt(e, replayRows) != 0 || agInt(e, `SELECT pending FROM moderation_capacity`) != 0 {
+		t.Fatal("a failed replay left a requeue or an audit row")
+	}
+	agExec(e, `DROP TRIGGER replay_audit_refused ON audit_events`)
+	before := agInt(e, `SELECT count(*) FROM audit_events`)
+	queued, _, err := ReplayModerationJobs(t.Context(), e.DB)
+	if err != nil || queued != 2 || pending() != 2 {
+		t.Fatalf("replay queued=%d pending=%d err=%v", queued, pending(), err)
+	}
+	if agInt(e, `SELECT count(*) FROM audit_events`) != before+1 ||
+		agInt(e, `SELECT count(*) FROM audit_events WHERE user_id IS NULL AND action=$1`, want) != 1 {
+		t.Fatalf("replay audit rows: %v", agStr(e, `SELECT coalesce(string_agg(coalesce(user_id,'-')||':'||action, ' | '),'') FROM audit_events WHERE action LIKE 'Moderation replay%'`))
+	}
+	// Both snapshots are pending now, so a second replay queues nothing and writes nothing.
+	if queued, _, err = ReplayModerationJobs(t.Context(), e.DB); err != nil || queued != 0 {
+		t.Fatalf("second replay queued=%d err=%v", queued, err)
+	}
+	if agInt(e, `SELECT count(*) FROM audit_events`) != before+1 {
+		t.Fatal("a replay that queued nothing wrote an audit row")
+	}
+}
+
 func TestModerationEscalationsCoalesceWithinSourceWithoutActorLink(t *testing.T) {
 	e := newTestApp(t)
 	vendor, _ := e.user("source_coalescing_vendor", "vendor")

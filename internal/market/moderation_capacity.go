@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 const moderationAllocationBytes int64 = 512 << 10
@@ -73,6 +74,15 @@ func ReplayModerationJobs(ctx context.Context, db *sql.DB) (queued, skipped int6
 	if err != nil {
 		return 0, 0, err
 	}
-	err = tx.Commit()
-	return
+	// A-744: the worker's host command, audited without an actor as capture on/off is (SetModerationEnabled), in the
+	// requeue's transaction and with the count only. A replay that queues nothing writes no row.
+	if queued > 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO audit_events(action) VALUES($1)`, fmt.Sprintf("Moderation replay queued %d legacy snapshot(s) by host command", queued)); err != nil {
+			return 0, 0, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return queued, skipped, nil
 }
