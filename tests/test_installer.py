@@ -1061,7 +1061,7 @@ time.sleep(60)
         self.assertNotIn('1h;x', result.stdout + result.stderr)
 
     def test_external_clearnet_local_http(self):
-        url ='postgresql://test:local-only@database:5432/scratch?sslmode=require'
+        url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
         result = self.run_installer(['clearnet', url, 'yes', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()

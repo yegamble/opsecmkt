@@ -68,6 +68,28 @@ class ReviewHookTests(unittest.TestCase):
                                {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'push it'}]}})
         self.assertEqual(self.stop(path)['decision'], 'block')
 
+    def test_request_typed_while_working_is_a_new_request(self):
+        # QA118-1: a message typed mid-turn is recorded as a human queued prompt, not a user row.
+        queued = {'type': 'attachment', 'attachment': {
+            'type': 'queued_command', 'commandMode': 'prompt', 'origin': {'kind': 'human'}, 'prompt': 'and push it'}}
+        self.assertEqual(self.stop(self.transcript(self.PROMPT, self.reminder(), queued))['decision'], 'block')
+        self.assertIsNone(self.stop(self.transcript(self.PROMPT, self.reminder(), queued, self.reminder())))
+        # A queued notification from a peer or task is not a request.
+        peer = {'type': 'attachment', 'attachment': {
+            'type': 'queued_command', 'commandMode': 'prompt', 'origin': {'kind': 'peer'}}}
+        self.assertIsNone(self.stop(self.transcript(self.PROMPT, self.reminder(), peer)))
+
+    def test_odd_transcripts_still_remind(self):
+        # QA118-2: undecodable bytes and odd text blocks must not end in silence or a crash.
+        import tempfile
+        f = tempfile.NamedTemporaryFile('wb', suffix='.jsonl', delete=False)
+        self.addCleanup(Path(f.name).unlink)
+        f.write(json.dumps(self.PROMPT).encode() + b'\n\xff\xfe broken\n')
+        f.close()
+        self.assertEqual(self.stop(f.name)['decision'], 'block')
+        odd = {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'text', 'text': None}, 5]}}
+        self.assertEqual(self.stop(self.transcript(odd))['decision'], 'block')
+
     def test_other_reminders_and_subagents_do_not_suppress(self):
         # A reminder before the latest request, or a SubagentStop reminder, does not count.
         self.assertEqual(self.stop(self.transcript(self.reminder(), self.PROMPT))['decision'], 'block')
