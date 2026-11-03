@@ -1,7 +1,11 @@
 FROM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# A bounded retry on transport errors only; GOPROXY and GOSUMDB stay the image's (A-782, scripts/go-fetch.sh).
+COPY scripts/go-fetch.sh /usr/local/bin/go-fetch.sh
+# Seconds per attempt. A link too slow to fetch the largest module in that time raises it: docs/install/troubleshooting.md.
+ARG GO_FETCH_TIMEOUT=600
+RUN sh /usr/local/bin/go-fetch.sh
 COPY . .
 # The build identity `opsecmkt version` and /admin/system report (A-696): the release workflow passes the tag and commit,
 # CI `ci` and its commit, scripts/install.sh a clean checkout's. Empty values keep "development" and no commit. Only a

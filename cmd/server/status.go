@@ -15,14 +15,15 @@ import (
 // legacy install; market.KeyRootSource). Errors carry a class only; neither output ever contains DATABASE_URL
 // or another secret. When active staff accounts have no second factor (A-706: staff actions are refused until
 // they enrol), a count, never a handle, goes to warn: the installer parses the stdout line exactly. So does the
-// warning that an installed market never enrolled retention, so its backups cannot reopen without it (A-772).
+// warning that an installed market never enrolled retention, so its backups cannot reopen without it (A-772), and the
+// fixed reason an outage's deadline recheck waits, for an operator whose panel shares the failed ingress (A-782).
 func status(ctx context.Context, dsn string, getenv func(string) string, out, warn io.Writer) error {
 	if dsn == "" {
 		return errors.New("DATABASE_URL required")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	installed, schema, staffWithoutFactor, retentionUnenrolled, err := market.Status(ctx, dsn)
+	installed, schema, staffWithoutFactor, retentionUnenrolled, recheckWaitWhy, err := market.Status(ctx, dsn)
 	if err != nil {
 		return err
 	}
@@ -31,6 +32,11 @@ func status(ctx context.Context, dsn string, getenv func(string) string, out, wa
 	}
 	if staffWithoutFactor > 0 {
 		if _, err = fmt.Fprintf(warn, "warning: %d active staff account(s) have no second factor and cannot take staff actions until they turn on an authenticator or PGP sign-in; Admin > Users > Staff roster lists them\n", staffWithoutFactor); err != nil {
+			return err
+		}
+	}
+	if recheckWaitWhy != "" {
+		if _, err = fmt.Fprintf(warn, "warning: an outage's deadline recheck is waiting: %s; its request stays pending and every hold stays in force\n", recheckWaitWhy); err != nil {
 			return err
 		}
 	}

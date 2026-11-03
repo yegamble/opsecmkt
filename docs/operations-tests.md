@@ -69,6 +69,10 @@ The script creates five uniquely named `opsecmkt_ops_*` databases, generates tem
 
 Only the newly generated database names are used as backup/restore targets. The server runs on a free loopback port with an empty environment apart from the scratch database URL. An exit trap stops it, drops every scratch database and removes temporary keys, dumps, and logs. Use a dedicated local/CI server: the test role necessarily has database-creation permissions, and terminating the script with `SIGKILL` can prevent cleanup. The original database named in `TEST_DATABASE_URL` is used only as a connection for creating and dropping the scratch databases.
 
+## Go module fetch
+
+`scripts/test-go-fetch.sh` runs `scripts/go-fetch.sh` against a local Python proxy serving modules it makes up, with their hashes in `go.sum`, so nothing leaves the host. A truncated stream, a 503 and a hang each pass on the next attempt with the failure in the log; a tampered zip and an unknown error each fail after exactly one attempt; failures that persist stop after three; a slow first install that finishes a module in every attempt keeps going and downloads each module once; a module slower than a low `GO_FETCH_TIMEOUT` gives up naming that setting and passes with a raised one. The operations job runs it. It needs Go, Python 3 and `timeout`.
+
 ## Documented onion-mirror commands
 
 ```sh

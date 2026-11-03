@@ -18,6 +18,8 @@ services:
         BUILD_VERSION: ${OPSECMKT_BUILD_VERSION:-}
         BUILD_COMMIT: ${OPSECMKT_BUILD_COMMIT:-}
         SECURITY_REFRESH: ${OPSECMKT_SECURITY_REFRESH:-}
+        # Seconds per attempt of the module download; a slow link sets it in .env (docs/install/troubleshooting.md).
+        GO_FETCH_TIMEOUT: ${GO_FETCH_TIMEOUT:-600}
     restart: unless-stopped
     networks: [backend]
     environment:

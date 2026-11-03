@@ -60,7 +60,7 @@ CLAMD_ADDRESS CLAMAV_IMAGE CLAMAV_IMAGE_DEFAULT SCANNER_MAX_SIGNATURE_AGE_DAYS I
 ESCROW_BTC_ARBITER_WALLET ESCROW_BTC_WATCH_WALLET ESCROW_BTC_FEE_BPS ESCROW_BTC_FEE_ADDRESS ESCROW_BTC_FEE_RATE
 ESCROW_XMR ESCROW_XMR_WALLET_RPC_URL ESCROW_XMR_DAEMON_URL ESCROW_XMR_FEE_BPS ESCROW_XMR_FEE_ADDRESS ESCROW_XMR_SLOTS
 ESCROW_XMR_MAX_FEE ESCROW_XMR_SEED_KEY ESCROW_XMR_TOR_RELAY MONERO_WALLET_SECRET ESCROW_XMR_WALLET_RPC_PASSWORD ESCROW_SIGNER_SOCKET
-ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE LOG_DRIVER TOR_VERSION OPSECMKT_BUILD_VERSION OPSECMKT_BUILD_COMMIT OPSECMKT_SECURITY_REFRESH'
+ESCROW_SIGNER_RPC_URL ESCROW_SIGNER_SEED_FILE LOG_DRIVER TOR_VERSION OPSECMKT_BUILD_VERSION OPSECMKT_BUILD_COMMIT OPSECMKT_SECURITY_REFRESH GO_FETCH_TIMEOUT'
 # What `upgrade` writes for a key missing from .env: the value Compose already uses when the key is absent, so
 # adding it changes nothing but makes it visible. APP_MODE, APP_PORT, COMPOSE_PROJECT_NAME, COMPOSE_PROFILES and
 # COMPOSE_FILE are derived from the install instead; secrets are never invented (APP_SECRET_KEY is copied from
@@ -1710,7 +1710,8 @@ cmd_init() {
   # Builds, starts and waits until every service's healthcheck passes: the app answers /healthz (it reaches
   # PostgreSQL and has migrated) and each Tor service has written its onion address.
   up_wait --build ||
-    die 'The services did not become healthy. Inspect docker compose ps and docker compose logs app; .env and data were kept.'
+    die 'The services did not build or become healthy; the message above says why. Inspect docker compose ps and docker compose logs app; .env and data were kept.' \
+      ${admin:+"So the administrator was not created; after retrying use ./scripts/install.sh setup-token or docker compose run --rm app -bootstrap-admin $admin"}
   local onion='' base
   if [[ $mode == tor ]]; then
     onion=$(wait_onion tor) || onion=''

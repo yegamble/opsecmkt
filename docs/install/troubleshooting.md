@@ -16,7 +16,7 @@ docker compose logs app
 | Refuses because `.env` or volumes exist | An install is already here. See [First install failed](#first-install-failed). Never delete `.env` to bypass this. |
 | `The malware scanner needs a Docker host with at least 3 GiB of memory` | Add memory, or drop `--uploads yes`. |
 | `Refusing to install: the external database already belongs to a market` | Use an empty database, or restore that market's `.env`. |
-| `The services did not become healthy.` | See [First install failed](#first-install-failed). |
+| `The services did not build or become healthy; the message above says why.` | See [First install failed](#first-install-failed). |
 | Retired Bitcoin installer option | This source accepts Monero only. Remove the Bitcoin option; choose `--monero-network mainnet` for real funds or `--monero-network stagenet` for a test market. |
 | Unsupported network | Use `mainnet` for Monero real funds, or `stagenet` for a test market. |
 | `WARNING: the Docker data directory … has … GB free` | Not a refusal; the install continues. Free space before the nodes sync, or they stop when the disk is full ([estimates](requirements.md#disk-for-nodes)). |
@@ -31,6 +31,10 @@ docker compose logs
 ./scripts/install.sh check
 docker compose up -d --build --wait
 ```
+
+If the log ends with `go-fetch: gave up` and your link is only slow: each attempt at the Go module download is limited to 600 seconds and loses a module it has not finished (the largest is about 49 MB, so below about 81 KB/s it cannot finish). To raise the limit, add `GO_FETCH_TIMEOUT=3600` to `.env` and run `docker compose up -d --build --wait` as above; `./scripts/install.sh upgrade` keeps the line and uses it. A direct image build takes `docker build --build-arg GO_FETCH_TIMEOUT=3600`.
+
+If you gave `--admin HANDLE`, the installer says so when this happens: the administrator was not created, and a repeated `init` stops at the existing `.env`. After the retry, create it with the setup token (`./scripts/install.sh setup-token`, then the setup page) or with `docker compose run --rm app -bootstrap-admin HANDLE`.
 
 > **Warning:** don't delete `.env` or volumes. They may already hold this install's secrets and data.
 

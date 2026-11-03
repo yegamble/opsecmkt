@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"opsecmkt/internal/market"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,129 @@ func TestStatusFlagPrintsNoSecrets(t *testing.T) {
 		stdout, stderr, code := runServer(t, []string{"DATABASE_URL=" + wrong.String()}, "-status")
 		if code != 1 || stdout != "" || !strings.Contains(stderr, "authentication failed") || strings.Contains(stderr, secret) || strings.Contains(stderr, u.Host) {
 			t.Fatalf("wrong password: exit %d stdout %q stderr %q", code, stdout, stderr)
+		}
+	}
+}
+
+// TestStatusNamesRecheckWait is A-782 SRE113-1: when the panel shares the failed ingress, -status and the guides' fallback
+// SQL are how an operator learns why an outage's recheck waits. The warning goes to stderr with the panel's fixed reason, and
+// only while the outage's request is pending; the stdout line the installer parses never changes.
+func TestStatusNamesRecheckWait(t *testing.T) {
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("set TEST_DATABASE_URL for the database-backed -status checks")
+	}
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 8)
+	rand.Read(b)
+	schema := "test_status_wait_" + hex.EncodeToString(b)
+	if _, err = admin.Exec("CREATE SCHEMA " + schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Exec("DROP SCHEMA " + schema + " CASCADE"); admin.Close() })
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	dsn := u.String()
+	const setupToken = "status-wait-setup-token-5f2c9e7a1b4d8036cafe0123456789abcdef"
+	t.Chdir("../..")
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("SETUP_TOKEN", setupToken)
+	t.Setenv("APP_SECRET_KEY", "")
+	t.Setenv("COMPOSE_FILE", "")
+	app, err := market.New(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Close()
+	var latest int
+	if err = admin.QueryRow("SELECT max(version) FROM " + schema + ".schema_migrations").Scan(&latest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec("INSERT INTO " + schema + ".settings(key,value) VALUES('installed','true'),('retention_instance_id','status-wait-instance')"); err != nil {
+		t.Fatal(err)
+	}
+	set := func(recheck, wait string) {
+		t.Helper()
+		if _, err := admin.Exec("DELETE FROM " + schema + ".settings WHERE key IN ('escrow_xmr_release_recheck','escrow_xmr_recheck_wait')"); err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range map[string]string{"escrow_xmr_release_recheck": recheck, "escrow_xmr_recheck_wait": wait} {
+			if value == "" {
+				continue
+			}
+			if _, err := admin.Exec("INSERT INTO "+schema+".settings(key,value) VALUES($1,$2)", key, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	waitRow := func(reason string) string {
+		return `{"reason":"` + reason + `","db":"2026-11-02T00:00:00Z","app":"2026-11-02T00:00:00Z"}`
+	}
+	line := fmt.Sprintf("installed=true schema=%03d keyroot=setup_token\n", latest)
+	status := func() string {
+		t.Helper()
+		stdout, stderr, code := runServer(t, []string{"DATABASE_URL=" + dsn, "SETUP_TOKEN=" + setupToken, "APP_SECRET_KEY="}, "-status")
+		if code != 0 || stdout != line {
+			t.Fatalf("exit %d stdout %q stderr %q; want the one line %q", code, stdout, stderr, line)
+		}
+		return stderr
+	}
+	for reason, why := range map[string]string{
+		"database": "the application's clock and the database's clock differ by more than 5 minutes",
+		"daemon":   "the database's clock and the Monero daemon's newest block differ by more than MONERO_MAX_TIP_AGE",
+	} {
+		set("outage", waitRow(reason))
+		stderr := status()
+		if !strings.HasPrefix(stderr, "warning: ") || !strings.Contains(stderr, why) || strings.Count(stderr, "\n") != 1 ||
+			strings.Contains(stderr, "://") || strings.Contains(stderr, setupToken) || strings.Contains(stderr, "2026-11-02") {
+			t.Fatalf("waiting on the %s: stderr %q", reason, stderr)
+		}
+	}
+	// As on the panel: nothing without an outage's pending request, and nothing for a row only a hand could have written.
+	for name, c := range map[string]struct{ recheck, wait string }{
+		"nothing pending":         {"", ""},
+		"outage pending, no wait": {"outage", ""},
+		"a restore's recheck":     {"true", waitRow("database")},
+		"a wait with no request":  {"", waitRow("database")},
+		"a wait that is not JSON": {"outage", "not json"},
+	} {
+		set(c.recheck, c.wait)
+		if stderr := status(); stderr != "" {
+			t.Errorf("%s: stderr %q", name, stderr)
+		}
+	}
+
+	// The guides' fallback SQL, run verbatim, returns the wait row beside the request (a native production app keeps no log).
+	set("outage", waitRow("daemon"))
+	for _, guide := range []string{"docs/operator-guide.md", "docs/testnet-runbook.md", "UPGRADING.md"} {
+		text, err := os.ReadFile(guide)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := regexp.MustCompile("`(SELECT key,value FROM settings WHERE key IN \\('escrow_xmr_release_recheck'[^`]*)`").FindSubmatch(text)
+		if query == nil {
+			t.Fatalf("%s has no fallback SQL", guide)
+		}
+		tx, err := admin.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec("SET LOCAL search_path TO " + schema); err != nil {
+			t.Fatal(err)
+		}
+		var found int
+		err = tx.QueryRow("SELECT count(*) FROM ("+string(query[1])+") q WHERE key='escrow_xmr_recheck_wait' AND value=$1", waitRow("daemon")).Scan(&found)
+		tx.Rollback()
+		if err != nil || found != 1 {
+			t.Fatalf("%s's SQL %q returned %d wait rows (err %v)", guide, query[1], found, err)
 		}
 	}
 }

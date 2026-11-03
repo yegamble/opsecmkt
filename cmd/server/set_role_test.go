@@ -131,6 +131,63 @@ func TestSetRoleCLI(t *testing.T) {
 	}
 }
 
+// A-781: -set-role into or out of staff of the account the saved staff contact names tells it, in the audit row and the
+// command's output too, as the admin form does; a move between staff roles and any other account tell no one.
+func TestSetRoleTellsTheSavedStaffContact(t *testing.T) {
+	dsn := cliSchema(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, q := range []string{
+		"INSERT INTO users(id,handle,password_hash,role,totp_enabled) VALUES('k1','keeper_admin','x','admin',true),('c1','saved_contact','x','buyer',true),('o1','other_buyer','x','buyer',true)",
+		"INSERT INTO settings(key,value) VALUES('staff_contact','saved_contact')",
+	} {
+		if _, err = db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(q, id, like string) (n int) {
+		t.Helper()
+		if err := db.QueryRow(q, id, like).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	const notices = "SELECT count(*) FROM notifications WHERE user_id=$1 AND body LIKE $2"
+	const audits = "SELECT count(*) FROM audit_events WHERE user_id=$1 AND action LIKE $2"
+	const named, unnamed = "An administrator named you as this market's staff contact.%", "An administrator removed you as this market's staff contact.%"
+
+	// Another account's promotion says nothing.
+	stdout, stderr, code := runServer(t, nil, "-set-role", "other_buyer", "moderator")
+	if code != 0 || stderr != "" || stdout != "Role of other_buyer changed from buyer to moderator.\n" || count(notices, "o1", named) != 0 || count(notices, "c1", named) != 0 {
+		t.Fatalf("other account: %d %q %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runServer(t, nil, "-set-role", "saved_contact", "moderator")
+	if code != 0 || stderr != "" || stdout != "Role of saved_contact changed from buyer to moderator; told the staff member named.\n" {
+		t.Fatalf("promotion: %d %q %q", code, stdout, stderr)
+	}
+	if count(notices, "c1", named) != 1 || count(audits, "c1", "Told the staff member named: role changed to moderator by host command") != 1 {
+		t.Fatal("promotion did not tell the contact, or its audit row does not say so")
+	}
+	// Refused repeat adds none; a move between staff roles adds none.
+	if _, _, code = runServer(t, nil, "-set-role", "saved_contact", "moderator"); code != 1 {
+		t.Fatalf("repeat exit %d", code)
+	}
+	stdout, stderr, code = runServer(t, nil, "-set-role", "saved_contact", "admin")
+	if code != 0 || stderr != "" || stdout != "Role of saved_contact changed from moderator to admin.\n" || count(notices, "c1", named) != 1 || count(notices, "c1", unnamed) != 0 {
+		t.Fatalf("staff to staff: %d %q %q", code, stdout, stderr)
+	}
+	stdout, stderr, code = runServer(t, nil, "-set-role", "saved_contact", "buyer")
+	if code != 0 || stderr != "" || stdout != "Role of saved_contact changed from admin to buyer; ended 0 session(s) and any pending sign-ins; told the staff member no longer named.\n" {
+		t.Fatalf("demotion: %d %q %q", code, stdout, stderr)
+	}
+	if count(notices, "c1", unnamed) != 1 || count(audits, "c1", "Told the staff member no longer named: role changed to buyer by host command") != 1 {
+		t.Fatal("demotion did not tell the contact, or its audit row does not say so")
+	}
+}
+
 // A-706 (SEC706-2): -set-role does not make an account without TOTP or PGP sign-in a moderator or administrator,
 // and says why; removing staff roles stays allowed.
 func TestSetRoleRefusesFactorlessStaffAppointment(t *testing.T) {
