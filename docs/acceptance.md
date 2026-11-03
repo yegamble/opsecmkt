@@ -1097,3 +1097,8 @@ Record `go test ./...`, relevant race tests, fresh-install and persistence resul
   locked-boot checks. Configuration-bundle roundtrip tests are partial evidence
   ([steps](testnet-runbook.md#leg-replacement-application-host-a-698)).
 - [ ] A-771: `deploy recovery restore` takes `--app-bind` and `--backend-bind` for a replacement host, and the runbook's replacement leg runs in its written order (`TestRecoveryRestoreThenNewBindRendersNewAddress`, `TestRecoveryRestoreOmittedBindsKeepRetainedValues`, `TestRecoveryRestoreRefusesBadBindAndChangesNothing`, `TestRecoveryLegRestoreBindTLSReplaceRunsInWrittenOrder`). Fake encrypted host and fake Docker only: no host has run it (A-698).
+- [ ] The [replace-a-host guide](install/replace-a-host.md) is rehearsed on real hosts on stagenet: a dead application,
+  payment and gateway host are each rebuilt from off-host backups alone, with the old host unavailable, and a
+  compromised host is replaced with its evidence kept and each secret its table names replaced or recorded as
+  irreplaceable. Partial evidence: `tests/test_replace_a_host_docs.py` checks that every `opsecmkt` subcommand and
+  flag in the guide exists and that it claims no recovery time; no host has run any of it.

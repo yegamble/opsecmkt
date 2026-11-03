@@ -212,4 +212,5 @@ exposed service credentials through the normal recovery process. Prepare any
 signed public revocation notice offline and publish it through an independently
 authenticated channel. Never reuse an onion identity that is known compromised.
 Coordinate existing Monero wallets, pending payouts and stable secret pins before
-changing keys.
+changing keys. [Replace a dead or compromised host](replace-a-host.md) lists, per host,
+which secrets a command can replace and which cannot be replaced in an existing market.
