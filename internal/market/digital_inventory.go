@@ -376,9 +376,11 @@ func releaseDigitalUnits(ctx context.Context, tx *sql.Tx, o *Order) error {
 	return err
 }
 
-// releaseDisputedDigitalUnits returns to stock the distinct units of o, a digital order leaving a dispute for to, when
-// the dispute ends in a refund (cancelled by the vendor's concession, or resolved for the buyer) and no delivery was
-// recorded for the order (A-711). The listing row is locked only when such a unit exists.
+// releaseDisputedDigitalUnits returns to stock the distinct units of o, a digital order moving to to, when it ends in a
+// refund and no delivery was recorded for the order (A-711): a dispute cancelled by the vendor's concession or resolved
+// for the buyer, or a held release refunded to the buyer (resolved or completed -> cancelled, A-789). Only a move to
+// resolved reads the dispute's outcome; a move to cancelled is a refund whatever the dispute decided. The listing row
+// is locked only when such a unit exists.
 func releaseDisputedDigitalUnits(ctx context.Context, tx *sql.Tx, o *Order, to string) error {
 	var undelivered bool
 	var outcome string
