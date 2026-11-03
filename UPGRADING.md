@@ -23,8 +23,7 @@ later recheck could bring back. **Keep the application host and the database hos
 
 Before an outage's recheck, whoever asked for it, the watcher compares the database's clock with the application's and with the newest
 block of a Monero daemon that says it is synced. If the first two differ by more than 5 minutes, or the database's clock and that block by
-more than `MONERO_MAX_TIP_AGE`, the request stays pending: no deadline moves, no order completes on a passed deadline, a no-ship cancel
-past its time waits and a dispute on a passed deadline is accepted. A log line, `monero escrow recheck deferred: …`, and **Admin →
+more than `MONERO_MAX_TIP_AGE`, the request stays pending: no deadline moves, no order completes on a passed deadline, a no-ship cancel whose time fell after the gap began, or of any order past its time on a host's request, waits, and a dispute on a passed deadline is accepted. A log line, `monero escrow recheck deferred: …`, and **Admin →
 Payments** say which comparison disagreed. A real outage has the same gap, so this only defers: with the clocks agreeing, a month's outage
 moves deadlines as before. A restore's recheck does not wait. A daemon that is unreachable, hung (5 seconds) or not synced, and an unrestricted
 one with no peers, stop nothing: the two clocks alone then decide. A restricted RPC cannot show its peers, so a synced one with an old tip waits, at most
@@ -58,6 +57,18 @@ pending, and each recheck now sends every active administrator one notice naming
 a simple pattern or one containing the handle before it writes or starts anything (PM-7), where the refusal used to come from
 `-bootstrap-admin` with the market already running. The check runs in the shell from the lists in `internal/market/`; the password
 stays out of every command's arguments, the output and `.env`. `-bootstrap-admin` still checks it too.
+
+## A later outage keeps a hold that ended inside it; an order overdue before a gap can be cancelled before the recheck (A-779)
+
+No migration or configuration. A vendor's grace on a buyer's no-ship cancel that ended after a later gap began used to count as finished: the
+round narrowed it to the new gap, so the order could be cancelled and refunded at once, and a restore's grace could be narrowed the same way. The
+round now keeps that hold's start, or none, and gives it a new end. A hold that ended before the gap began narrows as it did.
+
+While a watcher-found outage's recheck is pending, also while it waits for the clocks, and while the stored step is stale, an order overdue
+before the start that round will keep is no longer refused with a reason naming the outage: its cancel is accepted and requests the refund, as it
+would be after the round. Every other order past its time still waits. The order page and the vendor desk now say the same as the action in
+those times, where the page could offer a cancel the action then refused. A host's request and a restore's still hold every order. The
+default itself, DA108-1, remains the owner's open decision (A-777).
 
 ## An outage's cancel hold skips orders overdue before it; a host recheck request is audited (A-773, A-764)
 
@@ -183,7 +194,7 @@ The recheck also records the vendor's grace, since vendors lost the time too: fo
 order whose ship-by time or delivery deadline passes before then is refused, naming the outage, and the vendor can still ship
 or deliver it.
 
-That hold applies to an order whose ship-by time or delivery deadline fell after the gap began, or is still to come within the 72 hours; an order overdue before the gap began can still be cancelled, as nothing about the outage held it up (DA108-1; a default the owner may overturn). A host request knows no such start, since nothing records when ingress failed, so unless it continues a hold that has one it holds every order past its time. **Admin → Payments** states a running hold and its end, because a recheck that moved 0 deadlines still places one, and a restore's hold still covers every order.
+That hold applies to an order whose ship-by time or delivery deadline fell after the gap began, or is still to come within the 72 hours; an order overdue before the gap began can still be cancelled, as nothing about the outage held it up (DA108-1; a default the owner may overturn). A host request knows no such start, since nothing records when ingress failed, so unless it continues a hold that has one it holds every order past its time. A hold whose end fell after a later gap began belongs to that outage, whether or not it has ended, so the next round keeps its start, or none after a restore or a host request, and gives a new end (A-779). Until that round has run, the same start decides which orders wait. **Admin → Payments** states a running hold and its end, because a recheck that moved 0 deadlines still places one, and a restore's hold still covers every order.
 
 What the watcher cannot see: it knows only that its own step did not run. Public access down while the process runs (a stopped
 Tor gateway or proxy, a network failure) leaves no gap, and deadlines keep passing: the watcher completes those orders and their
@@ -209,10 +220,8 @@ order deadlines it moved. The `/admin` overview flags **Payments** while one is 
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
-of the last step is older than the threshold, the action itself refuses a no-ship cancel past its time, creating no refund, and
-accepts a dispute on a passed deadline, by the database's clock (A-763). The order page does not read that time, so until the check
-has run it can still offer that cancel, which is then refused with its reason, and not offer that dispute. A dispute on a deadline
-that passed in the outage is refused as late, and a no-ship cancel past its time accepted, only in these cases, and that cancel
+of the last step is older than the threshold, the action itself refuses a no-ship cancel whose time fell after that stored time, creating no refund, and accepts a dispute on a passed deadline, by the database's clock (A-763). An order overdue before that stored time was not held up by the outage and can still be cancelled. The order page and the vendor desk read that time for the cancel and say the same (A-779); for a dispute the order page does not read it, so until the check has run it may not offer that dispute. A dispute on a deadline
+that passed in the outage is refused as late, and a no-ship cancel whose time passed in the outage accepted, only in these cases, and that cancel
 requests a refund, which relays once a watcher runs:
 
 - The gap is no longer than the threshold, which is no outage: no recheck follows either.

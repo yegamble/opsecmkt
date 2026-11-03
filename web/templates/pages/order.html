@@ -135,10 +135,10 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 {{with formNonce .Action}}<input type="hidden" name="form_nonce" value="{{.}}">{{end}}
 <input type="hidden" name="order_id" value="{{$o.ID}}">
-<label>Delivery content<textarea name="content" required maxlength="32000" placeholder="Download link, licence key, or an armored PGP message to the buyer">
+<label>Delivery content<textarea name="content" required maxlength="32000" aria-describedby="order-deliver-help" placeholder="Download link, licence key, or an armored PGP message to the buyer">
 </textarea>
 </label>
-<span class="help">Include every purchased item in this one delivery for {{$o.Units}} unit(s). The market encrypts this content separately to the buyer’s current PGP public key before storing it on this order status page. You may also paste a complete PGP message already encrypted to that key with a visible recipient key ID; it will not be encrypted again. The buyer decrypts it in their own PGP application. Delivering is final; replacement content can be appended here later.</span>
+<span class="help" id="order-deliver-help">{{with $.XMREscrow}}{{if .NothingCounted}}No deposit to this escrow counts now, so nothing is sent now: check the deposit before you deliver, because if it is not listed again, nothing is paid to you. {{else if .ShortCounted}}A deposit to this escrow may have been dropped or replaced on the network, so less than the price counts now: check the deposit before you deliver. {{end}}{{end}}Include every purchased item in this one delivery for {{$o.Units}} unit(s). The market encrypts this content separately to the buyer’s current PGP public key before storing it on this order status page. You may also paste a complete PGP message already encrypted to that key with a visible recipient key ID; it will not be encrypted again. The buyer decrypts it in their own PGP application. Delivering is final; replacement content can be appended here later.</span>
 <button class="primary" type="submit">{{.Label}}</button>
 </form>{{else if eq .To "disputed"}}<details class="order-action">
 <summary class="accent mono">{{.Label}}</summary>

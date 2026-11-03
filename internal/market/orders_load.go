@@ -815,9 +815,11 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 		at                      string
 		passed, recheck, outage bool
 		wait                    sql.NullTime
+		byTime                  sql.NullTime
+		hold                    xmrCancelHold
 	}
 	due := map[string]shipBy{}
-	rows, err = a.db.QueryContext(ctx, `SELECT es.order_id,to_char(es.ship_by,'YYYY-MM-DD HH24:MI "UTC"'),es.ship_by<=now(),es.coin='XMR' AND EXISTS(SELECT 1 FROM settings WHERE key=$2),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`
+	rows, err = a.db.QueryContext(ctx, `SELECT es.order_id,to_char(es.ship_by,'YYYY-MM-DD HH24:MI "UTC"'),es.ship_by<=now(),es.coin='XMR' AND EXISTS(SELECT 1 FROM settings WHERE key=$2),`+xmrCancelWaitSQL+`,`+xmrOutageCauseSQL+`,es.ship_by,`+xmrCancelHoldSQL+`
 		FROM escrows es WHERE es.order_id=ANY($1) AND es.ship_by IS NOT NULL`, ids, xmrReleaseRecheckKey)
 	if err != nil {
 		return err
@@ -825,10 +827,11 @@ func loadVendorWaiting(ctx context.Context, a *App, d *PageData) error {
 	for rows.Next() {
 		var id string
 		var s shipBy
-		if err = rows.Scan(&id, &s.at, &s.passed, &s.recheck, &s.wait, &s.outage); err != nil {
+		if err = rows.Scan(append([]any{&id, &s.at, &s.passed, &s.recheck, &s.wait, &s.outage, &s.byTime}, s.hold.dest()...)...); err != nil {
 			rows.Close()
 			return err
 		}
+		s.recheck, s.outage = a.xmrCancelRecheck(s.hold, s.byTime, s.recheck, s.outage) // noShipCancel's rule
 		due[id] = s
 	}
 	rows.Close()
