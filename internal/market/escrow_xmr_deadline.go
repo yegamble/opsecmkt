@@ -260,18 +260,40 @@ func (a *App) xmrCancelRecheck(h xmrCancelHold, shipBy sql.NullTime, requested, 
 	if !requested && a.xmrStaleStep(h.step, h.now) {
 		requested, outage, gapFrom = true, true, h.step
 	}
-	if !requested || !outage || !gapFrom.Valid || !shipBy.Valid {
+	if !requested || !outage || !shipBy.Valid {
 		return requested, outage
 	}
-	gap, err := time.Parse(time.RFC3339Nano, gapFrom.String)
-	if err != nil {
-		return true, true
-	}
-	start := sql.NullTime{Time: gap, Valid: true}
-	if xmrSameGrace(gap, h.graceEnd) {
-		start = h.graceFrom
-	}
+	start := xmrRoundStart(gapFrom, h.graceEnd, h.graceFrom)
 	return !start.Valid || !shipBy.Time.Before(xmrGraceHeldFrom(start.Time)), true
+}
+
+// xmrRoundStart is the start the round for a pending outage request whose gap began at gapFrom will leave (PAY113-2): the
+// grace's start graceFrom, or none, when the gap belongs to the grace ending at graceEnd (xmrSameGrace, PAY113-1), and otherwise
+// the gap. No gap, or one that cannot be read, is none: the round holds every order. xmrCancelRecheck, the panel and the host
+// command go by it, so what they say and what the cancel does cannot drift apart (A-785).
+func xmrRoundStart(gapFrom sql.NullString, graceEnd, graceFrom sql.NullTime) sql.NullTime {
+	gap, err := time.Parse(time.RFC3339Nano, gapFrom.String)
+	if !gapFrom.Valid || err != nil {
+		return sql.NullTime{}
+	}
+	if xmrSameGrace(gap, graceEnd) {
+		return graceFrom
+	}
+	return sql.NullTime{Time: gap, Valid: true}
+}
+
+// xmrPendingHeldFrom is, for a pending outage request, the earliest ship_by its round holds as the pages name it
+// (xmrRoundStart, xmrGraceHeldFrom), or "" when it holds every order. It takes the three settings as stored: a time that
+// cannot be read is none, as on the panel's other lines.
+func xmrPendingHeldFrom(gapFrom, graceEnd, graceFrom sql.NullString) string {
+	readTime := func(s sql.NullString) sql.NullTime {
+		t, err := time.Parse(time.RFC3339Nano, s.String)
+		return sql.NullTime{Time: t, Valid: s.Valid && err == nil}
+	}
+	if start := xmrRoundStart(gapFrom, readTime(graceEnd), readTime(graceFrom)); start.Valid {
+		return utcUntil(xmrGraceHeldFrom(start.Time))
+	}
+	return ""
 }
 
 // xmrGraceHeldFrom is the earliest ship_by a found gap's start holds (PAY113R-2): the start less xmrOutageGap(), the most a
@@ -954,14 +976,16 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 	if err = tx.Commit(); err != nil {
 		return "", recheckRequestFailed(err)
 	}
-	const next = " With Monero escrow on, the watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. With ESCROW_XMR off the request stays pending until the first pass after it is on again, and a buyer's no-ship cancel past its time waits until then. Each recheck also holds a buyer's no-ship cancel for 72 hours, even if it moves no deadline: Admin > Payments states the hold and its end. "
+	const next = " With Monero escrow on, the watcher's next pass moves every shipped or delivered order's deadline that has passed or ends within 72 hours to 72 hours later and tells each buyer and vendor. With ESCROW_XMR off the request stays pending until the first pass after it is on again, and a buyer's no-ship cancel past its time waits until then"
+	const hold = ". Each recheck also holds a buyer's no-ship cancel for 72 hours, even if it moves no deadline: Admin > Payments states the hold and its end. "
 	const limits = "It cannot undo a completion. Repeat this within every 72 hours until public access returns, and run this once more when public access returns, so a buyer does not come back with minutes left. Each repeat notifies every buyer and vendor it moves again, so repeat no more often than that needs. If this market's clocks disagree, the recheck waits for them, 72 hours at the most, and Admin > Payments says why: correct the clock. Confirm on Admin > Payments that it shows pending or has just run, or by the operator guide's check if that panel shares the failed ingress: this command writes only to the database its URL names."
 	if written > 0 {
-		return "Deadline recheck now pending (outage)." + next + limits, nil
+		return "Deadline recheck now pending (outage)." + next + hold + limits, nil
 	}
 	var gate bool
-	var value sql.NullString
-	if err = db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",(SELECT value FROM settings WHERE key=$1)", xmrReleaseRecheckKey).Scan(&gate, &value); err != nil {
+	var value, gapFrom, graceEnd, graceFrom sql.NullString
+	if err = db.QueryRowContext(ctx, "SELECT "+restoreGateSQL+",(SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2),(SELECT value FROM settings WHERE key=$3),(SELECT value FROM settings WHERE key=$4)",
+		xmrReleaseRecheckKey, xmrOutageGapFromKey, xmrCancelWaitKey, xmrCancelWaitFromKey).Scan(&gate, &value, &gapFrom, &graceEnd, &graceFrom); err != nil {
 		return "", recheckRequestFailed(err)
 	}
 	switch {
@@ -970,9 +994,13 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 	case !value.Valid: // a pass consumed the request between the two statements
 		return "", errors.New("a recheck ran just now; run this again if public access is still down; nothing was changed")
 	case value.String == xmrRecheckOutage:
-		return "Deadline recheck already pending (outage); nothing was changed." + next + limits, nil
+		// A-785: the watcher's request, with the gap's start it stored, holds only what its round will (xmrCancelRecheck).
+		if from := xmrPendingHeldFrom(gapFrom, graceEnd, graceFrom); from != "" {
+			return "Deadline recheck already pending (outage); nothing was changed." + next + ", except an order overdue since before " + from + ", which can still be cancelled" + hold + limits, nil
+		}
+		return "Deadline recheck already pending (outage); nothing was changed." + next + hold + limits, nil
 	}
-	return "A restore's deadline recheck is already pending; nothing was changed. Its notices say a restore, as they must." + next + limits, nil
+	return "A restore's deadline recheck is already pending; nothing was changed. Its notices say a restore, as they must." + next + hold + limits, nil
 }
 
 // recheckRequestFailed is RequestDeadlineRecheck's failed statement, by class only: pgconn's own text names the URL's user,
@@ -992,6 +1020,7 @@ type XMRDeadlineRecheckView struct {
 	WaitingWhy                 string // why an outage's pending recheck waits for the clocks (xmrClocksWhy, PAY108-1), fixed text
 	CancelHeldUntil            string // the end of the vendor's grace, while it runs (xmrCancelWaitKey, DA108-2)
 	CancelHeldFrom             string // when the grace has a gap's start, the earliest ship_by it holds (xmrCancelWaitFromKey, xmrGraceHeldFrom)
+	PendingHeldFrom            string // when the pending outage request has a start, the earliest ship_by it holds (xmrPendingHeldFrom, A-785)
 }
 
 // xmrDeadlineRecheckLoader fills XMRDeadlineRecheckView. A record that cannot be read, which only a hand could have
@@ -1001,13 +1030,16 @@ func xmrDeadlineRecheckLoader(ctx context.Context, a *App, _ *http.Request, d *P
 	if d.User == nil || d.User.Role != "admin" {
 		return nil
 	}
-	var pending, last, waitUntil, waitFrom, waiting sql.NullString
+	var pending, last, waitUntil, waitFrom, waiting, gapFrom sql.NullString
 	var now time.Time
-	if err := a.db.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2),(SELECT value FROM settings WHERE key=$3),(SELECT value FROM settings WHERE key=$4),(SELECT value FROM settings WHERE key=$5),now()",
-		xmrReleaseRecheckKey, xmrLastRecheckKey, xmrCancelWaitKey, xmrCancelWaitFromKey, xmrRecheckWaitKey).Scan(&pending, &last, &waitUntil, &waitFrom, &waiting, &now); err != nil {
+	if err := a.db.QueryRowContext(ctx, "SELECT (SELECT value FROM settings WHERE key=$1),(SELECT value FROM settings WHERE key=$2),(SELECT value FROM settings WHERE key=$3),(SELECT value FROM settings WHERE key=$4),(SELECT value FROM settings WHERE key=$5),(SELECT value FROM settings WHERE key=$6),now()",
+		xmrReleaseRecheckKey, xmrLastRecheckKey, xmrCancelWaitKey, xmrCancelWaitFromKey, xmrRecheckWaitKey, xmrOutageGapFromKey).Scan(&pending, &last, &waitUntil, &waitFrom, &waiting, &gapFrom, &now); err != nil {
 		return err
 	}
 	v := &XMRDeadlineRecheckView{On: a.escrowXMR != nil, Pending: pending.Valid, PendingOutage: pending.String == xmrRecheckOutage}
+	if v.PendingOutage {
+		v.PendingHeldFrom = xmrPendingHeldFrom(gapFrom, waitUntil, waitFrom)
+	}
 	var rec xmrLastRecheck
 	if last.Valid && json.Unmarshal([]byte(last.String), &rec) == nil && !rec.At.IsZero() {
 		v.Ran, v.RanOutage, v.RanAt, v.Moved, v.RanClocksApart = true, rec.Cause == xmrRecheckOutage, utcUntil(rec.At), rec.Moved, rec.ClocksApart
