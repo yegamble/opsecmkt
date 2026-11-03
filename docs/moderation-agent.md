@@ -63,7 +63,10 @@ setting changes: restarting a worker while capture is already on, or a repeated
 `--disable`, writes none. Do not delete tables or
 rerun setup to clear a queue. `--replay` revisits eligible legacy snapshots;
 completed metadata-only jobs are skipped and their count is reported. They
-cannot be reinterpreted as empty content or as a newer source revision. An
+cannot be reinterpreted as empty content or as a newer source revision. A replay
+that requeues any writes one audit row without an actor, in the same
+transaction, "Moderation replay queued N legacy snapshot(s) by host command";
+one that queues none writes nothing. An
 existing decision for the same snapshot and policy is reused. Model output is not guaranteed bit-for-bit reproducible: the durable
 store retains the first validated result for its stable identity.
 

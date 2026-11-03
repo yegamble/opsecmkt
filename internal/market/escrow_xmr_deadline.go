@@ -995,8 +995,10 @@ func RequestDeadlineRecheck(ctx context.Context, db *sql.DB) (string, error) {
 		return "", errors.New("a recheck ran just now; run this again if public access is still down; nothing was changed")
 	case value.String == xmrRecheckOutage:
 		// A-785: the watcher's request, with the gap's start it stored, holds only what its round will (xmrCancelRecheck).
+		// QA114-N1: and the grace its round leaves does not hold those orders either (the panel's CancelHeldFrom line).
 		if from := xmrPendingHeldFrom(gapFrom, graceEnd, graceFrom); from != "" {
-			return "Deadline recheck already pending (outage); nothing was changed." + next + ", except an order overdue since before " + from + ", which can still be cancelled" + hold + limits, nil
+			return "Deadline recheck already pending (outage); nothing was changed." + next + ", except an order overdue since before " + from + ", which can still be cancelled" +
+				". Each recheck also holds a buyer's no-ship cancel for 72 hours, even if it moves no deadline, this one except an order overdue since before that time: Admin > Payments states the hold and its end. " + limits, nil
 		}
 		return "Deadline recheck already pending (outage); nothing was changed." + next + hold + limits, nil
 	}

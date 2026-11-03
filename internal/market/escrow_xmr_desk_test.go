@@ -80,7 +80,7 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 	if waiting, _ := x.waitingOf(); waiting[completed] != "" || x.claimOffered(completed) {
 		t.Fatalf("a digital order in its dispute window is offered a claim: desk %q, order page %v", waiting[completed], x.claimOffered(completed))
 	}
-	if row := deskRow(deskSection(t, x.page("/vendor-dashboard", x.vendorSess), "vendor-orders"), completed); !strings.Contains(row, "<td>Waiting for buyer or deadline</td>") {
+	if row := deskRow(deskSection(t, x.page("/vendor-dashboard", x.vendorSess), "vendor-orders"), completed); !strings.Contains(row, "<td>Waiting for buyer or window end ("+x.deadlineOf(completed)+"), then claim</td>") {
 		t.Fatalf("a digital order in its dispute window has the wrong payout:\n%s", row)
 	}
 	x.endWindows()
@@ -202,14 +202,25 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 }
 
 // TestXMRDeskPayoutColumn: each Monero escrow row of the desk carries the state of its latest release that is not
-// superseded, in short words; "Payouts not yet confirmed" lists the vendor's orders whose release (or refund) is not
-// confirmed and followed to the reorganisation depth, and the tile counts exactly those, leaving out the vendor's own
-// purchases.
+// superseded, in short words, with the release deadline or dispute window end and why it waits or is held, "then
+// claim" for a digital order, "Paused" under the restore gate as the order page says, and "never paid" for an order
+// cancelled unfunded (VEN103-2, BE103-N1); "Payouts not yet confirmed" lists the vendor's orders whose release (or
+// refund) is not confirmed and followed to the reorganisation depth, and the tile counts exactly those, leaving out
+// the vendor's own purchases.
 func TestXMRDeskPayoutColumn(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
 	physical := x.physical(x.vendor)
 	digital := x.digital(x.vendor) // a listing has 5 in stock
+	// More stock, with the same vendor key.
+	physical2, digital2 := x.testEnv.product(x.vendor, "physical"), x.digital(x.vendor)
+	agExec(x.testEnv, "UPDATE products SET dispatch_days=3 WHERE id=$1", physical2)
+	// Cancelled while awaiting payment: its escrow was never funded, so nothing is refunded (BE103-N1).
+	unfunded, _ := x.freshCheckout(physical2)
+	if code, body := x.xmrPost("/orders/cancel", x.sessOf(unfunded, roleBuyer), url.Values{"order_id": {unfunded}, "from": {stateAwaitingPayment}}); code != 303 {
+		t.Fatalf("cancel the unfunded order: %d %s", code, body)
+	}
+	due, _, _ := x.shippedXMR(physical2) // its release deadline is moved past after the market's last pass
 	claimable, _ := x.fundedXMR(x.product)
 	sent, _ := x.fundedXMR(x.product)
 	confirmed, _ := x.fundedXMR(x.product)
@@ -228,6 +239,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	agExec(x.testEnv, "UPDATE orders SET buyer_id=$1 WHERE id=$2", x.vendor, purchase)
 	x.endWindows()                        // the digital orders complete with no dispute (A-709)
 	inWindow, _ := x.fundedXMR(x.product) // delivered, its dispute window still open: no claim yet
+	windowEnded, _ := x.fundedXMR(digital2)
 
 	claim := func(orders ...string) {
 		t.Helper()
@@ -258,22 +270,53 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 		}
 	}
 
-	labels := map[string]string{
-		claimable: "Waiting for your claim", shipped: "Waiting for buyer or deadline", inWindow: "Waiting for buyer or deadline", requested: "Requested", sent: "Sent",
-		confirmed: "Confirmed", safe: "Confirmed", failed: "Not sent – see order", held: "Held", paid: "—", refunded: "None: refund to the buyer",
+	// Past the market's last pass: a shipped order's release deadline and a delivered one's dispute window have ended.
+	x.forceDeadline(due, "release_at=now()-interval '1 minute'")
+	x.forceDeadline(windowEnded, "release_at=now()-interval '1 minute'")
+	if x.state(due) != stateShipped || x.state(windowEnded) != stateDelivered {
+		t.Fatalf("before the deadline step: %s and %s", x.state(due), x.state(windowEnded))
 	}
-	dash := x.page("/vendor-dashboard", x.vendorSess)
-	table := deskSection(t, dash, "vendor-orders")
-	mustContain(t, table, `<th scope="col">Payout</th>`)
-	for o, label := range labels {
-		if row := deskRow(table, o); !strings.Contains(row, "<td>"+label+"</td>") {
-			t.Errorf("row of %s (%s) lacks the payout %q:\n%s", shortID(o), x.state(o), label, row)
+	at := func(o string) string { return " (" + x.deadlineOf(o) + ")" }
+
+	labels := map[string]string{
+		claimable: "Waiting for your claim", shipped: "Waiting for buyer or deadline" + at(shipped), inWindow: "Waiting for buyer or window end" + at(inWindow) + ", then claim",
+		due: "Due: deadline passed" + at(due), windowEnded: "Due: window ended" + at(windowEnded) + ", then claim", requested: "Requested", sent: "Sent",
+		confirmed: "Confirmed", safe: "Confirmed", failed: "Not sent – see order", held: "Held: account closed", paid: "—", refunded: "None: refund to the buyer",
+		unfunded: "None: never paid",
+	}
+	checkLabels := func(when string, labels map[string]string) {
+		t.Helper()
+		table := deskSection(t, x.page("/vendor-dashboard", x.vendorSess), "vendor-orders")
+		for o, label := range labels {
+			if row := deskRow(table, o); !strings.Contains(row, "<td>"+label+"</td>") {
+				t.Errorf("%s: row of %s (%s) lacks the payout %q:\n%s", when, shortID(o), x.state(o), label, row)
+			}
 		}
 	}
+	checkLabels("as the market runs", labels)
+	dash := x.page("/vendor-dashboard", x.vendorSess)
+	mustContain(t, deskSection(t, dash, "vendor-orders"), `<th scope="col">Payout</th>`)
 	mustContain(t, dash, `href="/vendor-dashboard?payouts=unconfirmed#vendor-orders"`, "Payouts not yet confirmed")
 
+	// A restore or outage recheck pending moves a passed deadline, and nothing completes before it (xmrNoRecheckSQL).
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	checkLabels("recheck pending", map[string]string{due: "Deadline passed" + at(due) + ": moves after recheck",
+		windowEnded: "Window ended" + at(windowEnded) + ": moves after recheck", shipped: labels[shipped], requested: "Requested"})
+	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrReleaseRecheckKey)
+	// The restore gate (the Admin → Payments panel's source): the order page says Paused for a release that fits, and
+	// no deadline completes an order; what the gate does not stop keeps its label.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES('payments_recovery_required','true')")
+	paused := maps.Clone(labels)
+	paused[requested], paused[held] = "Paused: restore from backup", "Paused: restore from backup"
+	paused[due], paused[windowEnded] = "Paused: restore from backup; deadline passed"+at(due), "Paused: restore from backup; window ended"+at(windowEnded)+", then claim"
+	checkLabels("restore gate set", paused)
+	if page := x.page("/order?id="+requested, x.vendorSess); !strings.Contains(page, "Paused: "+restoreWhy) {
+		t.Errorf("the order page of %s does not say Paused under the restore gate", shortID(requested))
+	}
+	agExec(x.testEnv, "DELETE FROM settings WHERE key='payments_recovery_required'")
+
 	// The filter and the tile: every vendor-side Monero escrow order but the one confirmed past the reorganisation depth.
-	open := []string{claimable, inWindow, sent, confirmed, requested, failed, shipped, held, paid, refunded}
+	open := []string{claimable, inWindow, windowEnded, due, sent, confirmed, requested, failed, shipped, held, paid, refunded}
 	filtered := x.page("/vendor-dashboard?payouts=unconfirmed", x.vendorSess)
 	ftable := deskSection(t, filtered, "vendor-orders")
 	for _, o := range open {
@@ -281,7 +324,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 			t.Errorf("the filter lost %s (%s)", shortID(o), x.state(o))
 		}
 	}
-	for _, o := range []string{safe, purchase} {
+	for _, o := range []string{safe, purchase, unfunded} {
 		if deskRow(ftable, o) != "" {
 			t.Errorf("the filter lists %s", shortID(o))
 		}

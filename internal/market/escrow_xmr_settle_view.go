@@ -256,35 +256,72 @@ func (a *App) xmrSettlementStatus(s *XMRSettlementView, o *Order, outcome string
 	}
 }
 
-// xmrPayoutLabel is the vendor desk's short form of xmrSettlementStatus for a Monero escrow order in state with
-// dispute outcome outcome (A-710): release and wait are the state and send_error of its latest release that is not
-// superseded ("" when none), claimDue is xmrClaimDueSQL. The order page says why in full. "" when no payout is due yet
-// (unpaid, or paid and not yet shipped).
-func xmrPayoutLabel(state, outcome, release, wait string, claimDue bool) string {
+// xmrDeskPayout is what loadDeskPayouts reads of one Monero escrow order of the vendor desk for xmrPayoutLabel.
+type xmrDeskPayout struct {
+	state, outcome string // the order's state and its dispute outcome
+	release, wait  string // the state and send_error of its latest release that is not superseded ("" when none)
+	claimDue       bool   // xmrClaimDueSQL
+	at             string // escrows.release_at as utcUntil writes it ("" when none): the release deadline or dispute window end
+	due            bool   // release_at has passed
+	neverPaid      bool   // cancelled without ever being paid, and no refund was requested (nothing counted to return)
+}
+
+// xmrPayoutLabel is the vendor desk's short form of xmrSettlementStatus for a Monero escrow order p (A-710, VEN103-2):
+// paused is the restore gate (restoreGateSQL, read once per page, as the order page and Admin → Payments read it) and
+// recheck a pending deadline recheck (xmrReleaseRecheckKey). The order page says why in full. "" when no payout is due
+// yet (unpaid, or paid and not yet shipped).
+func xmrPayoutLabel(p xmrDeskPayout, paused, recheck bool) string {
 	switch {
-	case claimDue:
+	case p.claimDue:
 		return "Waiting for your claim"
-	case release == "" && (settlementFits("refund", state, outcome) || state == stateCompleted || state == stateResolved):
+	case p.release == "" && p.neverPaid: // BE103-N1: the order page's "nothing was received" or "no deposit counted"
+		return "None: never paid"
+	case p.release == "" && (settlementFits("refund", p.state, p.outcome) || p.state == stateCompleted || p.state == stateResolved):
 		// A cancelled order, a refund decision, or a hold refund (completed or resolved -> cancelled) supersedes the release.
 		return "None: refund to the buyer"
-	case state == stateDisputed && (release == "" || release == "requested"):
+	case p.state == stateDisputed && (p.release == "" || p.release == "requested"):
 		return "Waiting for the dispute decision"
-	case release == "" && state == stateDelivered:
-		return "Waiting for buyer or deadline"
-	case release == "":
+	case p.release == "" && p.state == stateDelivered:
+		return xmrDeskDeadline(p, paused, recheck)
+	case p.release == "":
 		return ""
-	case (release == "requested" || release == "built") && (wait == xmrVendorClosed || restoreHeld(wait)):
-		return "Held"
-	case release == "requested" && !settlementFits("release", state, outcome):
-		return "Waiting for buyer or deadline" // requested at shipment: built once the buyer confirms or the deadline passes
-	case release == "requested" || release == "built":
+	case (p.release == "requested" || p.release == "built") && restoreHeld(p.wait):
+		return "Held: restore check"
+	case p.release == "requested" && !settlementFits("release", p.state, p.outcome):
+		return xmrDeskDeadline(p, paused, recheck) // requested at shipment: built once the buyer confirms or the deadline passes
+	case p.release == "requested" && paused || p.release == "built" && !xmrMaySend(paused, p.wait):
+		return "Paused: restore from backup" // the order page's "Paused:" (xmrSettlementStatus)
+	case (p.release == "requested" || p.release == "built") && p.wait == xmrVendorClosed:
+		return "Held: account closed"
+	case p.release == "requested" || p.release == "built":
 		return "Requested"
-	case release == "relayed":
+	case p.release == "relayed":
 		return "Sent"
-	case release == "confirmed":
+	case p.release == "confirmed":
 		return "Confirmed"
 	}
 	return "Not sent – see order" // failed, or spent outside the market (external)
+}
+
+// xmrDeskDeadline is xmrPayoutLabel for a shipped order before its release deadline completes it, or a delivered
+// digital one in its dispute window (A-709), which the vendor then claims: the date, and whether it passed, waits for
+// the recheck that moves it or for the restore gate (xmrDeadlines, xmrReleaseDue; the order page's xmrDeadlineNextStep).
+func xmrDeskDeadline(p xmrDeskPayout, paused, recheck bool) string {
+	waiting, ended, then := "Waiting for buyer or deadline", "deadline passed", ""
+	if p.state == stateDelivered {
+		waiting, ended, then = "Waiting for buyer or window end", "window ended", ", then claim"
+	}
+	switch {
+	case p.at == "":
+		return waiting + then
+	case !p.due:
+		return waiting + " (" + p.at + ")" + then
+	case recheck:
+		return sentenceStart(ended) + " (" + p.at + "): moves after recheck"
+	case paused:
+		return "Paused: restore from backup; " + ended + " (" + p.at + ")" + then
+	}
+	return "Due: " + ended + " (" + p.at + ")" + then
 }
 
 // xmrRelayConfirmedText follows a held settlement's status once an administrator confirmed its relay.
