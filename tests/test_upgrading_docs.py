@@ -232,7 +232,7 @@ class UpgradingAlpha2Test(unittest.TestCase):
                          'Each repeat that moves a deadline notifies', 'no request has been made',
                          # PAY113R-1, PAY113R-2: the margin, and a clock that stepped back.
                          'an order overdue since more than the outage threshold before the gap began',
-                         'A database clock found more than 5 minutes behind the stored step drops any recorded start',
+                         "The database's clock found more than 5 minutes behind the stored step drops any recorded start",
                          # QA112-5: a pause of one host is an outage too, and the claim is reasoning.
                          "A pause of only the application or database host is also an outage, and its recheck can wait until that host's clock is corrected; this is reasoning, not measured (A-765)"):
                 self.assertIn(want, flat, name)

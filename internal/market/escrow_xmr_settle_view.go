@@ -263,7 +263,8 @@ type xmrDeskPayout struct {
 	claimDue       bool   // xmrClaimDueSQL
 	at             string // escrows.release_at as utcUntil writes it ("" when none): the release deadline or dispute window end
 	due            bool   // release_at has passed
-	neverPaid      bool   // cancelled without ever being paid, and no refund was requested (nothing counted to return)
+	noRefund       bool   // cancelled with no refund requested: escrowSettleTerminal requests none when nothing counts
+	neverPaid      bool   // cancelled without ever being paid
 }
 
 // xmrPayoutLabel is the vendor desk's short form of xmrSettlementStatus for a Monero escrow order p (A-710, VEN103-2):
@@ -274,8 +275,10 @@ func xmrPayoutLabel(p xmrDeskPayout, paused, recheck bool) string {
 	switch {
 	case p.claimDue:
 		return "Waiting for your claim"
-	case p.release == "" && p.neverPaid: // BE103-N1: the order page's "nothing was received" or "no deposit counted"
+	case p.release == "" && p.noRefund && p.neverPaid: // BE103-N1: the order page's "nothing was received" or "no deposit counted"
 		return "None: never paid"
+	case p.release == "" && p.noRefund: // QA115-1: paid, then cancelled with no deposit counted: "so nothing was refunded"
+		return "None: nothing counted to refund"
 	case p.release == "" && (settlementFits("refund", p.state, p.outcome) || p.state == stateCompleted || p.state == stateResolved):
 		// A cancelled order, a refund decision, or a hold refund (completed or resolved -> cancelled) supersedes the release.
 		return "None: refund to the buyer"
@@ -295,6 +298,8 @@ func xmrPayoutLabel(p xmrDeskPayout, paused, recheck bool) string {
 		return "Held: account closed"
 	case p.release == "requested" || p.release == "built":
 		return "Requested"
+	case p.release == "relayed" && restoreHeld(p.wait): // the order page's "Waiting for … confirmations. Held: …"
+		return "Sent; held: restore check"
 	case p.release == "relayed":
 		return "Sent"
 	case p.release == "confirmed":
