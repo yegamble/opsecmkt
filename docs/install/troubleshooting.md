@@ -32,6 +32,8 @@ docker compose logs
 docker compose up -d --build --wait
 ```
 
+If the log ends with `go-fetch: gave up` and your link is only slow: each attempt at the Go module download is limited to 600 seconds and loses a module it has not finished (the largest is about 49 MB, so below about 81 KB/s it cannot finish). To raise the limit, add `GO_FETCH_TIMEOUT=3600` to `.env` and run `docker compose up -d --build --wait` as above; `./scripts/install.sh upgrade` keeps the line and uses it. A direct image build takes `docker build --build-arg GO_FETCH_TIMEOUT=3600`.
+
 If you gave `--admin HANDLE`, the installer says so when this happens: the administrator was not created, and a repeated `init` stops at the existing `.env`. After the retry, create it with the setup token (`./scripts/install.sh setup-token`, then the setup page) or with `docker compose run --rm app -bootstrap-admin HANDLE`.
 
 > **Warning:** don't delete `.env` or volumes. They may already hold this install's secrets and data.

@@ -3665,6 +3665,8 @@ time.sleep(60)
         optional_compose = {'MONERO_NETWORK_FLAG', 'LOG_DRIVER', 'TOR_VERSION'}
         # The app image's build arguments, which build_identity sets for each Compose run and .env never holds (A-696).
         optional_compose |= {'OPSECMKT_BUILD_VERSION', 'OPSECMKT_BUILD_COMMIT', 'OPSECMKT_SECURITY_REFRESH'}
+        # A slow link's limit on the module download: optional, documented without an assignment (A-782).
+        optional_compose.add('GO_FETCH_TIMEOUT')
         self.assertEqual(sorted(key for key in keys if key not in retired_internal | optional_compose),
                          sorted(example_values()))
 

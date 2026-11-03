@@ -71,7 +71,7 @@ Only the newly generated database names are used as backup/restore targets. The 
 
 ## Go module fetch
 
-`scripts/test-go-fetch.sh` runs `scripts/go-fetch.sh` against a local Python proxy serving modules it makes up, with their hashes in `go.sum`, so nothing leaves the host. A truncated stream, a 503 and a hang each pass on the next attempt with the failure in the log; a tampered zip and an unknown error each fail after exactly one attempt; failures that persist stop after three; a slow first install that finishes a module in every attempt keeps going and downloads each module once. The operations job runs it. It needs Go, Python 3 and `timeout`.
+`scripts/test-go-fetch.sh` runs `scripts/go-fetch.sh` against a local Python proxy serving modules it makes up, with their hashes in `go.sum`, so nothing leaves the host. A truncated stream, a 503 and a hang each pass on the next attempt with the failure in the log; a tampered zip and an unknown error each fail after exactly one attempt; failures that persist stop after three; a slow first install that finishes a module in every attempt keeps going and downloads each module once; a module slower than a low `GO_FETCH_TIMEOUT` gives up naming that setting and passes with a raised one. The operations job runs it. It needs Go, Python 3 and `timeout`.
 
 ## Documented onion-mirror commands
 

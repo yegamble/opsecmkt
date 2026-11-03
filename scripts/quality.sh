@@ -23,6 +23,10 @@ tool() {
   "$go_command" tool -modfile="$manifest" "$@"
 }
 
+# The modules govulncheck builds from, which make vuln prefetches rather than the whole tool manifest. It cannot derive them, since
+# listing them downloads them; tools_smoke fails when the list no longer matches.
+govulncheck_modules=(golang.org/x/mod golang.org/x/sync golang.org/x/telemetry golang.org/x/tools golang.org/x/vuln)
+
 tools_smoke() {
   local help_output status=0
   # goimports deliberately exits 2 for -h. Require its actual help text so a
@@ -45,6 +49,13 @@ tools_smoke() {
   printf 'deadcode help bootstrap passed\n'
   tool govulncheck -version
   tool actionlint -version
+  local listed expected
+  listed=$("$go_command" list -modfile=tools/go.mod -deps -f '{{with .Module}}{{.Path}}{{end}}' golang.org/x/vuln/cmd/govulncheck | sed '/^$/d' | sort -u)
+  expected=$(printf '%s\n' "${govulncheck_modules[@]}" | sort -u)
+  if [ "$listed" != "$expected" ]; then
+    printf 'govulncheck builds from other modules than govulncheck_modules in scripts/quality.sh; update the list. It builds from:\n%s\n' "$listed" >&2
+    exit 1
+  fi
 }
 
 format_go() {
@@ -113,11 +124,10 @@ case "${1:-help}" in
     bash scripts/quality.sh lint
     ;;
   vuln)
-    # A transient proxy failure is retried here, not left to fail the scan part way through (A-782). The tool's modules are the
-    # ones govulncheck builds from, not the whole manifest; one missing from this list only goes without the retry.
+    # A transient proxy failure is retried here, not left to fail the scan part way through (A-782).
     require_go
     GO=$go_command sh scripts/go-fetch.sh
-    GO=$go_command sh scripts/go-fetch.sh -modfile=tools/go.mod golang.org/x/vuln golang.org/x/tools golang.org/x/mod golang.org/x/sync golang.org/x/telemetry
+    GO=$go_command sh scripts/go-fetch.sh -modfile=tools/go.mod "${govulncheck_modules[@]}"
     tool govulncheck -test ./...
     ;;
   workflow-lint)

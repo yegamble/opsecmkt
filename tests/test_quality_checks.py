@@ -30,6 +30,7 @@ case "$*" in
   *'goimports -l'*) printf '%s' "$QUALITY_TEST_FORMATTED_FILES"; exit "${QUALITY_TEST_FORMAT_STATUS:-0}" ;;
   *'golangci-lint run'*) exit "${QUALITY_TEST_LINT_STATUS:-0}" ;;
   *'govulncheck -test'*) exit "${QUALITY_TEST_VULN_STATUS:-0}" ;;
+  *'list -modfile=tools/go.mod'*) printf '%s\\n' ${QUALITY_TEST_VULN_MODULES:-golang.org/x/tools golang.org/x/vuln golang.org/x/mod golang.org/x/sync golang.org/x/telemetry}; printf '\\n'; exit 0 ;;
   *'mod download'*) if [ -n "${QUALITY_TEST_DOWNLOAD_ERROR:-}" ]; then printf '%s\\n' "$QUALITY_TEST_DOWNLOAD_ERROR" >&2; exit 1; fi ;;
 esac
 exit 0
@@ -95,7 +96,7 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         log = self.log.read_text()
         self.assertLess(log.index('mod download\n'), log.index('govulncheck -test ./...'))
-        self.assertLess(log.index('mod download -modfile=tools/go.mod golang.org/x/vuln'), log.index('govulncheck -test ./...'))
+        self.assertLess(log.index('mod download -modfile=tools/go.mod golang.org/x/mod'), log.index('govulncheck -test ./...'))
         self.log.unlink()
         result = self.run_check('vuln', QUALITY_TEST_DOWNLOAD_ERROR='verifying x: checksum mismatch SECURITY ERROR')
         self.assertNotEqual(result.returncode, 0)
@@ -138,6 +139,14 @@ exit 0
             self.assertIn(command, commands)
         result = self.run_check('tools-smoke', QUALITY_TEST_ACTIONLINT_STATUS='19')
         self.assertEqual(result.returncode, 19)
+
+    def test_smoke_fails_when_the_vulnerability_prefetch_list_is_stale(self):
+        # A-782 SRE113-9: a new module of govulncheck, or one it no longer uses, must not pass unnoticed.
+        for modules in ('golang.org/x/tools golang.org/x/vuln golang.org/x/mod golang.org/x/sync golang.org/x/telemetry example.test/new',
+                        'golang.org/x/tools golang.org/x/vuln golang.org/x/mod golang.org/x/sync'):
+            result = self.run_check('tools-smoke', QUALITY_TEST_VULN_MODULES=modules)
+            self.assertNotEqual(result.returncode, 0, modules)
+            self.assertIn('govulncheck_modules', result.stderr)
 
     def test_smoke_accepts_first_build_download_messages_and_rejects_compile_errors(self):
         result = self.run_check('tools-smoke', QUALITY_TEST_IMPORTS_SMOKE_PREAMBLE='go: downloading a pinned dependency\n')

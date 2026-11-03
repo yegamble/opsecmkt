@@ -36,9 +36,13 @@ PR secret check; local Gitleaks hooks provide earlier feedback.
 
 `scripts/go-fetch.sh` is also the application Dockerfile's download step. It retries
 a transport failure (a stream error, a truncated body, a connection reset, a TLS
-or I/O timeout, a 502, 503 or 504, or a 3-minute attempt that finished no module)
-up to three attempts in all, with the failure in the log. A checksum refusal or
-any other error fails after one. CI's `GOPROXY` and `GOSUMDB` stay the defaults;
+or I/O timeout, a 502, 503 or 504, or an attempt that reached its time limit and
+finished no module) up to three attempts in all, with the failure in the log. A
+checksum refusal or any other error fails after one. The limit is `GO_FETCH_TIMEOUT`:
+600 seconds as the Dockerfile's build argument, which every job building that image
+outlasts at three stalled attempts (the scheduled image job passes 180 to fit its
+25 minutes), and 180 in `make vuln`. An operator on a slow link
+[raises it](install/troubleshooting.md#first-install-failed). CI's `GOPROXY` and `GOSUMDB` stay the defaults;
 `tests/test_ci_go_fetch.py` refuses a workflow or build file that adds a `|direct`
 fallback or turns checksum checking off.
 

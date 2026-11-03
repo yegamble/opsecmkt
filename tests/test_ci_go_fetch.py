@@ -56,7 +56,7 @@ class GoFetchTest(unittest.TestCase):
         dockerfile = (ROOT / 'Dockerfile').read_text()
         self.assertNotRegex(dockerfile, r'(?m)^RUN go mod download')
         # Before `COPY . .`, so an unrelated source change keeps the cached download layer.
-        self.assertRegex(dockerfile, r'COPY go\.mod go\.sum \./\n(?:#[^\n]*\n)*COPY scripts/go-fetch\.sh [^\n]+\nRUN sh [^\n]*go-fetch\.sh\nCOPY \. \.')
+        self.assertRegex(dockerfile, r'COPY go\.mod go\.sum \./\n(?:#[^\n]*\n)*COPY scripts/go-fetch\.sh [^\n]+\n(?:#[^\n]*\n)*ARG GO_FETCH_TIMEOUT=600\nRUN sh [^\n]*go-fetch\.sh\nCOPY \. \.')
         self.assertNotRegex(dockerfile, r'\bENV\s+GO(PROXY|SUMDB|FLAGS)')
         self.assertNotIn('scripts', (ROOT / '.dockerignore').read_text().split())
         # A package built from the release's source archive runs the same Dockerfile.
@@ -64,6 +64,26 @@ class GoFetchTest(unittest.TestCase):
         vuln = re.search(r'(?ms)^  vuln\)\n(.*?)^    ;;', (ROOT / 'scripts' / 'quality.sh').read_text()).group(1)
         self.assertLess(vuln.index('go-fetch.sh'), vuln.index('tool govulncheck'))
         self.assertIn('-modfile=tools/go.mod', vuln)
+
+    def test_a_slow_link_can_raise_the_limit(self):
+        # SRE113-8: as a build argument through the installer's .env, with no Dockerfile edit, and said where it is needed.
+        self.assertRegex((ROOT / 'compose.yaml').read_text(), r'(?m)^        GO_FETCH_TIMEOUT: \$\{GO_FETCH_TIMEOUT:-600\}$')
+        self.assertIn('${GO_FETCH_TIMEOUT:-', (ROOT / 'scripts' / 'go-fetch.sh').read_text())
+        guide = (ROOT / 'docs' / 'install' / 'troubleshooting.md').read_text()
+        first_install = guide[guide.index('## First install failed'):guide.index('## 403 "Origin')]
+        self.assertIn('add `GO_FETCH_TIMEOUT=3600` to `.env`', first_install)
+        self.assertIn('--build-arg GO_FETCH_TIMEOUT=3600', first_install)
+
+    def test_three_stalled_attempts_fit_the_jobs_that_build_the_image(self):
+        # Three attempts at the limit and the 10 s and 20 s waits, in every job that builds the application's Dockerfile.
+        for workflow, job, limit in (('ci.yaml', 'container', 600), ('ci.yaml', 'installer', 600),
+                                     ('release.yaml', 'package', 600), ('security.yaml', 'images', 180)):
+            block = job_block((ROOT / '.github/workflows' / workflow).read_text(), job)
+            minutes = int(re.search(r'(?m)^    timeout-minutes: (\d+)$', block).group(1))
+            self.assertLess(3 * limit + 30, minutes * 60, (workflow, job))
+        images = job_block((ROOT / '.github/workflows/security.yaml').read_text(), 'images')
+        self.assertIn('build_args: GO_FETCH_TIMEOUT=180', images)
+        self.assertIn('build-args: ${{ matrix.build_args }}', images)
 
     def test_operations_runs_it(self):
         self.assertIn('run: bash scripts/test-go-fetch.sh', job_block((ROOT / '.github/workflows/ci.yaml').read_text(), 'operations'))
