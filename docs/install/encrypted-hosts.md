@@ -301,6 +301,44 @@ These follow [server hardening](server-hardening.md):
    [host nftables policy](server-hardening.md#3-enforce-host-and-provider-allowlists)
    before any container publishes a port. Until then the provider firewall is the
    only port filter.
+5. **Host firewall.** On the application host use `opsecmkt host plan`, `apply` and a
+   fresh-session `confirm` ([native bootstrap](server-bootstrap.md)). On the gateway and
+   payment hosts, stage the role's candidate from
+   [server hardening](server-hardening.md#stage-an-explicit-nftables-ingress-policy) as
+   `/root/opsecmkt-ingress.reviewed.nft`, check it with `nft --check`, arm the
+   five-minute rollback, load it and test before cancelling the rollback:
+   - a fresh operator session still works;
+   - SSH from any other host is dropped, including from the market's own hosts;
+   - on the payment host, the RPC ports are reachable only from the application host's
+     private address (a closed port there answers "refused", not a timeout) and are
+     dropped from the gateway.
+
+   Leave the distribution's `nftables.service` disabled: its default configuration
+   flushes every table, Docker's included. Persist the table with a dedicated oneshot
+   unit that loads only it, starts before Docker and keeps Docker from starting if the
+   load fails. Put `table inet opsecmkt_ingress` and `delete table inet opsecmkt_ingress`
+   at the top of `/etc/opsecmkt/ingress.nft` so a reload replaces the table atomically
+   instead of adding duplicate rules:
+
+   ```ini
+   [Unit]
+   Description=OPSEC Market host ingress table (fail closed)
+   DefaultDependencies=no
+   Before=network-pre.target docker.service
+   Wants=network-pre.target
+
+   [Service]
+   Type=oneshot
+   RemainAfterExit=yes
+   ExecStart=/usr/sbin/nft --file /etc/opsecmkt/ingress.nft
+
+   [Install]
+   WantedBy=multi-user.target
+   RequiredBy=docker.service
+   ```
+
+   Persistence is verified only after an approved reboot shows the table loaded before
+   Docker and the same allowed and denied results.
 
 ## 8. Managed PostgreSQL
 
