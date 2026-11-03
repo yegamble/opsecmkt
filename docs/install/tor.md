@@ -438,7 +438,7 @@ and restart `tor-admin`; leave at least one valid client. Test the revoked
 client and the remaining operator before relying on the change. Revocation does
 not recover a compromised application account or host. Removing the private
 overlay reopens public administrator access and requires an explicit deployment
-decision ([upgrade notes](../../UPGRADING.md#unreleased-security-hardening)).
+decision ([upgrade notes](../../UPGRADING.md#optional-security-hardening)).
 
 ### Use your own (vanity) onion address
 

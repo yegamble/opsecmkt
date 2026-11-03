@@ -3,7 +3,7 @@
 Start with the standalone CLI for guided setup or explicit flags. Choose a topology, prepare the required services,
 then follow the printed administrator setup instructions. The shell installer remains available for older checkouts.
 
-> **Prerelease software.** The native CLI changes are unreleased; build the current checkout to use them.
+> **Prerelease software.** The native CLI ships in the `v0.1.0-alpha.2` prerelease; build that tag, or the current checkout for later changes.
 > New installs take **no payments** until escrow is configured and enabled. Native setup defaults to stagenet;
 > the legacy shell installer's local nodes default to **mainnet (real funds)**. Mainnet payment and settlement workflows remain unverified;
 > deployment and readiness checks do not establish real-funds settlement. See [Implementation status](../implementation-status.md).
