@@ -332,6 +332,7 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 		return s
 	}
 	const requestRow = "Monero deadline recheck requested from the host"
+	const unqualifiedHold = "even if it moves no deadline: Admin > Payments states the hold and its end."
 	auditRows := func() (rows []string) {
 		t.Helper()
 		r, err := db.Query(`SELECT COALESCE(user_id,'-')||':'||action FROM audit_events ORDER BY id`)
@@ -385,7 +386,7 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	// A-761: it says to run it once more on return, and does not promise a next pass with Monero escrow off. DA108-2: it states
 	// the hold on cancels, which a recheck that moves no deadline places too. QA108-2: and that each repeat notifies again.
 	for _, want := range []string{"run this once more when public access returns", "With Monero escrow on, the watcher's next pass", "With ESCROW_XMR off the request stays pending until the first pass after it is on again", "a buyer's no-ship cancel past its time waits until then",
-		"also holds a buyer's no-ship cancel for 72 hours, even if it moves no deadline", "Each repeat notifies every buyer and vendor it moves again"} {
+		"also holds a buyer's no-ship cancel for 72 hours, " + unqualifiedHold, "Each repeat notifies every buyer and vendor it moves again"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("the output lacks %q: %q", want, stdout)
 		}
@@ -413,7 +414,7 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	if settingsNow() != wrote {
 		t.Fatalf("settings %s, was %s", settingsNow(), wrote)
 	}
-	if strings.Contains(stdout, "except an order overdue") {
+	if strings.Contains(stdout, "except an order overdue") || !strings.Contains(stdout, unqualifiedHold) {
 		t.Fatalf("a request with no gap's start holds every order: %q", stdout)
 	}
 	// A-785: the watcher's request, with the gap's start it stored, holds only an order due from that start less the margin,
@@ -423,7 +424,9 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 	stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
 	if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "Deadline recheck already pending (outage); nothing was changed.") ||
 		!strings.Contains(stdout, "a buyer's no-ship cancel past its time waits until then, except an order overdue since before 2026-06-15 ") || !strings.Contains(stdout, " UTC, which can still be cancelled.") ||
-		strings.Contains(stdout, "past its time waits until then. ") {
+		strings.Contains(stdout, "past its time waits until then. ") ||
+		// QA114-N1: nor that the grace its round leaves holds an order overdue since before that time.
+		!strings.Contains(stdout, "even if it moves no deadline, this one except an order overdue since before that time: Admin > Payments states the hold and its end.") || strings.Contains(stdout, unqualifiedHold) {
 		t.Fatalf("outage pending with the gap's start: code %d stdout %q stderr %q", code, stdout, stderr)
 	}
 	if settingsNow() != withGap {
@@ -436,7 +439,7 @@ func TestRestoreGateRequestRecheckCLI(t *testing.T) {
 		exec("UPDATE settings SET value=$2 WHERE key=$1", key, restore)
 		held := settingsNow()
 		stdout, stderr, code = runServer(t, nil, "-request-deadline-recheck")
-		if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "A restore's deadline recheck is already pending; nothing was changed.") {
+		if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "A restore's deadline recheck is already pending; nothing was changed.") || !strings.Contains(stdout, unqualifiedHold) {
 			t.Fatalf("value %s pending: code %d stdout %q stderr %q", restore, code, stdout, stderr)
 		}
 		noURL(stdout + stderr)

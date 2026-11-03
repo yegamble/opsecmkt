@@ -1347,6 +1347,20 @@ func TestXMROutageGraceEndedInsideSecondGap(t *testing.T) {
 					t.Fatalf("the second request: %q, gap %q, want %q", x.recheckKey(), x.settingsOf(xmrOutageGapFromKey), gap)
 				}
 				stage(1, "cannot be cancelled yet", outageWhy) // with the request pending
+				// QA114-1: the panel and the host's reply name the start the round will leave (xmrPendingHeldFrom): a running
+				// outage grace's own, none for a restore's, which holds every order, and the gap's once the grace has ended.
+				switch {
+				case c.kept && origin == "outage":
+					graceFrom, err := time.Parse(time.RFC3339Nano, firstFrom[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					x.wantHeldFromClause(graceFrom)
+				case c.kept:
+					x.wantNoHeldFromClause()
+				default:
+					x.wantHeldFromClause(x.gapFromStored())
+				}
 
 				x.mustPoll() // the second round
 				from := x.settingsOf(xmrCancelWaitFromKey)
