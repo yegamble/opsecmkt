@@ -203,10 +203,11 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 
 // TestXMRDeskPayoutColumn: each Monero escrow row of the desk carries the state of its latest release that is not
 // superseded, in short words, with the release deadline or dispute window end and why it waits or is held, "then
-// claim" for a digital order, "Paused" under the restore gate as the order page says, and "never paid" for an order
-// cancelled unfunded (VEN103-2, BE103-N1); "Payouts not yet confirmed" lists the vendor's orders whose release (or
-// refund) is not confirmed and followed to the reorganisation depth, and the tile counts exactly those, leaving out
-// the vendor's own purchases.
+// claim" for a digital order, "Paused" under the restore gate as the order page says (but not for a release an
+// administrator confirmed, which the gate does not stop, and not before a pending recheck), "never paid" for an order
+// cancelled unfunded and "nothing counted to refund" for one cancelled after its deposit vanished (VEN103-2,
+// BE103-N1, QA115-1); "Payouts not yet confirmed" lists the vendor's orders whose release (or refund) is not confirmed
+// and followed to the reorganisation depth, and the tile counts exactly those, leaving out the vendor's own purchases.
 func TestXMRDeskPayoutColumn(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -232,11 +233,25 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	paid, _ := x.paidXMRPhysical(physical)
 	refunded, _ := x.paidXMRPhysical(physical)
 	x.disputeAndResolve(refunded, "refund")
+	// Paid, then its deposit vanished and the vendor cancelled it with nothing counted: no refund was requested
+	// (escrowSettleTerminal), so neither "never paid" nor "refund to the buyer" is true (QA115-1).
+	vanished, _ := x.paidXMRPhysical(physical2)
+	x.dropTransfer(hex64("fund " + vanished))
+	x.mustPoll()
+	if code, body := x.xmrPost("/orders/cancel", x.vendorSess, url.Values{"order_id": {vanished}, "from": {statePaid}, "payout_confirmed": {"confirmed"}, "amount_seen": {"0"}}); code != 303 {
+		t.Fatalf("cancel the order whose deposit vanished: %d %s", code, body)
+	}
+	if n := agInt(x.testEnv, "SELECT count(*) FROM xmr_settlements WHERE order_id=$1", vanished); n != 0 || x.state(vanished) != stateCancelled {
+		t.Fatalf("the order cancelled at zero counted: %s, %d settlements", x.state(vanished), n)
+	}
+	mustContain(t, x.panel(vanished, x.vendorSess), "no deposit to this escrow counted when the order was cancelled, so nothing was refunded")
 	// The vendor's own purchase from another vendor: not the vendor's payout, so neither listed nor counted.
 	otherVendor, _ := x.user("xother_vendor_"+randomToken()[:6], "vendor")
 	x.enableOrderPGP(otherVendor)
 	purchase, _ := x.fundedXMR(x.digital(otherVendor))
 	agExec(x.testEnv, "UPDATE orders SET buyer_id=$1 WHERE id=$2", x.vendor, purchase)
+	restored, _ := x.fundedXMR(digital2)  // its built release is held by a restore (restoredSettlementHold)
+	relayOK, _ := x.fundedXMR(digital2)   // its built release an administrator confirmed (sendRebroadcastOK)
 	x.endWindows()                        // the digital orders complete with no dispute (A-709)
 	inWindow, _ := x.fundedXMR(x.product) // delivered, its dispute window still open: no claim yet
 	windowEnded, _ := x.fundedXMR(digital2)
@@ -258,13 +273,20 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	x.mustPoll()
 	// After the market's last pass: claims it has not built yet (one then failed), and a release held while the
 	// vendor's account was closed.
-	claim(requested, failed)
+	claim(requested, failed, restored, relayOK)
 	agExec(x.testEnv, "UPDATE xmr_settlements SET state='failed',send_error='rpc' WHERE order_id=$1 AND kind='release'", failed)
+	// Built, checked and stored (written here, as the watcher would have built them on its next pass).
+	for o, wait := range map[string]string{restored: restoredSettlementHold, relayOK: sendRebroadcastOK} {
+		agExec(x.testEnv, "UPDATE xmr_settlements SET state='built',tx_hash=$2,tx_metadata='ab01',tx_blob='cd02',fee=30000000,input_total=500000000000,key_images=ARRAY[$2] WHERE order_id=$1 AND kind='release'",
+			o, txidOf("desk built "+o))
+		agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE order_id=$1 AND kind='release'", o, wait)
+	}
 	if code, body := x.xmrConfirm(held, heldSess, testPassword); code != 303 {
 		t.Fatalf("confirm receipt: %d %s", code, body)
 	}
 	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE order_id=$1 AND kind='release' AND state='requested'", held, xmrVendorClosed)
-	for o, want := range map[string]string{confirmed: "confirmed", safe: "confirmed", sent: "relayed", failed: "failed", requested: "requested", held: "requested"} {
+	for o, want := range map[string]string{confirmed: "confirmed", safe: "confirmed", sent: "relayed", failed: "failed", requested: "requested", held: "requested",
+		restored: "built", relayOK: "built"} {
 		if got := x.xmrSettlements(o); len(got) != 1 || !strings.HasPrefix(got[0], "release "+want+" ") {
 			t.Fatalf("settlements of %s: %v, want one release %s", shortID(o), got, want)
 		}
@@ -282,7 +304,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 		claimable: "Waiting for your claim", shipped: "Waiting for buyer or deadline" + at(shipped), inWindow: "Waiting for buyer or window end" + at(inWindow) + ", then claim",
 		due: "Due: deadline passed" + at(due), windowEnded: "Due: window ended" + at(windowEnded) + ", then claim", requested: "Requested", sent: "Sent",
 		confirmed: "Confirmed", safe: "Confirmed", failed: "Not sent – see order", held: "Held: account closed", paid: "—", refunded: "None: refund to the buyer",
-		unfunded: "None: never paid",
+		unfunded: "None: never paid", vanished: "None: nothing counted to refund", restored: "Held: restore check", relayOK: "Requested",
 	}
 	checkLabels := func(when string, labels map[string]string) {
 		t.Helper()
@@ -294,6 +316,12 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 		}
 	}
 	checkLabels("as the market runs", labels)
+	mustContain(t, x.panel(restored, x.vendorSess), "Built, checked and stored. "+restoreHeldText)
+	// A relayed release a restore held: the order page says it was sent and is held, and the desk says both.
+	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE order_id=$1 AND kind='release'", sent, restoredSettlementHold)
+	checkLabels("a relayed release held by a restore", map[string]string{sent: "Sent; held: restore check"})
+	mustContain(t, x.panel(sent, x.vendorSess), " confirmations. "+restoreHeldText)
+	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error='' WHERE order_id=$1 AND kind='release'", sent)
 	dash := x.page("/vendor-dashboard", x.vendorSess)
 	mustContain(t, deskSection(t, dash, "vendor-orders"), `<th scope="col">Payout</th>`)
 	mustContain(t, dash, `href="/vendor-dashboard?payouts=unconfirmed#vendor-orders"`, "Payouts not yet confirmed")
@@ -313,10 +341,23 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	if page := x.page("/order?id="+requested, x.vendorSess); !strings.Contains(page, "Paused: "+restoreWhy) {
 		t.Errorf("the order page of %s does not say Paused under the restore gate", shortID(requested))
 	}
+	// The gate does not stop a release an administrator confirmed (xmrMaySend): the order page says it is sent on the
+	// next pass, and the desk Requested.
+	if p := x.panel(relayOK, x.vendorSess); !strings.Contains(p, "Built, checked and stored. "+xmrRelayConfirmedText) || strings.Contains(p, "Paused: ") {
+		t.Errorf("the order page of %s under the restore gate:\n%s", shortID(relayOK), p)
+	}
+	// With a recheck pending as well, a passed deadline moves after it: the order page says so before Paused.
+	agExec(x.testEnv, "INSERT INTO settings(key,value) VALUES($1,'true')", xmrReleaseRecheckKey)
+	checkLabels("restore gate and recheck set", map[string]string{due: "Deadline passed" + at(due) + ": moves after recheck",
+		windowEnded: "Window ended" + at(windowEnded) + ": moves after recheck", requested: "Paused: restore from backup", relayOK: "Requested"})
+	if p := x.panel(due, x.vendorSess); !strings.Contains(p, "it moves to 72 hours after the market has rechecked") || strings.Contains(p, "finished reconciling its restore") {
+		t.Errorf("the order page of %s with the gate and a recheck:\n%s", shortID(due), p)
+	}
+	agExec(x.testEnv, "DELETE FROM settings WHERE key=$1", xmrReleaseRecheckKey)
 	agExec(x.testEnv, "DELETE FROM settings WHERE key='payments_recovery_required'")
 
 	// The filter and the tile: every vendor-side Monero escrow order but the one confirmed past the reorganisation depth.
-	open := []string{claimable, inWindow, windowEnded, due, sent, confirmed, requested, failed, shipped, held, paid, refunded}
+	open := []string{claimable, inWindow, windowEnded, due, sent, confirmed, requested, failed, shipped, held, paid, refunded, restored, relayOK}
 	filtered := x.page("/vendor-dashboard?payouts=unconfirmed", x.vendorSess)
 	ftable := deskSection(t, filtered, "vendor-orders")
 	for _, o := range open {
@@ -324,7 +365,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 			t.Errorf("the filter lost %s (%s)", shortID(o), x.state(o))
 		}
 	}
-	for _, o := range []string{safe, purchase, unfunded} {
+	for _, o := range []string{safe, purchase, unfunded, vanished} {
 		if deskRow(ftable, o) != "" {
 			t.Errorf("the filter lists %s", shortID(o))
 		}
