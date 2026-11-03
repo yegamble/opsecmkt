@@ -205,9 +205,11 @@ func TestXMREscrowDeskListsUnclaimedRelease(t *testing.T) {
 // superseded, in short words, with the release deadline or dispute window end and why it waits or is held, "then
 // claim" for a digital order, "Paused" under the restore gate as the order page says (but not for a release an
 // administrator confirmed, which the gate does not stop, and not before a pending recheck), "never paid" for an order
-// cancelled unfunded and "nothing counted to refund" for one cancelled after its deposit vanished (VEN103-2,
-// BE103-N1, QA115-1); "Payouts not yet confirmed" lists the vendor's orders whose release (or refund) is not confirmed
-// and followed to the reorganisation depth, and the tile counts exactly those, leaving out the vendor's own purchases.
+// cancelled unfunded and "nothing counted to refund" for one cancelled after its deposit vanished, but "refund to the
+// buyer" for one cancelled with its deposit counted, and "Sent" for a relayed release whose send_error is not a
+// restore hold (VEN103-2, BE103-N1, QA115-1, QA116-1); "Payouts not yet confirmed" lists the vendor's orders whose
+// release (or refund) is not confirmed and followed to the reorganisation depth, and the tile counts exactly those,
+// leaving out the vendor's own purchases.
 func TestXMRDeskPayoutColumn(t *testing.T) {
 	x := newXMREscrowEnv(t)
 	x.mustPoll()
@@ -245,6 +247,19 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 		t.Fatalf("the order cancelled at zero counted: %s, %d settlements", x.state(vanished), n)
 	}
 	mustContain(t, x.panel(vanished, x.vendorSess), "no deposit to this escrow counted when the order was cancelled, so nothing was refunded")
+	// QA116-1: the common cancel, a paid order cancelled with its deposit counted, requests the refund: "refund to the
+	// buyer", as the order page says, not "nothing counted to refund".
+	cancelled, _ := x.paidXMRPhysical(physical2)
+	if code, body := x.xmrPost("/orders/cancel", x.vendorSess, url.Values{"order_id": {cancelled}, "from": {statePaid}, "payout_confirmed": {"confirmed"},
+		"amount_seen": {strconv.FormatInt(xmrListingPrice, 10)}}); code != 303 {
+		t.Fatalf("cancel the paid order: %d %s", code, body)
+	}
+	if got := x.xmrSettlements(cancelled); x.state(cancelled) != stateCancelled || len(got) != 1 || !strings.HasPrefix(got[0], "refund requested ") {
+		t.Fatalf("the paid order cancelled with its deposit counted: %s, settlements %v", x.state(cancelled), got)
+	}
+	if p := x.panel(cancelled, x.vendorSess); !strings.Contains(p, "Refund to the buyer") || strings.Contains(p, "nothing was refunded") {
+		t.Fatalf("the order page of the paid order cancelled with its deposit counted:\n%s", p)
+	}
 	// The vendor's own purchase from another vendor: not the vendor's payout, so neither listed nor counted.
 	otherVendor, _ := x.user("xother_vendor_"+randomToken()[:6], "vendor")
 	x.enableOrderPGP(otherVendor)
@@ -305,6 +320,7 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 		due: "Due: deadline passed" + at(due), windowEnded: "Due: window ended" + at(windowEnded) + ", then claim", requested: "Requested", sent: "Sent",
 		confirmed: "Confirmed", safe: "Confirmed", failed: "Not sent – see order", held: "Held: account closed", paid: "—", refunded: "None: refund to the buyer",
 		unfunded: "None: never paid", vanished: "None: nothing counted to refund", restored: "Held: restore check", relayOK: "Requested",
+		cancelled: "None: refund to the buyer",
 	}
 	checkLabels := func(when string, labels map[string]string) {
 		t.Helper()
@@ -321,6 +337,15 @@ func TestXMRDeskPayoutColumn(t *testing.T) {
 	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE order_id=$1 AND kind='release'", sent, restoredSettlementHold)
 	checkLabels("a relayed release held by a restore", map[string]string{sent: "Sent; held: restore check"})
 	mustContain(t, x.panel(sent, x.vendorSess), " confirmations. "+restoreHeldText)
+	// QA116-1: a relayed release with any other send_error is not held: an administrator's confirmed or completed
+	// rebroadcast, or a relay whose outcome was unknown, reads Sent, as the order page's "Waiting for … confirmations".
+	for _, wait := range []string{sendRebroadcastOK, sendRebroadcastSent, xmrRelayUnknown} {
+		agExec(x.testEnv, "UPDATE xmr_settlements SET send_error=$2 WHERE order_id=$1 AND kind='release'", sent, wait)
+		checkLabels("a relayed release with send_error "+wait, map[string]string{sent: "Sent"})
+		if p := x.panel(sent, x.vendorSess); !strings.Contains(p, " confirmations.") || strings.Contains(p, restoreHeldText) {
+			t.Errorf("the order page of %s, relayed with send_error %s:\n%s", shortID(sent), wait, p)
+		}
+	}
 	agExec(x.testEnv, "UPDATE xmr_settlements SET send_error='' WHERE order_id=$1 AND kind='release'", sent)
 	dash := x.page("/vendor-dashboard", x.vendorSess)
 	mustContain(t, deskSection(t, dash, "vendor-orders"), `<th scope="col">Payout</th>`)

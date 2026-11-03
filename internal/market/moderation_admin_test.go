@@ -482,6 +482,42 @@ func TestModerationAdminQueueFiltersAndOrder(t *testing.T) {
 		"kind=listing&kind=dispute", "state=reviewed&state=expired", "disposition=ESCALATE_ADMIN&disposition=HOLD"} {
 		e.check(privateHostRequest(e, "GET", "/admin/moderation?"+q, admin, nil, true), 400)
 	}
+
+	// QA116-3: proposals with the same deadline are listed by id, the greatest first, the same on reload and with no
+	// row skipped or repeated across the page boundary. Six listings around it are given one deadline (written past
+	// the append-only trigger, as no pass writes one); the order they were inserted in is unrelated to their ids.
+	tied := slices.Clone(byDeadline[47:53])
+	agExec(e, "ALTER TABLE moderation_suggestions DISABLE TRIGGER moderation_suggestions_immutable")
+	agExec(e, "UPDATE moderation_suggestions SET expires_at=(SELECT expires_at FROM moderation_suggestions WHERE id=$1) WHERE id=ANY(string_to_array($2,','))",
+		tied[0], strings.Join(tied, ","))
+	agExec(e, "ALTER TABLE moderation_suggestions ENABLE TRIGGER moderation_suggestions_immutable")
+	if n := agInt(e, "SELECT count(DISTINCT expires_at) FROM moderation_suggestions WHERE id=ANY(string_to_array($1,','))", strings.Join(tied, ",")); n != 1 {
+		t.Fatalf("precondition: the six listings have %d deadlines", n)
+	}
+	slices.Sort(tied)
+	slices.Reverse(tied)
+	byTie := slices.Concat(byDeadline[:47], tied, byDeadline[53:])
+	for range 2 {
+		page1 := moderationQueueIDs(t, get("/admin/moderation?kind=listing&disposition=QUEUE_HUMAN"))
+		page2 := moderationQueueIDs(t, get("/admin/moderation?disposition=QUEUE_HUMAN&kind=listing&page=2"))
+		if got := slices.Concat(page1, page2); len(page1) != 50 || !slices.Equal(got, byTie) {
+			t.Fatalf("equal deadlines: the listing pages list %v, want %v (the tied %v greatest id first)", got, byTie, tied)
+		}
+	}
+
+	// The history, the most recently created proposal first, whatever its kind: the dispute escalation, older than
+	// the expired listing, comes after it (money comes first only among unreviewed escalations).
+	for _, id := range []string{dispute, expired} {
+		e.check(privateHostRequest(e, "POST", moderationReviewPath, admin, moderationReviewForm(id, "hold"), true), 303)
+	}
+	if n := agInt(e, `SELECT count(*) FROM moderation_suggestions a, moderation_suggestions b WHERE a.id=$1 AND b.id=$2 AND a.created_at<b.created_at`, dispute, expired); n != 1 {
+		t.Fatal("precondition: the dispute proposal is older than the expired listing's")
+	}
+	for range 2 {
+		if ids := moderationQueueIDs(t, get("/admin/moderation?state=reviewed")); !slices.Equal(ids, []string{expired, dispute}) {
+			t.Fatalf("?state=reviewed lists %v, want the listing %s, then the older dispute %s", ids, expired, dispute)
+		}
+	}
 }
 
 // A-685 (STAFF94-3): no review action is preselected, and the hold choice says the proposal closes.
