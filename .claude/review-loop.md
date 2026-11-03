@@ -53,7 +53,10 @@ An empty plan is not permission to invent a repository-wide project: establish
 scope from the user or report a missing scope as blocked.
 
 The Stop and SubagentStop hooks request one additional review continuation,
-using Claude's stop_hook_active flag to avoid infinite recursion. They require
+using Claude's stop_hook_active flag to avoid infinite recursion. The Stop hook
+asks once per request the user typed: when the transcript already shows its
+reminder after that request, later stops (background notifications, waits) pass
+without it, and an unreadable transcript still gets the reminder. They require
 Python 3 and fail open on malformed input. They are reminders, not mechanical
 proof of a clean review. Honour user stop instructions and genuine blockers;
 never keep repeating a failed action without new evidence.

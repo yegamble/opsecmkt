@@ -132,7 +132,8 @@ backup/restore and Tor image checks on every pull request.
 Claude reads [CLAUDE.md](CLAUDE.md) and the
 [completion scrutiny loop](.claude/review-loop.md). The Stop and SubagentStop hooks
 request an extra review before finishing and use a recursion guard to keep that
-reminder bounded, following the [Claude hook protocol](https://code.claude.com/docs/en/hooks#stop-decision-control). Python 3 is required. Use `/scrutinise <scope>` for a focused
+reminder bounded; the Stop hook asks once per request typed by the user, not after each background
+notification, following the [Claude hook protocol](https://code.claude.com/docs/en/hooks#stop-decision-control). Python 3 is required. Use `/scrutinise <scope>` for a focused
 review in Claude Code. Hooks prompt review; they do not certify test results.
 
 For multi-seat review, run `/war-room <scope>` (review only) or `/war-room-loop`
