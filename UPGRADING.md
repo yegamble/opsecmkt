@@ -15,6 +15,10 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## A saved staff contact is told when a role or suspension brings it into force (A-781)
+
+No migration or configuration. A saved bare handle that is not active staff has no effect until that account is. Promoting it to staff, or restoring it from suspension, now tells it that it is named; demoting, suspending or banning the named staff member tells it that it no longer is. The audit rows say so, and `-set-role` prints it. Moving between moderator and administrator tells no one, and nothing is sent for a change made before this version. The named notice now also says the account's PGP public key, with its user IDs, is shown to every signed-in account when that key can receive encrypted messages. These changes create the `staff_contact` `settings` row, empty, if it does not exist yet; an empty value reads as unset, as before.
+
 ## An outage's recheck waits while the clocks disagree (A-764)
 
 No migration or configuration; one new `settings` row, `escrow_xmr_recheck_wait`, present only during a wait. A forward jump of the

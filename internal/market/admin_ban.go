@@ -144,6 +144,11 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 				return actionResult{}, err
 			}
 		}
+		if ban {
+			if err := lockStaffContact(ctx, tx); err != nil {
+				return actionResult{}, err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
 			return actionResult{}, err
 		}
@@ -217,6 +222,12 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 		case closed:
 			return actionResult{}, fail(409, handle+" is already closed; nothing was changed.")
 		}
+		toldContact := ""
+		if role == "moderator" { // A-781: while still active, so told only if the contact was in force
+			if toldContact, err = tellStaffContactInForce(ctx, tx, target, false); err != nil {
+				return actionResult{}, err
+			}
+		}
 		if _, err = tx.ExecContext(ctx, `UPDATE users SET banned_at=now(),banned_by=$2,ban_reason=$3,ban_prior_suspended_at=suspended_at,suspended_at=COALESCE(suspended_at,now()),
 			listing_auto_approve=false,vendor_verified=false,vendor_verified_set_by=CASE WHEN vendor_verified THEN $2 ELSE vendor_verified_set_by END,
 			vendor_verified_set_at=CASE WHEN vendor_verified THEN now() ELSE vendor_verified_set_at END WHERE id=$1`, target, c.User.ID, reason); err != nil {
@@ -227,7 +238,7 @@ func adminBanAction(c *actionCtx) (actionResult, error) {
 			return actionResult{}, err
 		}
 		n, _ := ended.RowsAffected()
-		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
+		summary := "; ended " + strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins" + toldContact
 		if summary, err = withCountedReviews(ctx, tx, target, summary, "stopped counting toward ratings"); err != nil {
 			return actionResult{}, err
 		}

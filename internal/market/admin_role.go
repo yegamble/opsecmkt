@@ -22,9 +22,10 @@ func CheckRoleInput(role string) error {
 // one transaction under advisory lock 782493 (so two runs happen one after the other) it refuses to remove the
 // last administrator that is not suspended and to make a suspended account an administrator, sets the role, does
 // what the admin form does for the new role (roleChanged: leaving staff removes the staff avatar, leaving vendor
-// archives the listings) and audits "Role changed from OLD to NEW by host command" on the account. Removing an
-// administrator also ends its pending sign-ins and sessions, as a suspension does. Like the other host tools it
-// refuses a database recording migrations this binary does not include. It returns a summary of the change.
+// archives the listings, crossing into or out of staff tells the saved staff contact) and audits "Role changed from
+// OLD to NEW by host command" on the account. Removing an administrator also ends its pending sign-ins and sessions,
+// as a suspension does. Like the other host tools it refuses a database recording migrations this binary does not
+// include. It returns a summary of the change.
 func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, error) {
 	if err := CheckRoleInput(role); err != nil {
 		return "", err
@@ -44,6 +45,14 @@ func SetRole(ctx context.Context, db *sql.DB, handle, role string) (string, erro
 		if _, err = tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id IN (SELECT id FROM users WHERE handle=$1 AND role='admin')", handle); err != nil {
 			return "", err
 		}
+	}
+	// A-781: an administrator saving the staff contact holds their own row and waits for the setting's. Taking the row
+	// first keeps that from a deadlock, and FOR NO KEY UPDATE lets a save naming this account finish its notification.
+	if _, err = tx.ExecContext(ctx, "SELECT 1 FROM users WHERE handle=$1 FOR NO KEY UPDATE", handle); err != nil {
+		return "", err
+	}
+	if err = lockStaffContact(ctx, tx); err != nil {
+		return "", err
 	}
 	var id, old string
 	var suspended, closed, closing, banned, factor bool

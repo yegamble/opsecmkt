@@ -24,6 +24,9 @@ var newPasswordRuleCases = []struct {
 	{"one repeated character", "someone", "aaaaaaaaaaaa", true},
 	{"one repeated symbol", "someone", "!!!!!!!!!!!!!!", true},
 	{"short repeated unit", "someone", "abcxabcxabcx", true},
+	// QA112R-1: units no other rule refuses ("abcx" is also a run), so these alone pin the longest unit, 4 bytes.
+	{"three-byte repeated unit", "someone", "zqjzqjzqjzqj", true},
+	{"four-byte repeated unit", "someone", "zqjkzqjkzqjk", true},
 	{"numeric run", "someone", "123456789012", true},
 	{"numeric run backwards", "someone", "987654321098", true},
 	{"numeric run with one break", "someone", "123456712345", true},

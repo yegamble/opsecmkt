@@ -119,6 +119,9 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if err := waitForWalletLocks(ctx, tx); err != nil { // a checkout by the account holds its row (escrowCheckoutAction)
 			return actionResult{}, err
 		}
+		if err := lockStaffContact(ctx, tx); err != nil {
+			return actionResult{}, err
+		}
 		// Pending sign-ins go first, before the account row is locked: /challenge locks its pending sign-in and
 		// then the account row, so taking them in the same order cannot deadlock. A refusal rolls this back.
 		if _, err := tx.ExecContext(ctx, "DELETE FROM pending_logins WHERE user_id=$1", target); err != nil {
@@ -148,7 +151,13 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if _, err = tx.ExecContext(ctx, "UPDATE users SET suspended_at=NULL WHERE id=$1", target); err != nil {
 				return actionResult{}, err
 			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account restored by administrator "+c.User.Handle); err != nil {
+			told := ""
+			if role == "moderator" { // A-781: an administrator cannot be suspended here, so only a moderator returns to staff
+				if told, err = tellStaffContactInForce(ctx, tx, target, true); err != nil {
+					return actionResult{}, err
+				}
+			}
+			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account restored by administrator "+c.User.Handle+told); err != nil {
 				return actionResult{}, err
 			}
 			note := "An administrator restored your account. You can sign in again."
@@ -158,10 +167,16 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 			if err = notifyActiveCounterparties(ctx, tx, target, handle, accountRestoredStatus); err != nil {
 				return actionResult{}, err
 			}
-			return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "restored", Audit: "Restored account " + handle}, nil
+			return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "restored", Audit: "Restored account " + handle + told}, nil
 		}
 		if suspended {
 			return actionResult{}, fail(409, handle+" is already suspended; nothing was changed.")
+		}
+		told := ""
+		if role == "moderator" { // A-781: while still active, so told only if the contact was in force
+			if told, err = tellStaffContactInForce(ctx, tx, target, false); err != nil {
+				return actionResult{}, err
+			}
 		}
 		if _, err = tx.ExecContext(ctx, "UPDATE users SET suspended_at=now() WHERE id=$1", target); err != nil {
 			return actionResult{}, err
@@ -173,7 +188,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		n, _ := ended.RowsAffected()
 		sessions := strconv.FormatInt(n, 10) + " session(s) and any pending sign-ins"
 		note := "An administrator suspended your account and signed you out everywhere. A suspended account cannot sign in; your listings and orders were not changed."
-		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Account suspended by administrator "+c.User.Handle+"; ended "+sessions+told); err != nil {
 			return actionResult{}, err
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO notifications(id,user_id,body) VALUES($1,$2,$3)", randomToken(), target, note); err != nil {
@@ -182,7 +197,7 @@ func adminSuspendAction(c *actionCtx) (actionResult, error) {
 		if err = notifyActiveCounterparties(ctx, tx, target, handle, accountSuspendedStatus); err != nil {
 			return actionResult{}, err
 		}
-		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions}, nil
+		return actionResult{Redirect: adminUserBack(c, handle, "/admin/users"), Notice: "suspended", Audit: "Suspended account " + handle + "; ended " + sessions + told}, nil
 	})
 }
 
@@ -478,6 +493,9 @@ func adminChange(c *actionCtx) (actionResult, error) {
 		if err = waitForWalletLocks(ctx, tx); err != nil {
 			return actionResult{}, err
 		}
+		if err = lockStaffContact(ctx, tx); err != nil {
+			return actionResult{}, err
+		}
 		var target, old string
 		var banned, factor bool
 		err = tx.QueryRowContext(ctx, "SELECT id,role,banned_at IS NOT NULL,totp_enabled OR pgp_2fa FROM users WHERE handle=$1 AND role<>'admin' FOR UPDATE", handle).Scan(&target, &old, &banned, &factor)
@@ -544,7 +562,7 @@ func adminChange(c *actionCtx) (actionResult, error) {
 // roleChanged does what an account's new role entails, in tx after its users row is locked and its role set from
 // old to role. The admin form and the -set-role host command (SetRole) share it; by names who changed the role in
 // the account's audit rows (the administrator handle or "host command"). It returns what to add to the change's
-// summary.
+// summary. A caller whose change can cross into or out of staff holds lockStaffContact.
 func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) (string, error) {
 	summary := ""
 	avatarRemoved, markRemoved, applicationWithdrawn := false, false, false
@@ -609,6 +627,21 @@ func roleChanged(ctx context.Context, tx *sql.Tx, target, old, role, by string) 
 			summary += "; removed their staff avatar"
 			avatarRemoved = true
 			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "Staff avatar removed when the role changed"); err != nil {
+				return "", err
+			}
+		}
+	}
+	// A-781: the saved staff contact comes into force, or stops being, when its account crosses into or out of staff. This
+	// is a crossing and not grantsStaffRole, which also holds for moderator to administrator: still staff, still named.
+	wasStaff, isStaff := old == "moderator" || old == "admin", role == "moderator" || role == "admin"
+	if wasStaff != isStaff {
+		told, err := tellStaffContactInForce(ctx, tx, target, isStaff)
+		if err != nil {
+			return "", err
+		}
+		if told != "" {
+			summary += told
+			if _, err = tx.ExecContext(ctx, "INSERT INTO audit_events(user_id,action) VALUES($1,$2)", target, "T"+told[3:]+": role changed to "+role+" by "+by); err != nil {
 				return "", err
 			}
 		}
