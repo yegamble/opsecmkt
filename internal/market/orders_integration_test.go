@@ -104,8 +104,16 @@ func TestHistoricalDeliveryReaderRestrictsContentToParties(t *testing.T) {
 	order := w.e.order(w.buyerID, product, "XMR", stateDelivered)
 	const secret = "LICENCE-KEY-7f3a-only-for-the-buyer"
 	w.e.mustExec("INSERT INTO deliveries(order_id,content) VALUES($1,$2)", order, secret)
+	// A-794: a plaintext delivery (encrypted defaults to false, as migration 132 left older rows) says so; an
+	// encrypted one does not.
+	const plaintextLabel = "Historical delivery stored unencrypted on this server"
+	encrypted := w.e.order(w.buyerID, product, "XMR", stateDelivered)
+	w.e.mustExec("INSERT INTO deliveries(order_id,content,encrypted) VALUES($1,'-----BEGIN PGP MESSAGE-----',true)", encrypted)
 	for _, session := range []string{w.buyer, w.vendor} {
-		mustContain(t, w.page("/order?id="+order, session, 200), secret)
+		mustContain(t, w.page("/order?id="+order, session, 200), secret, plaintextLabel)
+		page := w.page("/order?id="+encrypted, session, 200)
+		mustContain(t, page, "Encrypted to the buyer's PGP public key.")
+		mustNotContain(t, page, plaintextLabel)
 	}
 	for _, session := range []string{w.other, w.mod} {
 		mustNotContain(t, w.page("/order?id="+order, session, 404), secret)
