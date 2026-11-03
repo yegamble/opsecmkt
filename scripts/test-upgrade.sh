@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Upgrade regression: databases created by v0.1.0-alpha.1 and an intermediate migrated release upgrade under the
-# current server.
+# Upgrade regression: databases created by a released tag (UPGRADE_FROM_REF: v0.1.0-alpha.2 by default, or
+# v0.1.0-alpha.1) and an intermediate migrated release upgrade under the current server. CI runs both tags.
 #
-# Starts one disposable PostgreSQL 17 container, builds and runs the alpha.1 server from its git tag and the
-# 91-migration intermediate server from its frozen commit,
-# populates alpha.1 through its own HTTP forms (admin, vendor, buyers, a listing, XMR order drafts with
-# the old status text, an armored message), stops it, then boots the server built from this checkout against
-# the same database and checks the migrated data and behaviour, then that it refuses to start on a database
-# recording a migration it does not include, then performs a disposable Tor-mode deployment upgrade and
-# side-by-side restore. Needs Docker, Go, Git (with the tag fetched), Python 3 and age. Only temporary deployment
+# Starts one disposable PostgreSQL 17 container, builds and runs the old server from its git tag. From alpha.1
+# (no numbered migrations) it populates through alpha.1's own HTTP forms (admin, vendor, buyers, a listing, XMR
+# order drafts with the old status text, an armored message), stops it, then boots the server built from this
+# checkout against the same database and checks the migrated data and behaviour, then that it refuses to start on
+# a database recording a migration it does not include, then upgrades the 91-migration intermediate server from
+# its frozen commit and performs a disposable Tor-mode deployment upgrade and side-by-side restore. From a later
+# tag (numbered migrations) it populates through that tag's forms (admin, a vendor approved from its PGP-keyed
+# application, a PGP-keyed buyer, a listing, an unfunded XMR draft, an encrypted message), then checks that the
+# current server keeps that data and the recorded migrations, a restart and the same refusal; the intermediate and
+# Tor legs are alpha.1's. Needs Docker, Go, Git (with the tag fetched), Python 3 and age. Only temporary deployment
 # files, project-owned containers/volumes and loopback ports are used.
 set -euo pipefail
 umask 077
@@ -16,7 +19,7 @@ unset COMPOSE_PROFILES COMPOSE_FILE
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 source "$root/scripts/a144_source_archive.sh"
-from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.1}
+from_ref=${UPGRADE_FROM_REF:-v0.1.0-alpha.2}
 intermediate_ref=${UPGRADE_INTERMEDIATE_REF:-329c7b2bf2e8741ff284256958aad55f5454fd53}
 for dependency in docker go git python3 age age-keygen; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 1; }
@@ -33,6 +36,16 @@ git merge-base --is-ancestor "$intermediate_ref" HEAD || {
   echo "$intermediate_ref is not an ancestor of this checkout; refusing to test an unrelated migration history" >&2
   exit 1
 }
+# alpha.1 has the single schema.sql and its own forms; a later tag records numbered migrations and needs PGP keys.
+if git cat-file -e "${from_ref}^{commit}:internal/market/migrations" 2>/dev/null; then
+  from_layout=migrated
+  git merge-base --is-ancestor "$from_ref" HEAD || {
+    echo "$from_ref is not an ancestor of this checkout; refusing to test an unrelated migration history" >&2
+    exit 1
+  }
+else
+  from_layout=alpha1
+fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/opsecmkt-upgrade.XXXXXX")
 db="opsecmkt-upgrade-$$-$RANDOM"
 server_pid=''
@@ -175,6 +188,7 @@ export UPGRADE_BASE="$base" UPGRADE_SETUP_TOKEN="$setup_token" UPGRADE_DB="$db"
 
 echo "Populating the database through the $from_ref server"
 start_server old "$work/old-server" "$work/old"
+if [[ $from_layout == alpha1 ]]; then
 python3 <<'PY'
 import http.cookiejar, os, re, subprocess, urllib.parse, urllib.request
 base = os.environ['UPGRADE_BASE']
@@ -225,6 +239,118 @@ stop_server
 before_orders=$(sql -c "SELECT string_agg(id || ':' || buyer_id || ':' || currency || ':' || amount, ',' ORDER BY id) FROM orders")
 before_message=$(sql -c 'SELECT md5(body) FROM messages')
 [[ $(sql -c 'SELECT count(*) FROM orders') == 2 ]]
+else
+# A tag with numbered migrations (v0.1.0-alpha.2 and later), through its own forms. Two steps are explicit fixture
+# preparation, as in the browser tests (tests/e2e/db-helpers.ts): the committed keys' private halves were discarded,
+# so the administrator's second factor (A-706: staff actions need TOTP or PGP sign-in) is the pgp_2fa stand-in, and
+# the buyer's decryption proof (orders and messages need one) is the session's pgp_access_key. No wallet runs: XMR
+# intake is paused through the administrator's form, so the draft is unfunded and no payment is requested.
+python3 <<'PY'
+import hashlib, html, http.cookiejar, os, re, subprocess, urllib.error, urllib.parse, urllib.request
+base = os.environ['UPGRADE_BASE']
+password = 'upgrade-long-disposable-password'
+
+def sql(query):
+    return subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
+                           '-U', 'upgrade', '-d', 'opsecmkt', '-c', query], check=True, capture_output=True, text=True).stdout.strip()
+
+def fixture(name):
+    with open('tests/e2e/fixtures/pgp/' + name, encoding='utf-8') as file:
+        return file.read()
+
+class Client:
+    def __init__(self):
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
+    def get(self, path):
+        return self.opener.open(base + path).read().decode()
+    # Submits the one post form for action on page (the one containing marker, if given) with its rendered hidden
+    # fields (CSRF token, submission nonce, ids) and fields; returns the final URL after redirects.
+    def submit(self, page, action, fields, marker=''):
+        forms = [body for body in re.findall(r'<form\b(?=[^>]*\bmethod="post")(?=[^>]*\baction="' + re.escape(action) + r'")[^>]*>(.*?)</form>',
+                                             self.get(page), re.S) if marker in body]
+        assert len(forms) == 1, f'{page} has {len(forms)} matching {action} forms'
+        hidden = {}
+        for tag in re.findall(r'<input\b(?=[^>]*\btype="hidden")[^>]*>', forms[0]):
+            name, value = re.search(r'\bname="([^"]+)"', tag), re.search(r'\bvalue="([^"]*)"', tag)
+            hidden[name[1]] = html.unescape(value[1]) if value else ''
+        try:
+            response = self.opener.open(base + action, data=urllib.parse.urlencode({**hidden, **fields}).encode())
+        except urllib.error.HTTPError as error:
+            raise AssertionError(f'{action} answered {error.code}: {error.read().decode()[:2000]}')
+        assert response.status == 200, f'{action} returned {response.status}'
+        return response.url
+    # The fixture stand-in for a completed PGP decryption in this browser (seedPGPAccess in tests/e2e/db-helpers.ts).
+    def seed_pgp_access(self, handle):
+        token_hash = hashlib.sha256(next(c.value for c in self.jar if c.name == 'session').encode()).hexdigest()
+        key = bytes.fromhex(sql(f"SELECT encode(convert_to(pgp,'UTF8'),'hex') FROM users WHERE handle='{handle}'"))
+        bound = sql(f"UPDATE sessions SET pgp_access_key='{hashlib.sha256(key).hexdigest()}' WHERE token_hash='{token_hash}' "
+                    f"AND user_id=(SELECT id FROM users WHERE handle='{handle}') RETURNING token_hash")
+        assert bound == token_hash, f'{handle} session proof fixture was not bound'
+
+admin, vendor, buyer = Client(), Client(), Client()
+assert '/admin' in admin.submit('/setup', '/setup', {'token': os.environ['UPGRADE_SETUP_TOKEN'], 'handle': 'alpha2_admin', 'password': password,
+                                                     'site_name': 'Alpha Two Upgrade Market'}), 'first-admin setup did not reach /admin'
+assert sql("UPDATE users SET pgp_2fa=true WHERE handle='alpha2_admin' AND role='admin' RETURNING 1") == '1'
+admin.submit('/admin/payments', '/admin/payment-intake', {'enabled': 'false', 'password': password}, 'name="currency" value="XMR"')
+assert sql("SELECT value FROM settings WHERE key='payment_intake_XMR'") == 'false', 'XMR intake was not paused'
+# Registration asks a written question by default; the operator turns the human check off so this script can register.
+admin.submit('/admin/security', '/admin/captcha', {'captcha_required': 'false', 'password': password})
+assert sql("SELECT value FROM settings WHERE key='captcha_required'") == 'false', 'the human check was not turned off'
+# A vendor registers with its public key, which opens a vendor application; the administrator approves it.
+vendor.submit('/register', '/register', {'handle': 'alpha2_vendor', 'password': password, 'account_type': 'vendor', 'pgp': fixture('recipient.pub.asc')})
+assert sql("SELECT a.state FROM vendor_applications a JOIN users u ON u.id=a.user_id WHERE u.handle='alpha2_vendor'") == 'awaiting_approval'
+admin.submit('/admin/vendors', '/admin/vendor-applications', {'action': 'approve', 'note': '', 'password': password}, 'Decision for alpha2_vendor')
+assert sql("SELECT role FROM users WHERE handle='alpha2_vendor'") == 'vendor', 'the vendor application was not approved'
+assert '/listing-edit' in vendor.submit('/vendor-dashboard', '/listings', {
+    'title': 'Alpha two soldering kit', 'description': 'Listed before the upgrade.', 'category': 'Hardware', 'region': 'Worldwide',
+    'kind': 'physical', 'price_xmr': '0.250000000000', 'stock': '5'}), 'the listing was not created'
+product_id = sql("SELECT id FROM products WHERE title='Alpha two soldering kit' AND review_state='approved'")
+buyer.submit('/register', '/register', {'handle': 'alpha2_buyer', 'password': password, 'pgp': fixture('other.pub.asc')})
+buyer.seed_pgp_access('alpha2_buyer')
+first = buyer.submit('/checkout?id=' + product_id, '/orders', {'currency': 'XMR', 'quantity': '1'})
+assert buyer.submit('/checkout?id=' + product_id, '/orders', {'currency': 'XMR', 'quantity': '1'}) == first, 'the XMR draft must be reused'
+# A real OpenPGP message to the vendor's key (tests/e2e/fixtures/pgp/message-to-recipient.asc).
+assert urllib.parse.urlsplit(buyer.submit('/messages?to=alpha2_vendor', '/messages', {'body': fixture('message-to-recipient.asc')})).path == '/messages'
+print('alpha.2-layout data created over HTTP')
+PY
+stop_server
+
+# The release as it left the database: its migrations recorded, the data above and its audit trail.
+from_expected=$(git ls-tree --name-only "$from_ref" internal/market/migrations/ | while IFS= read -r file; do
+  [[ $file == *.sql ]] || continue
+  name=$(basename "$file" .sql); printf '%d:%s\n' "$((10#${name%%_*}))" "${name#*_}"
+done | paste -sd, -)
+[[ $(sql -c "SELECT string_agg(version || ':' || name, ',' ORDER BY version) FROM schema_migrations") == "$from_expected" ]] ||
+  { echo "$from_ref did not record exactly its own migration files" >&2; exit 1; }
+from_max=$(sql -c 'SELECT max(version) FROM schema_migrations')
+[[ $(sql -c "SELECT string_agg(handle || ':' || role, ',' ORDER BY handle) FROM users") == 'alpha2_admin:admin,alpha2_buyer:buyer,alpha2_vendor:vendor' ]]
+[[ $(sql -c "SELECT string_agg(state || ':' || currency || ':' || quantity, ',') FROM orders") == 'draft:XMR:1' ]]
+[[ $(sql -c "SELECT count(*) FROM messages WHERE encrypted") == 1 && $(sql -c 'SELECT count(*) FROM products') == 1 ]]
+# Each snapshot is compared again after the upgrade (concat_ws keeps a NULL from hiding the row). A starting server
+# may notify staff (for example that no staff contact is set), so only the release's notifications are compared.
+notified=$(sql -c 'SELECT max(created) FROM notifications')
+snapshots=(
+  "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations WHERE version <= $from_max"
+  "SELECT string_agg(concat_ws(':', id, handle, role, md5(password_hash), md5(pgp), pgp_fingerprint, pgp_2fa, vendor_approved, created), ',' ORDER BY id) FROM users"
+  "SELECT string_agg(concat_ws(':', id, user_id, state, approval, bond_piconero, decided_at), ',' ORDER BY id) FROM vendor_applications"
+  "SELECT string_agg(concat_ws(':', id, vendor_id, md5(title || description), category, region, kind, xmr, stock, dispatch_days, review_state, archived), ',' ORDER BY id) FROM products"
+  "SELECT string_agg(concat_ws(':', id, buyer_id, product_id, currency, amount, quantity, state, created), ',' ORDER BY id) FROM orders"
+  "SELECT string_agg(concat_ws(':', id, sender_id, recipient_id, md5(body), encrypted, recipient_match, created), ',' ORDER BY id) FROM messages"
+  "SELECT string_agg(concat_ws(':', id, user_id, md5(body), message_id, is_read), ',' ORDER BY id) FROM notifications WHERE created <= '$notified'"
+  "SELECT string_agg(key || '=' || value, ',' ORDER BY key) FROM settings WHERE key IN ('site_name','payment_intake_XMR','listing_review_mode')"
+)
+before_snapshots=()
+for query in "${snapshots[@]}"; do
+  snapshot=$(sql -c "$query")
+  [[ -n $snapshot ]] || { echo "Nothing to compare after the upgrade: $query" >&2; exit 1; }
+  before_snapshots+=("$snapshot")
+done
+# Signed audit export stays byte-stable: no existing audit_events row is rewritten (newer rows may follow).
+audit_max=$(sql -c 'SELECT max(id) FROM audit_events')
+audit_query="SELECT md5(string_agg(concat_ws(':', id, user_id, action, created), ',' ORDER BY id)) FROM audit_events WHERE id <= $audit_max"
+before_audit=$(sql -c "$audit_query")
+fi
 
 echo 'Upgrading with the current server'
 start_server new "$work/new-server" "$root"
@@ -235,6 +361,7 @@ expected=$(for file in internal/market/migrations/*.sql; do
 done | paste -sd, -)
 recorded=$(sql -c "SELECT string_agg(version || ':' || name, ',' ORDER BY version) FROM schema_migrations")
 [[ $recorded == "$expected" ]] || { echo "schema_migrations has $recorded; migration files are $expected" >&2; exit 1; }
+if [[ $from_layout == alpha1 ]]; then
 # Orders keep their ids, parties and amounts, move to state 'draft' and lose the old free-text status.
 [[ $(sql -c "SELECT string_agg(id || ':' || buyer_id || ':' || currency || ':' || amount, ',' ORDER BY id) FROM orders") == "$before_orders" ]]
 [[ $(sql -c "SELECT string_agg(DISTINCT state, ',') FROM orders") == draft ]]
@@ -383,6 +510,60 @@ print('Upgraded server: alpha.1 browse-only sign-in, required PGP onboarding, en
 PY
 [[ $(sql -c "SELECT count(*) FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha_buyer' AND o.currency='XMR'") == 1 ]]
 [[ $(sql -c 'SELECT count(*) FROM orders') == 2 ]]
+else
+# The release's migrations keep their recorded times (none is applied again) and its data is unchanged.
+for i in "${!snapshots[@]}"; do
+  [[ $(sql -c "${snapshots[i]}") == "${before_snapshots[i]}" ]] || { echo "The upgrade changed the result of: ${snapshots[i]}" >&2; exit 1; }
+done
+[[ $(sql -c "$audit_query") == "$before_audit" ]] || { echo 'The upgrade rewrote an existing audit_events row' >&2; exit 1; }
+# -status prints its one line; the administrator has a second factor, so no staff account is counted without one.
+status_report status-after-from "$work/new-server" "$root"
+[[ $(cat "$work/status-after-from.out") =~ ^installed=true\ schema=[0-9]+\ keyroot=setup_token$ ]] ||
+  { echo "-status stdout is not its one line: $(cat "$work/status-after-from.out")" >&2; exit 1; }
+if grep -q 'have no second factor' "$work/status-after-from.err" ||
+  grep -qF -e alpha2_admin -e upgrade-test-only -e "$setup_token" "$work/status-after-from.err"; then
+  echo '-status counted the administrator without a factor, or printed a handle, the database password or the setup token' >&2
+  exit 1
+fi
+# Behaviour through the upgraded server: the release's passwords sign in, the draft is shown and reused (the buyer's
+# new session gets the same decryption-proof stand-in), and the vendor receives the buyer's message.
+python3 <<'PY'
+import hashlib, html, http.cookiejar, os, re, subprocess, urllib.error, urllib.parse, urllib.request
+base = os.environ['UPGRADE_BASE']
+password = 'upgrade-long-disposable-password'
+
+def sql(query):
+    return subprocess.run(['docker', 'exec', '-i', os.environ['UPGRADE_DB'], 'psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
+                           '-U', 'upgrade', '-d', 'opsecmkt', '-c', query], check=True, capture_output=True, text=True).stdout.strip()
+
+def signed_in(handle):
+    jar = http.cookiejar.CookieJar()
+    client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    csrf = re.search(r'name="csrf"\s+value="([^"]+)"', client.open(base + '/login').read().decode())
+    assert csrf, '/login has no CSRF token'
+    response = client.open(base + '/login', data=urllib.parse.urlencode({'csrf': html.unescape(csrf[1]), 'handle': handle, 'password': password}).encode())
+    assert response.status == 200 and '/login' not in response.url, f'{handle} credentials rejected after the upgrade ({response.url})'
+    return client, jar
+
+order, product = sql("SELECT o.id || ' ' || o.product_id FROM orders o JOIN users u ON u.id=o.buyer_id WHERE u.handle='alpha2_buyer'").split()
+buyer, jar = signed_in('alpha2_buyer')
+page = buyer.open(base + '/order?id=' + order).read().decode()
+assert 'Draft — unfunded' in page and 'Alpha two soldering kit' in page, 'the draft is not shown after the upgrade'
+token_hash = hashlib.sha256(next(c.value for c in jar if c.name == 'session').encode()).hexdigest()
+key = bytes.fromhex(sql("SELECT encode(convert_to(pgp,'UTF8'),'hex') FROM users WHERE handle='alpha2_buyer'"))
+assert sql(f"UPDATE sessions SET pgp_access_key='{hashlib.sha256(key).hexdigest()}' WHERE token_hash='{token_hash}' RETURNING 1") == '1'
+checkout = buyer.open(base + '/checkout?' + urllib.parse.urlencode({'id': product})).read().decode()
+forms = re.findall(r'<form\b(?=[^>]*\baction="/orders")[^>]*>(.*?)</form>', checkout, re.S)
+assert len(forms) == 1, 'checkout must render one /orders form'
+fields = {name: html.unescape(re.search(r'name="' + name + r'"\s+value="([^"]+)"', forms[0])[1]) for name in ('csrf', 'form_nonce', 'product_id')}
+again = buyer.open(base + '/orders', data=urllib.parse.urlencode({**fields, 'currency': 'XMR', 'quantity': '1'}).encode())
+assert urllib.parse.parse_qs(urllib.parse.urlsplit(again.url).query).get('id') == [order], f'reorder did not return the draft ({again.url})'
+vendor, _ = signed_in('alpha2_vendor')
+assert 'alpha2_buyer' in vendor.open(base + '/messages').read().decode(), "the vendor's inbox lost the buyer's message"
+print('Upgraded server: sign-in, the unfunded draft, its reuse and the encrypted message passed')
+PY
+[[ $(sql -c 'SELECT count(*) FROM orders') == 1 ]]
+fi
 stop_server
 
 # A second start applies nothing new and keeps serving.
@@ -391,6 +572,9 @@ start_server restart "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT string_agg(version || '@' || applied, ',' ORDER BY version) FROM schema_migrations") == "$applied" ]]
 
+# The 090 backfill and intermediate rehearsals do not depend on the starting tag, and the Tor rehearsal seeds and
+# restores alpha.1 (scripts/test-tor-upgrade-rollback.sh), so only the alpha.1 leg runs them.
+if [[ $from_layout == alpha1 ]]; then
 # Migration 090 (A-480) on a database holding a refused-deposit note written before it: the database is put back to its
 # pre-090 state (090 only adds xmr_escrow_collisions), a watcher note of the old fixed form is written on the XMR draft,
 # and the server applies 090 again on start. The note becomes one open record with the transaction's first 20 hex
@@ -405,6 +589,7 @@ start_server backfill "$work/new-server" "$root"
 stop_server
 [[ $(sql -c "SELECT string_agg(order_id || ' ' || wallet_name || ' ' || account || ' ' || txid || ' ' || txid_truncated || ' ' || (disposed_at IS NULL) || ' ' || to_char(noted AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI'), ',') FROM xmr_escrow_collisions") == "$xmr_order escrow-202609-01 4 0123456789abcdef0123 true true 2026-09-01 10:00" ]]
 [[ $(sql -c "SELECT count(*) FROM schema_migrations WHERE version=90") == 1 ]]
+fi
 
 # Rollback rehearsal: to this server, a database that a newer release has migrated is one that records a
 # migration it does not include. It must exit non-zero before serving, name that migration, and change nothing.
@@ -445,6 +630,7 @@ grep -q 'startup check: passed; nothing was changed' "$work/check-current.log"
 start_server roll-forward "$work/new-server" "$root"
 stop_server
 
+if [[ $from_layout == alpha1 ]]; then
 # A-41: use the shared intermediate-release leg against this disposable PG17 container. The URL is passed only
 # in the helper's environment; it creates a uniquely named database and never modifies opsecmkt.
 INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade.sh --disposable-cluster \
@@ -455,3 +641,6 @@ INTERMEDIATE_TEST_DATABASE_URL="$database_url" scripts/test-intermediate-upgrade
 # that a Tor circuit or public onion service was established.
 bash scripts/test-tor-upgrade-rollback.sh "$from_ref"
 echo "Upgrade from $from_ref and intermediate $intermediate_ref passed: health, migration history, Monero drafts and encrypted messages preserved, browse-only password sign-in retained, PGP purchase authentication required, draft uniqueness verified, Monero collision notes backfilled, a database from a newer release refused, and Tor rollback rehearsed."
+else
+echo "Upgrade from $from_ref passed: health, its recorded migrations, users, vendor application, listing, Monero draft, encrypted message, settings and audit trail preserved, password sign-in and draft reuse retained, a restart applied nothing, and a database from a newer release refused."
+fi
