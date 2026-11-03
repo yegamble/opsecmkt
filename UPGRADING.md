@@ -15,6 +15,10 @@ state and Tor identities. Do not initialize a second instance against live payme
 state as an upgrade procedure. Backups/restores and upgrade adoption still use the
 existing documented operations workflow.
 
+## Moderation replay audit and escalation order (A-744, A-746)
+
+No migration or configuration. `moderation-worker --replay` that requeues legacy snapshots writes one audit row without an actor, giving only the count; one that queues none writes nothing (A-744). In **Admin → Moderation**, disputes and payment flags now list before other escalations, such as a suspected injection; routing is unchanged (A-746).
+
 ## A slow link's limit on the module download (A-782, A-786)
 
 No migration. An image build gives each attempt at the Go module download 600 seconds; on a slow link, set `GO_FETCH_TIMEOUT=3600` in `.env` (`./scripts/install.sh upgrade` keeps it) or give it to a first install ([First install failed](docs/install/troubleshooting.md#first-install-failed)).
@@ -232,7 +236,7 @@ order deadlines it moved. The `/admin` overview flags **Payments** while one is 
 
 The check runs at the very start of each pass, before any daemon or wallet call and without the watcher's lock, and the watcher
 starts just before the server begins accepting requests. A cancel and a dispute do not wait for that check: with Monero escrow on, once the stored time
-of the last step is older than the threshold, the action itself refuses a no-ship cancel whose time fell after that stored time, or within the outage threshold before it, creating no refund, and accepts a dispute on a passed deadline, by the database's clock (A-763). An order overdue since more than the threshold before that stored time was not held up by the outage and can still be cancelled. The order page and the vendor desk read that time for the cancel and say the same (A-779); for a dispute the order page does not read it, so until the check has run it may not offer that dispute. A dispute on a deadline
+of the last step is older than the threshold, the action itself refuses a no-ship cancel whose time fell after that stored time, or within the outage threshold before it, creating no refund, and accepts a dispute on a passed deadline, by the database's clock (A-763). An order overdue since more than the threshold before that stored time was not held up by the outage and can still be cancelled. The order page and the vendor desk read that time for the cancel and say the same (A-779); the order page also offers that dispute, saying the deadline passed after an outage (A-791), though until the check has run the disputes page's order list does not include the order. A dispute on a deadline
 that passed in the outage is refused as late, and a no-ship cancel whose time passed in the outage accepted, only in these cases, and that cancel
 requests a refund, which relays once a watcher runs:
 

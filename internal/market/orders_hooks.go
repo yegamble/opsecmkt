@@ -26,7 +26,8 @@ func withCheckoutPrice(ctx context.Context) context.Context {
 }
 
 // stockHook reserves the ordered quantity when a buyer requests payment and returns those units when a reserved order is
-// cancelled. Drafts never hold stock.
+// cancelled. Drafts never hold stock. A digital order refunded after a dispute or a held release returns its undelivered
+// distinct units (releaseDisputedDigitalUnits); physical stock is not returned then.
 func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to string) error {
 	switch {
 	case from == stateDraft && to == stateAwaitingPayment:
@@ -90,6 +91,11 @@ func stockHook(ctx context.Context, a *App, tx *sql.Tx, o *Order, from, to strin
 		// A-711: a dispute ending in a refund (the vendor's concession, or a decision for the buyer) returns the distinct
 		// units the order reserved and never delivered; delivered ones stay consumed. Physical stock is not returned
 		// after a dispute (the goods may have shipped).
+		return releaseDisputedDigitalUnits(ctx, tx, o, to)
+	case (from == stateResolved || from == stateCompleted) && to == stateCancelled && o.Kind == "digital":
+		// A-789: an administrator's refund of a release held for a banned vendor (roleHoldRefund, A-652f) returns, by the
+		// same rule, the units of an order decided or conceded for the vendor that were never delivered. Its dispute
+		// outcome is release, so the refund is this move, not the decision.
 		return releaseDisputedDigitalUnits(ctx, tx, o, to)
 	}
 	return nil

@@ -279,6 +279,14 @@ class UpgradingAlpha2Test(unittest.TestCase):
         self.assertIn('GO_FETCH_TIMEOUT=3600', section)
         self.assertIn('(docs/install/troubleshooting.md#first-install-failed)', section)
 
+    def test_moderation_replay_and_queue_order_has_a_section(self):
+        # PM117-1: the new replay audit row and the escalation order are operator-visible changes.
+        match = re.search(r'^## [^\n]*A-744[^\n]*A-746[^\n]*\n(.*?)(?=^#)', UPGRADING, re.M | re.S)
+        self.assertTrue(match, 'UPGRADING.md has no A-744/A-746 section')
+        section = match.group(1)
+        self.assertIn('moderation-worker --replay', section)
+        self.assertIn('disputes and payment flags now list before other escalations', section)
+
     def test_recheck_fallback_finds_a_wait(self):
         # A-782 SRE113-1: with the panel behind the failed ingress, each guide's fallback must see the wait as well as
         # the run. The grep is read from the guide and tried on the log formats themselves, and the SQL names the third
