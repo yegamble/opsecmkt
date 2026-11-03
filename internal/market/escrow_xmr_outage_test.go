@@ -565,9 +565,16 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		x.forceDeadline(shipped, "release_at=now()-interval '1 hour'")
 		return x, paid, paidSess, shipped, shippedSess
 	}
-	// wantAsToday fails unless the past-time cancel is accepted, requesting the refund, and the late dispute refused.
+	// wantAsToday fails unless the past-time cancel is accepted, requesting the refund, and the late dispute refused, with
+	// the pages offering the one and not the other (A-791).
 	wantAsToday := func(t *testing.T, x *xmrEscrowEnv, paid, paidSess, shipped, shippedSess string) {
 		t.Helper()
+		if p := html.UnescapeString(x.page("/order?id="+shipped, shippedSess)); strings.Contains(p, `action="/disputes"`) || !strings.Contains(p, "a dispute can no longer be opened") || strings.Contains(p, "after an outage") {
+			t.Fatalf("the page of a late dispute:\n%s", p)
+		}
+		if p := html.UnescapeString(x.page("/order?id="+paid, paidSess)); !strings.Contains(p, `action="/orders/cancel"`) || strings.Contains(p, "You cannot cancel yet") {
+			t.Fatalf("the page of a cancel past its time:\n%s", p)
+		}
 		if code, body := x.xmrDispute(shipped, shippedSess); code != 409 || !strings.Contains(body, "a dispute can no longer be opened") || x.state(shipped) != stateShipped {
 			t.Fatalf("a late dispute: %d %s, order %s", code, body, x.state(shipped))
 		}
@@ -591,12 +598,26 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		preGap, preGapSess := x.paidXMRPhysical(physical)
 		shipped, shippedSess, _ := x.shippedXMR(physical)
 		window, windowSess := x.deliveredXMR(x.product)
+		undelivered, undeliveredSess := x.undeliveredXMR()
 		x.forceDeadline(paid, "ship_by=now()-interval '1 hour'")
 		x.forceDeadline(preGap, "ship_by=now()-interval '4 hours'")
 		x.forceDeadline(shipped, "release_at=now()-interval '1 hour'")
 		x.forceDeadline(window, "release_at=now()-interval '1 hour'")
+		x.forceDeadline(undelivered, "ship_by=now()-interval '1 hour'")
 		x.setLastDeadlineStep("2 hours")
 		step := x.lastDeadlineStep()
+
+		// A-791: the page offers the dispute the action accepts, physical and digital, and says why it is still open.
+		for order, sess := range map[string]string{shipped: shippedSess, window: windowSess} {
+			if p := html.UnescapeString(x.page("/order?id="+order, sess)); !containsAll(p, `action="/disputes"`, "after an outage", "a dispute can still be opened") || strings.Contains(p, "a dispute can no longer be opened") {
+				t.Fatalf("the page of a passed deadline on a stale step:\n%s", p)
+			}
+		}
+		// The digital order's cancel waits on its page and in the action, as the physical one's below.
+		if p := html.UnescapeString(x.page("/order?id="+undelivered, undeliveredSess)); !strings.Contains(p, "You cannot cancel yet: "+outageWhy) {
+			t.Fatalf("the page of a digital order due in the gap, on a stale step:\n%s", p)
+		}
+		x.wantCancelHeld(undelivered, undeliveredSess, "cannot be cancelled yet", outageWhy)
 
 		// PAY113-2: the page says what the action does on each side of the stored step, and the desk with it.
 		if p := html.UnescapeString(x.page("/order?id="+paid, paidSess)); !containsAll(p, "You cannot cancel yet: "+outageWhy, "The buyer's cancel waits: "+outageWhy) || strings.Contains(p, `action="/orders/cancel"`) {
@@ -673,6 +694,9 @@ func TestXMROutageStaleStepHoldsCancelBeforeFirstPass(t *testing.T) {
 		code, body := x.xmrBuyerCancel(paid, paidSess)
 		if code != 409 || !strings.Contains(body, "after a restore from backup") || strings.Contains(body, "an outage") {
 			t.Fatalf("a cancel with a restore's request: %d %s", code, body)
+		}
+		if p := html.UnescapeString(x.page("/order?id="+shipped, shippedSess)); !containsAll(p, `action="/disputes"`, "in this market's restored records", "a dispute can still be opened") || strings.Contains(p, "after an outage") {
+			t.Fatalf("the page of a passed deadline with a restore's request:\n%s", p)
 		}
 		if code, body = x.xmrDispute(shipped, shippedSess); code != 303 {
 			t.Fatalf("a dispute with a restore's request: %d %s", code, body)
