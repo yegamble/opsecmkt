@@ -63,8 +63,8 @@ Details: [Local node pruning](../operator-guide.md#local-node-pruning).
 All methods need outbound access to pull images and sync nodes.
 
 The image build downloads Go modules, the largest about 49 MB, and each attempt has 600 seconds. Below about 81 KB/s, start
-the install with a longer limit: `GO_FETCH_TIMEOUT=3600 ./scripts/install.sh ...` with your usual options
-([First install failed](troubleshooting.md#first-install-failed)).
+the install with a longer limit: `GO_FETCH_TIMEOUT=3600 ./scripts/install.sh ...` with your usual options. That
+writes it to `.env`, the only place `upgrade` reads it from ([First install failed](troubleshooting.md#first-install-failed)).
 
 > **Warning:** never expose the database or node RPC ports. The Compose files publish neither.
 

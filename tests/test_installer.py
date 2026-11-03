@@ -986,7 +986,7 @@ time.sleep(60)
                 self.assert_started(result)
                 self.assertNotIn('GO_FETCH_TIMEOUT', (self.root / '.env').read_text())
                 self.assertNotIn('GO_FETCH_TIMEOUT', self.build_environment()[0])
-        # upgrade is unchanged: it adds no line, and a value in the shell does not reach .env or the build.
+        # upgrade adds no line, and a value in the shell does not reach .env or the build (it names it: A-795, below).
         result = self.upgrade(extra_env={'GO_FETCH_TIMEOUT': '3600'})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('GO_FETCH_TIMEOUT', (self.root / '.env').read_text())
@@ -994,8 +994,74 @@ time.sleep(60)
         self.assertNotIn('GO_FETCH_TIMEOUT', build_env)
         self.assertNotIn('GO_FETCH_TIMEOUT', environment)
 
+    def test_upgrade_notes_a_go_fetch_timeout_from_the_shell(self):
+        # A-795 PM117-2: upgrade reads GO_FETCH_TIMEOUT only from .env. A different value in the shell is named once,
+        # before the build, so a rerun after a go-fetch failure is not silently the same 40-minute build again.
+        notice = 'upgrade ignores GO_FETCH_TIMEOUT'
+        canary = self.root / 'injected'
+        default = 'it reads only .env (now 600, the default).'
+        not_a_number = 'upgrade ignores GO_FETCH_TIMEOUT from your shell, which is not a whole number of seconds; '
+        cases = {
+            # The value init writes to .env: (the value in the upgrade's shell, the expected notice or None), ...
+            '': (('3600', 'upgrade ignores GO_FETCH_TIMEOUT=3600 from your shell; ' + default +
+                  ' To use it, set GO_FETCH_TIMEOUT=3600 in .env and run upgrade again.'),
+                 (None, None), ('', None),
+                 ('1h;x', not_a_number + default),
+                 (f'1$(touch {canary})`touch {canary}`', not_a_number + default)),
+            '3600': (('7200', 'upgrade ignores GO_FETCH_TIMEOUT=7200 from your shell; it reads only .env (now 3600). '
+                      'To use it, set GO_FETCH_TIMEOUT=7200 in .env and run upgrade again.'),
+                     ('3600', None), (None, None)),
+        }
+        for recorded, upgrades in cases.items():
+            (self.root / '.env').unlink(missing_ok=True)
+            self.log.unlink(missing_ok=True)
+            self.assert_started(self.run_installer([], arguments=['--local'],
+                                                   extra_env={'GO_FETCH_TIMEOUT': recorded} if recorded else {}))
+            for shell, expected in upgrades:
+                with self.subTest(recorded=recorded, shell=shell):
+                    self.log.unlink(missing_ok=True)
+                    result = self.upgrade(extra_env=None if shell is None else {'GO_FETCH_TIMEOUT': shell})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    output = result.stdout + result.stderr
+                    if expected is None:
+                        self.assertNotIn(notice, output)
+                    else:
+                        self.assertEqual(output.count(notice), 1, output)
+                        self.assertIn('Note: ' + expected + '\n', result.stdout)
+                    if shell and not shell.isdigit():
+                        self.assertNotIn(shell, output)
+                        for fragment in (';x', '$(', '`', 'touch'):
+                            if fragment in shell:
+                                self.assertNotIn(fragment, output)
+                    self.assertFalse(canary.exists())
+                    # Nothing from the shell reaches .env or the build.
+                    self.assertEqual(self.config().get('GO_FETCH_TIMEOUT'), recorded or None)
+                    build_env, environment = self.build_environment()
+                    self.assertNotIn('GO_FETCH_TIMEOUT', environment)
+                    if recorded:
+                        self.assertEqual(build_env['GO_FETCH_TIMEOUT'], f"'{recorded}'")
+                    else:
+                        self.assertNotIn('GO_FETCH_TIMEOUT', build_env)
+        # The notice comes before the build, so the rerun whose build fails again (the go-fetch case) still shows it.
+        (self.root / '.env').unlink()
+        self.log.unlink(missing_ok=True)
+        self.assert_started(self.run_installer([], arguments=['--local']))
+        self.log.unlink(missing_ok=True)
+        result = self.upgrade(extra_env={'GO_FETCH_TIMEOUT': '3600', 'INSTALLER_TEST_UNHEALTHY': '1'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls()[-1], UP)
+        self.assertEqual(result.stdout.count(notice), 1, result.stdout)
+        self.assertIn('The services did not build or become healthy', result.stderr)
+        # A .env value that is not a whole number is not repeated either.
+        with (self.root / '.env').open('a') as env:
+            env.write("GO_FETCH_TIMEOUT='1h;x'\n")
+        result = self.upgrade(extra_env={'GO_FETCH_TIMEOUT': '3600'})
+        self.assertIn('Note: upgrade ignores GO_FETCH_TIMEOUT=3600 from your shell; it reads only .env (now not a whole '
+                      'number of seconds). To use it, set GO_FETCH_TIMEOUT=3600 in .env and run upgrade again.\n', result.stdout)
+        self.assertNotIn('1h;x', result.stdout + result.stderr)
+
     def test_external_clearnet_local_http(self):
-        url = 'postgresql://test:local-only@database:5432/scratch?sslmode=require'
+        url ='postgresql://test:local-only@database:5432/scratch?sslmode=require'
         result = self.run_installer(['clearnet', url, 'yes', 'disabled', 'disabled'])
         self.assert_started(result)
         config = self.config()
