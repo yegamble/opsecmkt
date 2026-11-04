@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "docs/evidence/public-testnet"
 ALL_EVIDENCE = ROOT / "docs/evidence"
 # Provider and region words no published evidence value may carry (owner instruction, 2026-11-03).
-PROVIDER_WORDS = re.compile("digital" + r" ?ocean|\bdoctl\b|\bdroplets?\b|frank" + r"furt|\bfra1\b|\bs-\d+vcpu", re.I)
+PROVIDER_WORDS = re.compile("digital" + r" ?ocean|(?<![a-z])do" + r"ctl(?![a-z])|(?<![a-z])drop" + r"lets?(?![a-z])|frank" + r"furt"
+                            r"|(?<![a-z0-9])fra" r"1(?![0-9])|\bs-\d+vcpu", re.I)
 
 # New record kinds or provider fields require a publication review. Proof manifests
 # and transcripts have their own runner validation; these are supplemental records.

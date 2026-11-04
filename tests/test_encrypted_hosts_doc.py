@@ -10,7 +10,8 @@ GUIDE = (ROOT / 'docs/install/encrypted-hosts.md').read_text()
 SCRIPT_PATH = ROOT / 'scripts/rescue-luks-install.sh'
 SCRIPT = SCRIPT_PATH.read_text()
 # Provider and region names the public docs must not carry (owner instruction, 2026-11-03).
-PROVIDER = 'digital' + r' ?ocean|\bdoctl\b|\bdroplets?\b|frank' + r'furt|\bfra1\b'
+PROVIDER = ('digital' + r' ?ocean|(?<![a-z])do' + r'ctl(?![a-z])|(?<![a-z])drop' + r'lets?(?![a-z])|frank' + r'furt'
+            r'|(?<![a-z0-9])fra' r'1(?![0-9])|\bs-\d+vcpu|\$\d+(?:\.\d+)?/(?:hour|hr|mo)')
 
 
 class EncryptedHostsGuideTest(unittest.TestCase):

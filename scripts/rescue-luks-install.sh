@@ -19,6 +19,7 @@ HOSTNAME_NEW=${1:?hostname}
 PUBKEY=${2:?operator public key}
 [ -b /dev/mapper/cryptroot ] || { echo "cryptroot not open"; exit 1; }
 [ "$(cryptsetup status cryptroot | awk '/type:/{print $2}')" = LUKS2 ] || { echo "not LUKS2"; exit 1; }
+[ "$(cryptsetup status cryptroot | awk '/device:/{print $2}')" = /dev/vda1 ] || { echo "cryptroot not on /dev/vda1"; exit 1; }
 [ "$(lsblk -dno RO /dev/vda | tr -d ' ')" = 0 ] || { echo "vda read-only"; exit 1; }
 findmnt -rn /mnt >/dev/null 2>&1 && { echo "/mnt already mounted"; exit 1; }
 command -v debootstrap >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get -qq update >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get -qq install -y debootstrap >/dev/null 2>&1; }
@@ -27,6 +28,7 @@ read -r PUB_CIDR; read -r PUB_GW; read -r PRIV_CIDR; read -r RESOLVERS; read -r 
 valid() { python3 -c "import ipaddress,sys; ipaddress.ip_interface(sys.argv[1])" "$1" 2>/dev/null; }
 validip() { python3 -c "import ipaddress,sys; ipaddress.ip_address(sys.argv[1])" "$1" 2>/dev/null; }
 if ! { valid "$PUB_CIDR" && valid "$PRIV_CIDR" && validip "$PUB_GW"; }; then echo "network values do not parse"; exit 1; fi
+[ -n "$RESOLVERS" ] || { echo "no resolver given"; exit 1; }
 for r in ${RESOLVERS//,/ }; do validip "$r" || { echo "resolver does not parse"; exit 1; }; done
 case "$MIRROR" in http://*|https://*) ;; *) echo "mirror is not a URL"; exit 1;; esac
 PUB_IP=${PUB_CIDR%/*}

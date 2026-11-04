@@ -119,7 +119,7 @@ wallets behind both addresses.
 - Back up its `tor_mirror_identity` volume like the main identity, so the mirror keeps its address after a restore.
 
 There is no hot standby. Nothing replicates the database, the wallets or the configuration to a second host, and
-nothing fails over by itself. The managed database runs one node without a standby; a standby node is a provider
+nothing fails over by itself. The retired deployment's managed database ran one node without a standby; a standby node is a provider
 option that needs its own cost approval ([deployment notes](deployment-notes.md)).
 
 What you can prepare instead is a spare: a host that is already encrypted, hardened and pinned, holding no market
