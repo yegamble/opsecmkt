@@ -2,7 +2,7 @@
 
 On 2026-10-11, the verified official Sparrow 2.5.5 ARM64 GUI signed disposable
 buyer and vendor keys against an isolated Bitcoin Core 31.1 regtest node on
-DigitalOcean. No public-network coins or local blockchain storage were used.
+a cloud provider. No public-network coins or local blockchain storage were used.
 Application source was frozen at `f229a1a65172986065bbab4f3aa24a09725695ad`;
 the added opt-in harness is `TestEscrowRegtestSparrowManualJourney` in
 [`internal/market/escrow_regtest_sparrow_test.go`](../../../../internal/market/escrow_regtest_sparrow_test.go).
@@ -53,7 +53,7 @@ Developer ID app. The installer checksum matched its manifest, whose signature
 was verified against the pinned vendor fingerprint. Earlier simulated-Core
 practice attempts are also excluded; that fixture accepts fake signatures only.
 
-The task regtest droplet and its task-only SSH key were deleted after proof
+The task regtest host and its task-only SSH key were deleted after proof
 and private recovery verification; absence was checked. The SSH tunnel and task
 test PostgreSQL were stopped. [Cleanup record](cleanup.json) records this and the
 restrictive private software-wallet archive checks. The cloud regtest blockchain
@@ -70,3 +70,7 @@ the address attestation and the selected settlement source (`ordinary` or
 `hardware`). The test skips without manual opt-in, refuses stale handoffs and
 never reads either party's private root. Preserve keys and logs privately;
 never commit wallet files or RPC credentials.
+
+## Re-sealed after redaction
+
+On 2026-11-03, at the owner's instruction, the hosting provider's name, its machine word and the provider resource IDs were removed from `README.md` and `cleanup.json`; field names were generalised (`task_host_deleted`) and the removed IDs are listed in `cleanup.json`'s `redaction`. Their two `SHA256SUMS` entries were regenerated for the redacted copies. The unredacted originals and their original hashes are kept in the private record. No other file in this folder changed.

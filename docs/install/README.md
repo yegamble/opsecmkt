@@ -67,10 +67,12 @@ For production, follow [the complete deployment procedure](production.md) in ord
 
 - [Complete CLI reference and Bash migration](cli-reference.md)
 - [Worker reuse and app-only redeployment](service-topology.md#reusing-services-when-rebuilding-the-app)
+- [Replace a dead or compromised host](replace-a-host.md)
 - [RAM secrets and manual incident response](ram-secrets-and-emergency.md)
 - [Legacy installer reference](installer-reference.md)
 - [Production deployment](production.md)
 - [Server hardening](server-hardening.md)
+- [Encrypted hosts from a rescue image](encrypted-hosts.md): the rescue-image and LUKS2 procedure for cloud hosts with no encrypted root
 - [Existing deployment security review](security-review.md)
 - [Existing deployment storage assessment](storage-security-assessment.md)
 - [External PostgreSQL](external-database.md)

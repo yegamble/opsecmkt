@@ -323,6 +323,9 @@ RAM-only production controller needs a separate verified boot/unlock design.
 
 ### Secure recovery media before installing Linux
 
+On a cloud provider with a rescue image, [Encrypted hosts from a rescue image](encrypted-hosts.md)
+applies this sequence, with an install script and the checks for each step.
+
 A rescue or recovery image is a separate operating environment. It can have
 different SSH host keys and enable password login even when the installed OS
 uses keys only. Complete this sequence before installing an encrypted replacement:

@@ -46,7 +46,9 @@ export. Export refuses that configuration. First adopt and verify the existing
 volume identity as managed key files; do not generate a replacement onion.
 
 Fence the old application host before bringing its identities onto a replacement
-host: ensure it cannot resume the application or Tor services. Production restore
+host: ensure it cannot resume the application or Tor services. If the old host was
+lost or may be compromised, start with [replace a dead or compromised host](replace-a-host.md):
+it says which identities to restore and which to replace. Production restore
 requires `--old-host-fenced` as an explicit attestation. This flag records operator
 intent for the invocation; it does not remotely fence or verify the old host.
 

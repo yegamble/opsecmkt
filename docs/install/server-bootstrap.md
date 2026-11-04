@@ -17,9 +17,15 @@ Install an encrypted operating-system root and persistent storage following
 [server hardening](server-hardening.md), before transferring production secrets.
 Keep an independent authenticated console and the previous access configuration.
 Verify time synchronization, DNS, static addresses/routes and key fingerprints.
-DHCP and unlisted non-Docker interfaces are refused. Routers, VPN, Swarm,
-overlay networks and hosts with another enabled firewall manager require their
-own reviewed policy; do not disable an existing firewall just to pass this check.
+DHCP and unlisted non-Docker interfaces are refused. Apply refuses an uplink
+that systemd-networkd does not manage, whose `networkctl status` shows DHCP in
+use (a lease address, client ID or IAID, offered leases) or cannot be parsed, or
+whose applied `.network` file or drop-in assigns `DHCP=` any value but an off
+value (`no`, `false`, `off`, `0`), even if a later file turns it off. The
+`DHCP6 Client DUID` line, which networkd prints for every link, does not count.
+Routers, VPN, Swarm, overlay networks and hosts with another enabled firewall
+manager require their own reviewed policy; do not disable an existing firewall
+just to pass this check.
 
 Create a named nonroot operator, install its public SSH key, configure sudo, and
 prove a **new** operator SSH session and sudo before restricting access. SSH must

@@ -107,7 +107,7 @@ dynamic grants after positive and negative checks. Repeat the connection samples
 after changing rules, and test an independent unapproved external source. Review the union of all
 firewalls on each resource. The provider documents both tag/IP source selectors
 and combined firewall behavior in its
-[firewall rule reference](https://docs.digitalocean.com/products/networking/firewalls/how-to/configure-rules/).
+your provider's firewall rule reference.
 
 ### DEP-03 — Medium: the host has no independent default-deny ingress policy
 
