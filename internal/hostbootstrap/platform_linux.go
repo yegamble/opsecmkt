@@ -306,14 +306,29 @@ func preflight(ctx context.Context, c Config) error {
 	if e = validateInterfaces(c, b, bridges); e != nil {
 		return e
 	}
-	// Networkd can retain a static lease address while DHCP still owns routes.
+	// Networkd can retain a static lease address while DHCP still owns routes,
+	// so both the runtime status and the applied .network files are checked.
+	// --lines=0 keeps journal history out; --full keeps paths unabbreviated.
 	for _, name := range c.Uplinks {
-		b, e := command(ctx, nil, "/usr/bin/networkctl", "status", "--no-pager", "--no-legend", name)
+		b, e := command(ctx, nil, "/usr/bin/networkctl", "status", "--no-pager", "--no-legend", "--full", "--lines=0", name)
 		if e != nil {
-			return errors.New("supported host requires systemd-networkd static network inventory")
+			return errNetworkdInventory
 		}
-		if strings.Contains(strings.ToLower(string(b)), "dhcp") {
-			return errors.New("DHCP managed interfaces are unsupported by this ingress profile")
+		files, e := networkdStaticLink(name, b)
+		if e != nil {
+			return fmt.Errorf("uplink %s: %w", name, e)
+		}
+		for _, path := range files {
+			s, e := safeRead(path, 1<<20)
+			if e == nil && !s.Exists {
+				e = os.ErrNotExist
+			}
+			if e != nil {
+				return fmt.Errorf("uplink %s: %s: %v: %w", name, path, e, errNetworkdInventory)
+			}
+			if networkFileEnablesDHCP(s.Data) {
+				return fmt.Errorf("uplink %s: %s sets DHCP=: %w", name, path, errDHCPManaged)
+			}
 		}
 	}
 	if e = replaceTable(ctx, renderRules(c), true); e != nil {
