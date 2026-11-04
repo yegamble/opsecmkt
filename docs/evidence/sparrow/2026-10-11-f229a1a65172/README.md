@@ -73,4 +73,4 @@ never commit wallet files or RPC credentials.
 
 ## Re-sealed after redaction
 
-On 2026-11-03, at the owner's instruction, the hosting provider's name, its machine word and the provider resource IDs were removed from `README.md` and `cleanup.json`; field names were generalised (`task_host_deleted`) and the removed IDs are listed in `cleanup.json`'s `redaction`. Their two `SHA256SUMS` entries were regenerated for the redacted copies. The original hashes are in this repository's history at commit `e6947920`; the unredacted originals are kept in the private record. No other file in this folder changed.
+On 2026-11-03, at the owner's instruction, the hosting provider's name, its machine word and the provider resource IDs were removed from `README.md` and `cleanup.json`; field names were generalised (`task_host_deleted`) and the removed IDs are listed in `cleanup.json`'s `redaction`. Their two `SHA256SUMS` entries were regenerated for the redacted copies. The unredacted originals and their original hashes are kept in the private record. No other file in this folder changed.
