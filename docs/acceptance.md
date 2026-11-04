@@ -1091,6 +1091,7 @@ Record `go test ./...`, relevant race tests, fresh-install and persistence resul
   address; independent public/private Tor clients pass. Automated inventory,
   rendering and refusal tests do not complete this deployment gate
   ([steps](testnet-runbook.md#leg-host-policy-and-pending-boot-a-698)).
+- [ ] A-803: `host apply` accepts a static systemd-networkd uplink despite the global `DHCP6 Client DUID` line, and refuses DHCP in use, unparseable status and `DHCP=` enabled in the applied `.network` file (`TestNetworkdStaticLinkAcceptsStaticStatusWithGlobalDUID`, `TestNetworkdStaticLinkRefusesDHCPInUse`, `TestNetworkdStaticLinkFailsClosedOnUnparseableStatus`, `TestNetworkFileEnablesDHCP`). Unit tests on sanitised systemd 255 samples only; apply on a real Ubuntu 24.04 host remains to be rerun.
 - [ ] A replacement production app host restores retained configuration, identities
   and current external retention state on verified encrypted storage, rebinds
   explicitly, installs against retained services, and passes isolated restore and
