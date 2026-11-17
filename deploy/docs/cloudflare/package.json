@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Deploys the documentation site to a Cloudflare Worker (docs/development.md)",
   "devDependencies": {
-    "wrangler": "4.156.0"
+    "wrangler": "4.158.0"
   },
   "overrides": {
     "undici": "7.30.1"
