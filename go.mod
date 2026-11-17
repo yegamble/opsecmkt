@@ -2,7 +2,7 @@ module opsecmkt
 
 go 1.26.10
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	filippo.io/edwards25519 v1.2.0
@@ -10,7 +10,7 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.43.0
 )
 

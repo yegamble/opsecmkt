@@ -124,7 +124,7 @@ services:
     pids_limit: 512
     logging: *logging
   db:
-    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
     profiles: [internal-db]
     restart: unless-stopped
     networks: [backend]
