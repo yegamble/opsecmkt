@@ -6,7 +6,7 @@
 # publishes (amd64, arm64) share the version string. Debian's archive also ships tor: an apt preference keeps the
 # candidate on deb.torproject.org, and the build fails if the installed tor (TOR_VERSION is installed whatever its
 # priority) is not a build deb.torproject.org publishes.
-FROM debian:bookworm-20261027-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM debian:bookworm-20261104-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ARG TOR_VERSION=0.4.9.13-1~d12.bookworm+1
 # The Tor Project archive signing key; the download is refused unless it carries this fingerprint.
 ARG TOR_ARCHIVE_FINGERPRINT=A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89
