@@ -2,7 +2,7 @@ module opsecmkt
 
 go 1.26.10
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	filippo.io/edwards25519 v1.2.0
