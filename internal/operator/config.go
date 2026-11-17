@@ -20,7 +20,7 @@ import (
 )
 
 const configVersion = 1
-const postgresImage = "postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
+const postgresImage = "postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7"
 
 var imagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$`)
 var projectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,48}$`)
